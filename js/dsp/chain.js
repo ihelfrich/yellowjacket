@@ -68,14 +68,18 @@ export function spliceCuts(buffer, cuts) {
     return new AudioBuffer({ length: 1, numberOfChannels: channelCount, sampleRate });
   }
 
-  // Per-join fade lengths. A join's fade can never consume more of the
-  // previous segment than remains after that segment's own head fade.
+  // Per-join fade lengths. An interior segment hosts up to two fades (its head
+  // is consumed by the join before it, its tail is overlaid by the join after),
+  // so each side gets at most half the segment; greedy left-to-right allocation
+  // would starve the second join of a sub-fade-length segment into a hard splice.
   const fadeMax = Math.round(0.006 * sampleRate);
   const fades = new Array(kept.length).fill(0);
   for (let i = 1; i < kept.length; i++) {
-    const prevAvail = kept[i - 1][1] - kept[i - 1][0] - fades[i - 1];
+    const prevLen = kept[i - 1][1] - kept[i - 1][0];
     const curLen = kept[i][1] - kept[i][0];
-    fades[i] = Math.max(0, Math.min(fadeMax, prevAvail, curLen));
+    const tailRoom = i === 1 ? prevLen : Math.floor(prevLen / 2);
+    const headRoom = i === kept.length - 1 ? curLen : Math.floor(curLen / 2);
+    fades[i] = Math.max(0, Math.min(fadeMax, tailRoom, headRoom));
   }
   let outLength = 0;
   for (let i = 0; i < kept.length; i++) outLength += kept[i][1] - kept[i][0] - fades[i];
@@ -151,7 +155,14 @@ export async function renderChain(buffer, cuts, chain, onProgress) {
   }
 
   const byId = new Map(REGISTRY.map((d) => [d.id, d]));
-  const enabled = (chain || []).filter((c) => c && c.on && byId.has(c.id));
+  // Walk REGISTRY, not the caller's array: rack order is part of the sound
+  // (EQ before the compressor is not the same chain as the reverse), and a
+  // malformed chain config must not reorder it or apply an id twice.
+  const cfgById = new Map();
+  for (const c of chain || []) {
+    if (c && c.on && byId.has(c.id) && !cfgById.has(c.id)) cfgById.set(c.id, c);
+  }
+  const enabled = REGISTRY.filter((d) => cfgById.has(d.id)).map((d) => cfgById.get(d.id));
   const hasCuts = !!(cuts && cuts.length);
   if (!enabled.length && !hasCuts) {
     report(100);

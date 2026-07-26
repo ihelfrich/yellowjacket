@@ -7,21 +7,21 @@ import { Transcriber, MODELS } from './transcribe.js';
 import { TranscriptView } from './transcript-ui.js';
 import { REGISTRY, renderChain, spliceCuts } from './dsp/chain.js';
 import { measureLoudness } from './dsp/loudness.js';
-import { encodeWav, toSrt, toVtt, toTxt, download } from './export.js';
+import { encodeWav, toSrt, toVtt, toTxt, download, editedTime } from './export.js';
 import { LevelMeter } from './meters.js';
 
 const COPY = {
   idle: 'IDLE',
   noFile: 'NO FILE',
   decoding: 'DECODING…',
-  decodeFail: "Decode failed — this file isn't audio this browser can read.",
+  decodeFail: "Decode failed. This file isn't audio this browser can read.",
   loaded: 'READY',
   modelNone: 'NO MODEL LOADED',
   modelLoading: 'FETCHING MODEL',
   modelReady: 'MODEL READY',
   transcribing: 'TRANSCRIBING',
   transcribeFail: 'TRANSCRIPTION FAULT',
-  noTranscript: 'No transcript yet. Load audio, pick a model, hit TRANSCRIBE. First run downloads the model and caches it in this browser; after that it works offline.',
+  noTranscript: 'No transcript yet. Load audio, then pick a model and hit TRANSCRIBE. First run downloads the model and caches it in this browser; after that it works offline.',
   rendering: 'RENDERING',
   renderOk: 'RENDER OK',
   renderStale: 'RENDER STALE',
@@ -60,6 +60,7 @@ let cuts = [];
 let meterHooked = false;
 let deviceLabel = '—';
 let currentModel = null;
+let loadGen = 0;             // bumped per loaded file; stale async jobs check it and bail
 
 // ---------- formatting ----------
 function fmtTime(t) {
@@ -95,16 +96,20 @@ function statusRight() {
 
 // ---------- timeline mapping (B side plays the edited timeline) ----------
 function originalFromEdited(t) {
-  let acc = 0;
+  // After each pass t is a candidate original-timeline position; a cut that
+  // starts beyond it cannot affect it, so stop there.
   for (const c of cuts) {
-    if (c.start - acc > t) break;
+    if (c.start > t) break;
     t += c.end - c.start;
-    acc += 0; // t is now advanced past this cut in original timeline terms
   }
   return t;
 }
 function activeCuts() {
   return abState === 'b' ? [] : cuts;
+}
+// Seeks arrive in original-timeline seconds; the B side plays the edited timeline.
+function uiSeek(t) {
+  engine.seek(abState === 'b' ? editedTime(t, cuts) : t);
 }
 
 // ---------- file loading ----------
@@ -117,6 +122,7 @@ async function openFile(file) {
     statusFault(COPY.decodeFail);
     return;
   }
+  loadGen++;
   project.fileName = file.name;
   project.buffer = engine.buffer;
   project.mono = engine.mono;
@@ -124,8 +130,9 @@ async function openFile(file) {
   project.words = null;
   project.renderedBuffer = null;
   cuts = [];
-  abState = 'a';
   renderFresh = false;
+  setAb('a');
+  $('abToggle').hidden = true;
 
   $('dropZone').classList.add('is-hidden');
   $('roDur').textContent = fmtTime(engine.duration);
@@ -138,7 +145,9 @@ async function openFile(file) {
   $('transcriptHost').prepend($('transcriptHint'));
 
   for (const id of ['btnTranscribe', 'btnMeasure', 'btnRender', 'btnWav16', 'btnWav24']) $(id).disabled = false;
-  $('btnTranscribe').disabled = !transcriber.modelLoaded && false; // transcribe loads on demand
+  for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = true;
+  $('roFillers').textContent = '—';
+  $('roDeadAir').textContent = '—';
   setRenderState(COPY.renderNone, 'off');
   updateCutReadout();
 
@@ -182,17 +191,13 @@ engine.addEventListener('time', (e) => {
 });
 
 function hookMeter() {
-  if (meterHooked || !engine.ctx) {
-    if (!meterHooked && engine.ctx) { /* fallthrough below */ }
-  }
-  // engine creates ctx lazily inside play(); hook on next tick
+  if (meterHooked) return;
+  // The engine creates its AudioContext lazily; hook once it exists.
   queueMicrotask(() => {
     if (!meterHooked && engine.ctx && engine.master) {
       meter.connect(engine.ctx, engine.master);
       meter.start();
-      if ('onclip' in meter || true) {
-        meter.onclip = () => $('btnClip').classList.add('is-lit');
-      }
+      meter.onclip = () => $('btnClip').classList.add('is-lit');
       meterHooked = true;
     }
   });
@@ -204,12 +209,12 @@ $('btnRtz').addEventListener('click', () => { engine.seek(0); $('roTime').textCo
 
 // ---------- views sync ----------
 for (const w of [waveMini, waveMain]) {
-  w.addEventListener('seek', (e) => { engine.seek(e.detail.t); });
+  w.addEventListener('seek', (e) => uiSeek(e.detail.t));
   w.addEventListener('view', (e) => {
     if (w === waveMain) spec.setView(e.detail.start, e.detail.end);
   });
 }
-spec.addEventListener('seek', (e) => engine.seek(e.detail.t));
+spec.addEventListener('seek', (e) => uiSeek(e.detail.t));
 
 // ---------- transcription ----------
 const selModel = $('selModel');
@@ -242,8 +247,9 @@ $('btnTranscribe').addEventListener('click', async () => {
   btn.classList.add('is-working');
   setLed('ledModel', 'busy');
   try {
+    const gen = loadGen;
     const modelId = selModel.value;
-    if (currentModel !== modelId) {
+    if (currentModel !== modelId || !transcriber.modelLoaded) {
       $('modelState').textContent = COPY.modelLoading;
       await transcriber.loadModel(modelId);
       currentModel = modelId;
@@ -252,6 +258,7 @@ $('btnTranscribe').addEventListener('click', async () => {
     }
     setLed('ledModel', 'on');
     const words = await transcriber.transcribe(project.mono, project.sampleRate);
+    if (gen !== loadGen) return; // another file loaded mid-job; drop the stale result
     project.words = words;
     $('transcriptHint').hidden = true;
     transcript.setWords(words);
@@ -273,7 +280,7 @@ $('btnTranscribe').addEventListener('click', async () => {
 });
 
 // ---------- transcript editing ----------
-transcript.addEventListener('wordclick', (e) => engine.seek(e.detail.t));
+transcript.addEventListener('wordclick', (e) => uiSeek(e.detail.t));
 transcript.addEventListener('edited', onEdited);
 
 function onEdited() {
@@ -431,11 +438,14 @@ $('btnRender').addEventListener('click', async () => {
   const t0 = performance.now();
   status(COPY.rendering, true);
   try {
+    const gen = loadGen;
     const before = measureLoudness({ channels: monoChannels(project.buffer), sampleRate: project.buffer.sampleRate }).integrated;
-    project.renderedBuffer = await renderChain(project.buffer, cuts, project.chain, (pct) => {
+    const rendered = await renderChain(project.buffer, cuts, project.chain, (pct) => {
       prog.querySelector('.yj-progress-fill').style.width = pct + '%';
       prog.querySelector('.yj-progress-note').textContent = Math.round(pct) + '%';
     });
+    if (gen !== loadGen) return; // another file loaded mid-render; drop the stale result
+    project.renderedBuffer = rendered;
     const after = measureLoudness({ channels: monoChannels(project.renderedBuffer), sampleRate: project.renderedBuffer.sampleRate }).integrated;
     const delta = after - before;
     $('roDelta').textContent = (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' LU';

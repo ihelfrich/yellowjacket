@@ -54,7 +54,20 @@ function denoiseChannel(samples, sampleRate, strength, floorDb) {
 
   const fft = new FFT(N_FFT);
   const win = hann(N_FFT);
-  const nFrames = Math.max(1, Math.ceil(len / HOP));
+  // Reflect-pad both ends so every real sample has full window support.
+  // Without the pad, Hann(0)=0 erases the first samples outright and
+  // zero-padded tail frames rank as artificially quiet noise-profile
+  // candidates, skewing the threshold.
+  const PAD = N_FFT - HOP;
+  const plen = len + 2 * PAD;
+  const padded = new Float32Array(plen);
+  for (let i = 0; i < plen; i++) {
+    let j = i - PAD;
+    if (j < 0) j = -j;
+    else if (j >= len) j = 2 * (len - 1) - j;
+    padded[i] = samples[clamp(j, 0, len - 1)];
+  }
+  const nFrames = Math.max(1, Math.floor((plen - N_FFT) / HOP) + 1);
   const re = new Float32Array(N_FFT);
   const im = new Float32Array(N_FFT);
 
@@ -66,7 +79,7 @@ function denoiseChannel(samples, sampleRate, strength, floorDb) {
     const pos = t * HOP;
     let sq = 0;
     for (let k = 0; k < N_FFT; k++) {
-      const s = pos + k < len ? samples[pos + k] : 0;
+      const s = padded[pos + k];
       sq += s * s;
       re[k] = s * win[k];
       im[k] = 0;
@@ -131,13 +144,12 @@ function denoiseChannel(samples, sampleRate, strength, floorDb) {
   }
 
   // Pass B: re-analyze, apply gain, Hann-windowed overlap-add resynthesis.
-  const out = new Float32Array(len);
-  const wss = new Float32Array(len);
+  const outP = new Float32Array(plen);
+  const wssP = new Float32Array(plen);
   for (let t = 0; t < nFrames; t++) {
     const pos = t * HOP;
     for (let k = 0; k < N_FFT; k++) {
-      const s = pos + k < len ? samples[pos + k] : 0;
-      re[k] = s * win[k];
+      re[k] = padded[pos + k] * win[k];
       im[k] = 0;
     }
     fft.forward(re, im);
@@ -152,18 +164,20 @@ function denoiseChannel(samples, sampleRate, strength, floorDb) {
       }
     }
     fft.inverse(re, im);
-    const stop = Math.min(N_FFT, len - pos);
-    for (let k = 0; k < stop; k++) {
-      out[pos + k] += re[k] * win[k];
-      wss[pos + k] += win[k] * win[k];
+    for (let k = 0; k < N_FFT; k++) {
+      outP[pos + k] += re[k] * win[k];
+      wssP[pos + k] += win[k] * win[k];
     }
     if (t % tick === 0) progress(55 + (t / nFrames) * 44);
   }
 
-  // Analysis + synthesis Hann at hop N/4 overlap-add to a constant 1.5 in the
-  // interior; wss holds exactly that (and the true partial sums at the edges).
+  // Analysis + synthesis Hann at hop N/4 overlap-add to a constant 1.5; the pad
+  // guarantees that constant holds across the whole real range, which is then
+  // trimmed back out of the padded domain.
+  const out = new Float32Array(len);
   for (let i = 0; i < len; i++) {
-    out[i] = wss[i] > 1e-8 ? out[i] / wss[i] : 0;
+    const p = PAD + i;
+    out[i] = wssP[p] > 1e-8 ? outP[p] / wssP[p] : 0;
   }
 
   progress(100);

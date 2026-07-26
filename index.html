@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Yellowjacket · audio bench</title>
-<meta name="description" content="A text-first audio bench. Transcribe, dissect, and repair sound entirely in your browser. Nothing uploads.">
+<meta name="description" content="A text-first audio bench that runs entirely in your browser: transcription, text-based cutting, spectral analysis, repair, loudness, export. Nothing uploads.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23FFD400'/%3E%3Cpath d='M0 20 L12 32 L4 32 L0 28 Z M8 20 L20 32 L12 32 L0 20 Z M16 20 L28 32 L20 32 L8 20 Z M24 20 L32 28 L32 32 L28 32 L16 20 Z M32 20 L32 24 L24 20 Z' fill='%230B0A07'/%3E%3Cpath d='M6 4 L13 4 L16 10 L19 4 L26 4 L19 16 L13 16 Z' fill='%230B0A07'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -43,7 +43,7 @@
     <div class="yj-cols">
       <div class="yj-panel yj-grow" data-label="TRANSCRIPT">
         <div id="transcriptHost" class="yj-transcript">
-          <p class="yj-hint" id="transcriptHint">No transcript yet. Load audio, pick a model, hit TRANSCRIBE.
+          <p class="yj-hint" id="transcriptHint">No transcript yet. Load audio, then pick a model and hit TRANSCRIBE.
           First run downloads the model and caches it in this browser; after that it works offline.</p>
         </div>
       </div>
@@ -168,7 +168,7 @@
   <div class="yj-drop-inner">
     <div class="yj-drop-word">DROP A FILE</div>
     <p>WAV, MP3, M4A, OGG, FLAC. Whatever this browser can decode.<br>
-    It never leaves this machine. No uploads, no account, no server.</p>
+    It never leaves this machine. There's no server to send it to.</p>
     <button id="btnOpen2" class="yj-btn yj-btn-primary">OR PICK ONE</button>
   </div>
 </div>
