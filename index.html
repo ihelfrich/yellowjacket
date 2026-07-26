@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yellowjacket · audio bench</title>
+<meta name="description" content="A text-first audio bench. Transcribe, dissect, and repair sound entirely in your browser. Nothing uploads.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23FFD400'/%3E%3Cpath d='M0 20 L12 32 L4 32 L0 28 Z M8 20 L20 32 L12 32 L0 20 Z M16 20 L28 32 L20 32 L8 20 Z M24 20 L32 28 L32 32 L28 32 L16 20 Z M32 20 L32 24 L24 20 Z' fill='%230B0A07'/%3E%3Cpath d='M6 4 L13 4 L16 10 L19 4 L26 4 L19 16 L13 16 Z' fill='%230B0A07'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/yj.css">
+</head>
+<body>
+
+<header class="yj-top">
+  <div class="yj-mark">
+    <span class="yj-mark-name">YELLOWJACKET</span>
+    <span class="yj-mark-bar" aria-hidden="true"></span>
+    <span class="yj-mark-sub">AUDIO BENCH</span>
+  </div>
+  <div class="yj-transport">
+    <button id="btnRtz" class="yj-btn" title="Return to zero (Home)">&#9198;</button>
+    <button id="btnPlay" class="yj-btn yj-btn-play" title="Play / pause (Space)">PLAY</button>
+    <div class="yj-well yj-time" id="roTime">--:--.---</div>
+    <div class="yj-well yj-time yj-time-dim" id="roDur">--:--.---</div>
+  </div>
+  <div class="yj-io">
+    <button id="btnOpen" class="yj-btn">OPEN FILE</button>
+  </div>
+</header>
+
+<nav class="yj-tabs" role="tablist">
+  <button class="yj-tab-btn is-active" data-tab="transcript" role="tab">TRANSCRIPT</button>
+  <button class="yj-tab-btn" data-tab="signal" role="tab">SIGNAL</button>
+  <button class="yj-tab-btn" data-tab="rack" role="tab">RACK</button>
+</nav>
+
+<main class="yj-main">
+
+  <!-- ============ TRANSCRIPT ============ -->
+  <section id="tab-transcript" class="yj-tabpane is-active">
+    <div class="yj-cols">
+      <div class="yj-panel yj-grow" data-label="TRANSCRIPT">
+        <div id="transcriptHost" class="yj-transcript">
+          <p class="yj-hint" id="transcriptHint">No transcript yet. Load audio, pick a model, hit TRANSCRIBE.
+          First run downloads the model and caches it in this browser; after that it works offline.</p>
+        </div>
+      </div>
+      <aside class="yj-rail">
+        <div class="yj-panel" data-label="MODEL">
+          <select id="selModel" class="yj-select" aria-label="Whisper model"></select>
+          <div class="yj-led-row">
+            <span class="yj-led" id="ledModel"></span>
+            <span class="yj-led-text" id="modelState">NO MODEL LOADED</span>
+          </div>
+          <button id="btnTranscribe" class="yj-btn yj-btn-primary" disabled>TRANSCRIBE</button>
+          <div class="yj-progress" id="progTrans" hidden>
+            <div class="yj-progress-fill" style="width:0%"></div>
+            <span class="yj-progress-note">0%</span>
+          </div>
+        </div>
+        <div class="yj-panel" data-label="CLEANUP">
+          <div class="yj-toolrow">
+            <button id="btnCutFillers" class="yj-btn" disabled>CUT FILLERS</button>
+            <div class="yj-well yj-count" id="roFillers">—</div>
+          </div>
+          <div class="yj-toolrow">
+            <button id="btnCutDeadAir" class="yj-btn" disabled>CUT DEAD AIR</button>
+            <div class="yj-well yj-count" id="roDeadAir">—</div>
+          </div>
+          <label class="yj-param">
+            <span class="yj-param-label">GAP THRESHOLD</span>
+            <input type="range" id="rngGap" min="0.4" max="3" step="0.1" value="1.0">
+            <span class="yj-param-val" id="valGap">1.0s</span>
+          </label>
+          <div class="yj-toolrow">
+            <button id="btnRestoreAll" class="yj-btn" disabled>RESTORE ALL</button>
+          </div>
+          <div class="yj-well yj-count yj-count-wide" id="roCutTotal">NO CUTS</div>
+        </div>
+        <div class="yj-panel" data-label="TRANSCRIPT OUT">
+          <div class="yj-toolrow yj-toolrow-4">
+            <button class="yj-btn" id="btnExpTxt" disabled>TXT</button>
+            <button class="yj-btn" id="btnExpSrt" disabled>SRT</button>
+            <button class="yj-btn" id="btnExpVtt" disabled>VTT</button>
+            <button class="yj-btn" id="btnExpJson" disabled>JSON</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+    <div class="yj-panel yj-wavestrip" data-label="TIMELINE">
+      <canvas id="waveMini"></canvas>
+    </div>
+  </section>
+
+  <!-- ============ SIGNAL ============ -->
+  <section id="tab-signal" class="yj-tabpane">
+    <div class="yj-cols">
+      <div class="yj-grow">
+        <div class="yj-panel" data-label="SIGNAL / TIME DOMAIN">
+          <canvas id="waveMain" class="yj-canvas yj-canvas-wave"></canvas>
+        </div>
+        <div class="yj-panel" data-label="SIGNAL / SPECTROGRAM">
+          <canvas id="specMain" class="yj-canvas yj-canvas-spec"></canvas>
+          <div class="yj-canvas-note" id="specNote">Spectrogram computes when audio loads.</div>
+        </div>
+      </div>
+      <aside class="yj-rail">
+        <div class="yj-panel" data-label="LEVELS">
+          <canvas id="meterLive" class="yj-meter"></canvas>
+          <button id="btnClip" class="yj-clip-led" title="Clip indicator. Latches until clicked.">CLIP</button>
+        </div>
+        <div class="yj-panel" data-label="MEASUREMENT">
+          <button id="btnMeasure" class="yj-btn yj-btn-primary" disabled>MEASURE</button>
+          <dl class="yj-readouts" id="measureOut">
+            <div><dt>INTEGRATED</dt><dd class="yj-well" id="mLufsI">—</dd></div>
+            <div><dt>SHORT-TERM MAX</dt><dd class="yj-well" id="mLufsS">—</dd></div>
+            <div><dt>SAMPLE PEAK</dt><dd class="yj-well" id="mPeak">—</dd></div>
+            <div><dt>TRUE PEAK EST</dt><dd class="yj-well" id="mTruePeak">—</dd></div>
+            <div><dt>RMS</dt><dd class="yj-well" id="mRms">—</dd></div>
+            <div><dt>CREST</dt><dd class="yj-well" id="mCrest">—</dd></div>
+            <div><dt>DC OFFSET</dt><dd class="yj-well" id="mDc">—</dd></div>
+            <div><dt>CLIPPED</dt><dd class="yj-well" id="mClip">—</dd></div>
+          </dl>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ============ RACK ============ -->
+  <section id="tab-rack" class="yj-tabpane">
+    <div class="yj-cols">
+      <div class="yj-grow" id="rackHost"><!-- modules rendered by main.js --></div>
+      <aside class="yj-rail">
+        <div class="yj-panel" data-label="RENDER">
+          <button id="btnRender" class="yj-btn yj-btn-primary" disabled>RENDER</button>
+          <div class="yj-progress" id="progRender" hidden>
+            <div class="yj-progress-fill" style="width:0%"></div>
+            <span class="yj-progress-note">0%</span>
+          </div>
+          <div class="yj-led-row">
+            <span class="yj-led" id="ledRender"></span>
+            <span class="yj-led-text" id="renderState">NO RENDER</span>
+          </div>
+          <div class="yj-ab" id="abToggle" hidden>
+            <button class="yj-btn is-active" data-ab="a">ORIGINAL</button>
+            <button class="yj-btn" data-ab="b">BENCH</button>
+          </div>
+          <dl class="yj-readouts">
+            <div><dt>LOUDNESS Δ</dt><dd class="yj-well" id="roDelta">—</dd></div>
+          </dl>
+        </div>
+        <div class="yj-panel" data-label="AUDIO OUT">
+          <div class="yj-toolrow">
+            <button class="yj-btn" id="btnWav16" disabled>WAV 16</button>
+            <button class="yj-btn" id="btnWav24" disabled>WAV 24</button>
+          </div>
+          <p class="yj-hint yj-hint-small">Exports the render if one exists, otherwise the original with cuts applied.</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+</main>
+
+<div class="yj-drop" id="dropZone">
+  <div class="yj-drop-inner">
+    <div class="yj-drop-word">DROP A FILE</div>
+    <p>WAV, MP3, M4A, OGG, FLAC. Whatever this browser can decode.<br>
+    It never leaves this machine. No uploads, no account, no server.</p>
+    <button id="btnOpen2" class="yj-btn yj-btn-primary">OR PICK ONE</button>
+  </div>
+</div>
+
+<footer class="yj-status">
+  <div id="stLeft">IDLE</div>
+  <div id="stRight">NO FILE</div>
+</footer>
+
+<input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" hidden>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
