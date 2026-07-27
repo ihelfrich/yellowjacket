@@ -167,6 +167,11 @@
 
   <!-- ============ MACHINE ============ -->
   <section id="tab-machine" class="yj-tabpane">
+    <div class="yj-substate" role="tablist">
+      <button class="yj-substate-btn is-active" data-mstate="slice" role="tab">SLICE</button>
+      <button class="yj-substate-btn" data-mstate="pattern" role="tab">PATTERN</button>
+    </div>
+    <div id="mstate-slice" class="yj-mstate is-active">
     <div class="yj-cols">
       <div class="yj-panel yj-grow" data-label="MACHINE / SLICE">
         <canvas id="sliceMain" class="yj-canvas yj-canvas-slice"></canvas>
@@ -182,6 +187,12 @@
           </div>
         </div>
       </aside>
+    </div>
+    </div>
+    <div id="mstate-pattern" class="yj-mstate">
+      <div class="yj-panel yj-grow" data-label="MACHINE / PATTERN">
+        <div id="patternHost" class="yj-pattern-host"></div>
+      </div>
     </div>
   </section>
 

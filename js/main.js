@@ -11,6 +11,9 @@ import { encodeWav, toSrt, toVtt, toTxt, download, editedTime } from './export.j
 import { LevelMeter } from './meters.js';
 import { SliceView } from './machine/slice-ui.js';
 import { wordsToClip, ClipAuditioner } from './machine/cliprefs.js';
+import { Sequencer } from './machine/sequencer.js';
+import { PatternView } from './machine/pattern-ui.js';
+import { Keybed } from './machine/keybed.js';
 
 const COPY = {
   idle: 'IDLE',
@@ -56,6 +59,19 @@ const project = {
   renderedBuffer: null,
   analysis: null,
   clips: [],
+  machine: {
+    bpm: 120,
+    swing: 50,
+    tracks: Array.from({ length: 8 }, () => ({
+      sample: null,
+      steps: new Uint8Array(64),
+      len: 16,
+      gainDb: 0,
+      pan: 0,
+      mute: false,
+      solo: false,
+    })),
+  },
 };
 
 const engine = new Engine();
@@ -67,6 +83,9 @@ const transcriber = new Transcriber();
 const meter = new LevelMeter($('meterLive'));
 const sliceView = new SliceView($('sliceMain'), $('beatmapControls'));
 const auditioner = new ClipAuditioner(engine);
+const sequencer = new Sequencer(engine);
+const patternView = new PatternView($('patternHost'));
+const keybed = new Keybed();
 
 let abState = 'a';           // 'a' original, 'b' rendered
 let renderFresh = false;
@@ -209,6 +228,7 @@ function togglePlay() {
   if (engine.playing) {
     engine.pause();
   } else {
+    if (sequencer.running) sequencer.stop(); // one transport owns the output at a time
     hookMeter();
     engine.play(activeCuts());
   }
@@ -586,6 +606,11 @@ function runAnalysis(anchors = null, withMono = true) {
         project.analysis = { ...msg.analysis, anchors: analysisRun.anchors };
         sliceView.setAnalysis(project.analysis);
         const conf = project.analysis.confidence || 0;
+        // A confident tempo seeds the machine clock, unless the user already set one.
+        if (conf >= 0.6 && !machineBpmTouched && project.analysis.tempo > 0) {
+          project.machine.bpm = Math.round(project.analysis.tempo);
+          patternView.setMachine(project.machine);
+        }
         if (!project.analysis.beats || !project.analysis.beats.length) {
           setBeatmapLed('fault', COPY.notAnalyzed);
         } else if (conf >= 0.6) {
@@ -669,12 +694,131 @@ $('btnLift').addEventListener('click', () => {
   if (typeof sliceView.flashClip === 'function') sliceView.flashClip(clip.id);
 });
 
+// ---------- machine: pattern sequencer ----------
+const MAX_TRACK_SAMPLE_SEC = 30;
+let machineBpmTouched = false;
+
+sequencer.setMachine(project.machine);
+patternView.setMachine(project.machine);
+keybed.attach((i) => sequencer.trigger(i));
+keybed.enabled = false;
+
+function machineHasSound() {
+  return project.machine.tracks.some((t) => t.sample);
+}
+
+patternView.addEventListener('togglestep', (e) => {
+  const t = project.machine.tracks[e.detail.track];
+  t.steps[e.detail.step] = t.steps[e.detail.step] ? 0 : 1;
+  patternView.setMachine(project.machine);
+});
+patternView.addEventListener('assign', (e) => {
+  const clip = sliceView.selectedClip;
+  if (!clip || !project.buffer) {
+    statusFault('Select a clip in SLICE first, then assign it.');
+    return;
+  }
+  const buf = project.buffer;
+  const s = Math.max(0, Math.floor(clip.start * buf.sampleRate));
+  let n = Math.min(buf.length, Math.ceil(clip.end * buf.sampleRate)) - s;
+  if (n <= 0) return;
+  const cap = MAX_TRACK_SAMPLE_SEC * buf.sampleRate;
+  let trimmed = false;
+  if (n > cap) { n = cap; trimmed = true; }
+  const channels = [];
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    channels.push(buf.getChannelData(c).slice(s, s + n));
+  }
+  project.machine.tracks[e.detail.track].sample = {
+    channels,
+    sampleRate: buf.sampleRate,
+    label: clip.label || clip.tag,
+  };
+  sequencer.bumpTrack(e.detail.track);
+  patternView.setMachine(project.machine);
+  status(trimmed
+    ? 'ASSIGNED · TRIMMED TO ' + MAX_TRACK_SAMPLE_SEC + 's (TRACK ' + (e.detail.track + 1) + ')'
+    : 'ASSIGNED · TRACK ' + (e.detail.track + 1) + ' · ' + (clip.label || clip.tag));
+});
+patternView.addEventListener('cleartrack', (e) => {
+  project.machine.tracks[e.detail.track].sample = null;
+  sequencer.bumpTrack(e.detail.track);
+  patternView.setMachine(project.machine);
+});
+patternView.addEventListener('mix', (e) => {
+  project.machine.tracks[e.detail.track][e.detail.key] = e.detail.value;
+  patternView.setMachine(project.machine);
+});
+patternView.addEventListener('bpm', (e) => {
+  project.machine.bpm = e.detail.bpm;
+  machineBpmTouched = true;
+  patternView.setMachine(project.machine);
+});
+patternView.addEventListener('swing', (e) => {
+  project.machine.swing = e.detail.swing;
+  patternView.setMachine(project.machine);
+});
+patternView.addEventListener('trig', (e) => sequencer.trigger(e.detail.track));
+patternView.addEventListener('run', () => {
+  if (!machineHasSound()) {
+    statusFault('Nothing to run. Carve a clip in SLICE and assign it to a track.');
+    return;
+  }
+  if (engine.playing) engine.pause();
+  sequencer.start();
+});
+patternView.addEventListener('stopreq', () => sequencer.stop());
+patternView.addEventListener('freeze', async (e) => {
+  if (!machineHasSound()) {
+    statusFault('Nothing to freeze. The machine is empty.');
+    return;
+  }
+  const wasRunning = sequencer.running;
+  if (wasRunning) sequencer.stop();
+  status('FREEZING · ' + e.detail.loops + (e.detail.loops === 1 ? ' LOOP' : ' LOOPS'), true);
+  try {
+    const blob = await sequencer.renderWav(e.detail.loops);
+    await loadArrayBuffer(await blob.arrayBuffer(), 'machine.freeze.wav');
+    status('FREEZE OK · the loop is the bench source now. The machine keeps its pattern.');
+  } catch (err) {
+    statusFault('FREEZE FAULT · ' + (err.message || err));
+  }
+});
+
+sequencer.addEventListener('step', (e) => {
+  patternView.setPlayhead(e.detail.loopStep % 64);
+});
+sequencer.addEventListener('state', (e) => {
+  patternView.setRunning(e.detail.running);
+  if (e.detail.running) {
+    status('MACHINE RUNNING · ' + project.machine.bpm + ' BPM', true);
+  } else {
+    patternView.setPlayhead(null);
+    status(COPY.loaded);
+  }
+});
+
+sliceView.addEventListener('clipselect', (e) => {
+  patternView.setClipHint(e.detail.clip ? (e.detail.clip.label || e.detail.clip.tag) : null);
+});
+
+// substate switcher
+for (const btn of document.querySelectorAll('.yj-substate-btn')) {
+  btn.addEventListener('click', () => {
+    for (const b of document.querySelectorAll('.yj-substate-btn')) b.classList.toggle('is-active', b === btn);
+    for (const pane of document.querySelectorAll('.yj-mstate')) pane.classList.remove('is-active');
+    $('mstate-' + btn.dataset.mstate).classList.add('is-active');
+    if (btn.dataset.mstate === 'slice') sliceView.render();
+  });
+}
+
 // ---------- tabs ----------
 for (const btn of document.querySelectorAll('.yj-tab-btn')) {
   btn.addEventListener('click', () => {
     for (const b of document.querySelectorAll('.yj-tab-btn')) b.classList.toggle('is-active', b === btn);
     for (const pane of document.querySelectorAll('.yj-tabpane')) pane.classList.remove('is-active');
     $('tab-' + btn.dataset.tab).classList.add('is-active');
+    keybed.enabled = btn.dataset.tab === 'machine';
     // canvases need a size pass when they become visible
     waveMini.render(); waveMain.render(); spec.render(); sliceView.render();
   });
@@ -854,4 +998,4 @@ status(COPY.idle);
 statusRight();
 
 // Debug handle for the curious (and for bug reports): poke the bench from the console.
-window.__yj = { engine, project, transcript, transcriber, waveMain, waveMini, spec, sliceView, auditioner, get cuts() { return cuts; } };
+window.__yj = { engine, project, transcript, transcriber, waveMain, waveMini, spec, sliceView, auditioner, sequencer, patternView, get cuts() { return cuts; } };

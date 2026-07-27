@@ -65,8 +65,16 @@ lets you carve the audio into clips. Drag to cut a region with edges that snap t
 cut a whole selection into bars with one button, click any clip to hear it, and export a
 clip as a WAV loop. Selected words in the transcript lift straight over as clips, so a
 spoken phrase becomes a loop in two clicks. Tempo detection wrong? Tap the tempo or pin
-bar one and it re-tracks around your anchor. A step sequencer, parameter locks, and
-punch-in effects are on the bench next; the plan lives in docs/VISION.md.
+bar one and it re-tracks around your anchor.
+
+MACHINE's PATTERN state is an eight-track step sequencer in the OP-XY lineage: assign
+clips to tracks (the samples are copied in, like loading a pad), program 64 steps across
+four pages, set per-track lengths for polymeter, swing the grid MPC-style, fire tracks
+live from keys 1 through 8, and mix with per-track gain, pan, mute, and solo. Live
+playback and offline render come from one event compiler, so FREEZE prints exactly what
+you heard: the loop becomes the new bench source while the machine keeps its pattern,
+and you can slice the freeze and go around again. Parameter locks, step components, and
+punch-in effects are next; the plan lives in docs/VISION.md.
 
 ## Models
 
