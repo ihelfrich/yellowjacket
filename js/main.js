@@ -716,9 +716,23 @@ function shellQuote(u) {
   return "'" + u.replace(/'/g, "'\\''") + "'";
 }
 
-function showRipHelp(url, msg) {
+// A watch link carrying list/start_radio params makes yt-dlp queue the whole
+// playlist (a YouTube Mix is 200+ items). Strip the freight, keep the video.
+function cleanRipUrl(u) {
+  try {
+    const c = new URL(u.href);
+    for (const p of ['list', 'index', 'start_radio', 'pp', 'si', 'utm_source', 'utm_medium', 'utm_campaign']) {
+      c.searchParams.delete(p);
+    }
+    return c.href;
+  } catch (e) {
+    return u.href;
+  }
+}
+
+function showRipHelp(u, msg) {
   $('ripHelpMsg').textContent = msg;
-  $('ripCmd').value = 'yt-dlp -x --audio-format wav ' + shellQuote(url);
+  $('ripCmd').value = 'yt-dlp -x --audio-format wav --no-playlist ' + shellQuote(typeof u === 'string' ? u : cleanRipUrl(u));
   $('ripHelp').hidden = false;
 }
 
@@ -738,7 +752,7 @@ async function loadFromUrl(raw) {
   }
   $('ripHelp').hidden = true;
   if (WALLED.test(u.hostname)) {
-    showRipHelp(u.href, "That host won't hand audio to a web page. Rip it on your machine, then drop the file here:");
+    showRipHelp(u, "That host won't hand audio to a web page. Rip it on your machine, then drop the file here:");
     return;
   }
   const btn = $('btnLoadUrl');
@@ -758,7 +772,7 @@ async function loadFromUrl(raw) {
     }
     const type = (resp.headers.get('Content-Type') || '').toLowerCase();
     if (type.includes('text/html')) {
-      showRipHelp(u.href, 'That URL serves a page, not audio. If a track lives on it, rip it locally and drop the file:');
+      showRipHelp(u, 'That URL serves a page, not audio. If a track lives on it, rip it locally and drop the file:');
       return;
     }
     let ab;
@@ -789,7 +803,7 @@ async function loadFromUrl(raw) {
     await loadArrayBuffer(ab, name);
   } catch (e) {
     // A TypeError here is almost always CORS: the host never opted its files in.
-    showRipHelp(u.href, "That host refused a browser fetch (no CORS headers). It isn't you, and it isn't fixable from here. Rip it locally and drop the file:");
+    showRipHelp(u, "That host refused a browser fetch (no CORS headers). It isn't you, and it isn't fixable from here. Rip it locally and drop the file:");
     statusFault('FETCH BLOCKED · ' + u.hostname);
   } finally {
     btn.disabled = false;
