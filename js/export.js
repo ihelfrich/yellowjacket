@@ -14,7 +14,41 @@ const CLAUSE_END = /[,;:.!?…]["»”’)\]]*$/;
 
 // ---------- WAV ----------
 
+const DITHER_SEED = 0x59454C4F; // fixed seed: identical input -> byte-identical WAV
+// 9-tap F-weighted noise-shaping FIR (Lipshitz/Wannamaker F-weighting),
+// coefficients from SoX src/dither.c `fwe44` (Shape_f_weighted). Designed near
+// 44.1 kHz; applied at 44.1k and 48k where the weighting curve still holds.
+const F_WEIGHTED_9 = [2.412, -3.370, 3.937, -4.174, 3.353, -2.205, 1.281, -0.569, 0.0847];
+
+// mulberry32: tiny deterministic PRNG, uniform in [0, 1)
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// 24-bit never dithers: its noise floor sits below any real source noise.
+// The F-weighted curve is rate-specific, so shaping only runs at 44.1k/48k;
+// other rates fall back to plain TPDF.
+function resolveDither(bits, sampleRate, requested) {
+  if (bits === 24) return 'none';
+  if (requested === 'none' || requested === 'tpdf') return requested;
+  return sampleRate === 44100 || sampleRate === 48000 ? 'shaped' : 'tpdf';
+}
+
 export function encodeWav(buffer, bitDepth = 16) {
+  return encodeWavWithStats(buffer, bitDepth).blob;
+}
+
+// opts.dither: 'shaped' | 'tpdf' | 'none' (default: shaped at 44.1k/48k, else tpdf).
+// stats.clippedSamples counts PRE-quantization overs (|s| > 1); the encoded
+// stream still clamps them. stats.peakDb is the pre-quantization sample peak.
+export function encodeWavWithStats(buffer, bitDepth = 16, opts = {}) {
   const bits = bitDepth === 24 ? 24 : 16;
   const srcChannels = buffer && buffer.numberOfChannels ? buffer.numberOfChannels : 0;
   const channels = Math.max(1, srcChannels);
@@ -23,6 +57,7 @@ export function encodeWav(buffer, bitDepth = 16) {
   const bytesPer = bits / 8;
   const blockAlign = channels * bytesPer;
   const dataSize = frames * blockAlign;
+  const dither = resolveDither(bits, sampleRate, opts.dither);
 
   const ab = new ArrayBuffer(44 + dataSize);
   const dv = new DataView(ab);
@@ -42,13 +77,37 @@ export function encodeWav(buffer, bitDepth = 16) {
 
   const chans = [];
   for (let c = 0; c < srcChannels; c++) chans.push(buffer.getChannelData(c));
+  let peak = 0;
+  let clipped = 0;
   let off = 44;
   if (bits === 16) {
+    const rand = mulberry32(DITHER_SEED);
+    const tpdf = dither !== 'none';
+    const shaped = dither === 'shaped';
+    const hist = shaped ? chans.map(() => new Float64Array(9)) : null;
     for (let f = 0; f < frames; f++) {
       for (let c = 0; c < srcChannels; c++) {
         let s = chans[c][f];
-        s = s < -1 ? -1 : s > 1 ? 1 : s;
-        dv.setInt16(off, Math.round(s < 0 ? s * 0x8000 : s * 0x7FFF), true);
+        const a = s < 0 ? -s : s;
+        if (a > peak) peak = a;
+        if (a > 1) { clipped++; s = s < 0 ? -1 : 1; }
+        let v = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        let e;
+        if (shaped) {
+          // error feedback w = x - sum(c_k * e[n-k]): noise transfer 1 - C(z)
+          e = hist[c];
+          let fb = 0;
+          for (let k = 0; k < 9; k++) fb += F_WEIGHTED_9[k] * e[k];
+          v -= fb;
+        }
+        // TPDF at +/-1 LSB: sum of two independent uniforms, dither inside
+        // the loop (Lipshitz/Wannamaker/Vanderkooy, JAES 1992)
+        const q = Math.round(tpdf ? v + rand() + rand() - 1 : v);
+        if (shaped) {
+          for (let k = 8; k > 0; k--) e[k] = e[k - 1];
+          e[0] = q - v; // pre-clamp error: bounded feedback, stable at full scale
+        }
+        dv.setInt16(off, q < -0x8000 ? -0x8000 : q > 0x7FFF ? 0x7FFF : q, true);
         off += 2;
       }
     }
@@ -56,7 +115,9 @@ export function encodeWav(buffer, bitDepth = 16) {
     for (let f = 0; f < frames; f++) {
       for (let c = 0; c < srcChannels; c++) {
         let s = chans[c][f];
-        s = s < -1 ? -1 : s > 1 ? 1 : s;
+        const a = s < 0 ? -s : s;
+        if (a > peak) peak = a;
+        if (a > 1) { clipped++; s = s < 0 ? -1 : 1; }
         // two's complement 24-bit little-endian
         const v = Math.round(s < 0 ? s * 0x800000 : s * 0x7FFFFF) & 0xFFFFFF;
         dv.setUint8(off, v & 0xFF);
@@ -66,7 +127,14 @@ export function encodeWav(buffer, bitDepth = 16) {
       }
     }
   }
-  return new Blob([ab], { type: 'audio/wav' });
+  return {
+    blob: new Blob([ab], { type: 'audio/wav' }),
+    stats: {
+      peakDb: peak > 0 ? 20 * Math.log10(peak) : -Infinity,
+      clippedSamples: clipped,
+      dither,
+    },
+  };
 }
 
 // ---------- timeline mapping ----------

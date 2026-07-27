@@ -4,8 +4,7 @@
 
 import { MODELS } from '../transcribe.js';
 import { REGISTRY, renderChain, spliceCuts } from '../dsp/chain.js';
-import { measureLoudness } from '../dsp/loudness.js';
-import { encodeWav, toSrt, toVtt, toTxt, download, editedTime } from '../export.js';
+import { encodeWavWithStats, toSrt, toVtt, toTxt, download, editedTime } from '../export.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -217,14 +216,38 @@ export function initBenchController(ctx) {
   $('btnExpJson').addEventListener('click', () => download(JSON.stringify({ file: P.fileName, words: P.words }, null, 2), transcriptFilename('json'), 'application/json'));
 
   // ---------- measurement ----------
+  // Off the main thread: the worker gets copies (transferred), the page stays live.
+  let loudnessWorker = null;
+  let measureSeq = 0;
+  function measureViaWorker(buf, onPct) {
+    if (!loudnessWorker) {
+      loudnessWorker = new Worker(new URL('../../workers/loudness-worker.js', import.meta.url), { type: 'module' });
+    }
+    const seq = ++measureSeq;
+    return new Promise((resolve, reject) => {
+      loudnessWorker.onmessage = (e) => {
+        const msg = e.data || {};
+        if (seq !== measureSeq) return; // superseded by a newer request
+        if (msg.type === 'progress') { if (onPct) onPct(msg.pct); }
+        else if (msg.type === 'done') resolve(msg.result);
+        else if (msg.type === 'error') reject(new Error(msg.message));
+      };
+      const channels = [];
+      const transfers = [];
+      for (let c = 0; c < buf.numberOfChannels; c++) {
+        const copy = buf.getChannelData(c).slice();
+        channels.push(copy);
+        transfers.push(copy.buffer);
+      }
+      loudnessWorker.postMessage({ type: 'measure', channels, sampleRate: buf.sampleRate }, transfers);
+    });
+  }
+
   $('btnMeasure').addEventListener('click', async () => {
     const buf = abState === 'b' && R.renderedBuffer ? R.renderedBuffer : R.buffer;
     if (!buf) return;
     status(COPY.measuring, true);
-    await new Promise((r) => setTimeout(r, 30)); // let the status paint
-    const channels = [];
-    for (let c = 0; c < buf.numberOfChannels; c++) channels.push(buf.getChannelData(c));
-    const m = measureLoudness({ channels, sampleRate: buf.sampleRate });
+    const m = await measureViaWorker(buf, (pct) => status(COPY.measuring + ' ' + Math.round(pct) + '%', true));
     $('mLufsI').textContent = fmtDb(m.integrated, ' LUFS');
     $('mLufsS').textContent = fmtDb(m.shortTermMax, ' LUFS');
     $('mPeak').textContent = fmtDb(m.samplePeakDb, ' dBFS');
@@ -323,14 +346,14 @@ export function initBenchController(ctx) {
     status(COPY.rendering, true);
     try {
       const gen = R.generation;
-      const before = measureLoudness({ channels: monoChannels(R.buffer), sampleRate: R.buffer.sampleRate }).integrated;
+      const before = (await measureViaWorker(R.buffer)).integrated;
       const rendered = await renderChain(R.buffer, cuts, P.chain, (pct) => {
         prog.querySelector('.yj-progress-fill').style.width = pct + '%';
         prog.querySelector('.yj-progress-note').textContent = Math.round(pct) + '%';
       });
       if (gen !== R.generation) return; // another file loaded mid-render; drop the stale result
       R.renderedBuffer = rendered;
-      const after = measureLoudness({ channels: monoChannels(R.renderedBuffer), sampleRate: R.renderedBuffer.sampleRate }).integrated;
+      const after = (await measureViaWorker(R.renderedBuffer)).integrated;
       const delta = after - before;
       $('roDelta').textContent = (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' LU';
       renderFresh = true;
@@ -348,12 +371,6 @@ export function initBenchController(ctx) {
       prog.hidden = true;
     }
   });
-
-  function monoChannels(buf) {
-    const chs = [];
-    for (let c = 0; c < buf.numberOfChannels; c++) chs.push(buf.getChannelData(c));
-    return chs;
-  }
 
   // ---------- A/B ----------
   function setAb(side) {
@@ -378,7 +395,13 @@ export function initBenchController(ctx) {
       buf = cuts.length ? spliceCuts(R.buffer, cuts) : R.buffer;
     }
     const name = (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '') + '.bench.' + bits + '.wav';
-    download(encodeWav(buf, bits), name, 'audio/wav');
+    const { blob, stats } = encodeWavWithStats(buf, bits);
+    download(blob, name, 'audio/wav');
+    if (stats.clippedSamples > 0) {
+      statusFault('EXPORTED WITH ' + stats.clippedSamples + ' OVERS · peak ' + stats.peakDb.toFixed(2) + ' dBFS — pull the limiter in.');
+    } else {
+      status('EXPORTED · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS · DITHER ' + stats.dither.toUpperCase());
+    }
   }
   $('btnWav16').addEventListener('click', () => exportWav(16));
   $('btnWav24').addEventListener('click', () => exportWav(24));

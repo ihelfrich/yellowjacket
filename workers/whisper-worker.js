@@ -5,6 +5,8 @@
 // The fix ships in transformers.js >= 4.3.0; revisit the pin when that exists.
 import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
 
+import { resample } from '../js/dsp/resample.js';
+
 const TARGET_RATE = 16000;
 const CHUNK_S = 30;
 const STRIDE_S = CHUNK_S / 6; // transformers.js default stride = chunk/6 = 5s
@@ -114,12 +116,16 @@ async function handleLoad(model) {
   postMessage({ type: 'ready', device });
 }
 
-async function handleTranscribe(mono, language) {
+async function handleTranscribe(mono, sampleRate, language) {
   if (!asr) {
     postMessage({ type: 'error', message: 'No model loaded.' });
     return;
   }
-  const audio = mono instanceof Float32Array ? mono : new Float32Array(mono || 0);
+  const native = mono instanceof Float32Array ? mono : new Float32Array(mono || 0);
+  const inRate = Number(sampleRate) || TARGET_RATE;
+  // Kaiser polyphase sinc (js/dsp/resample.js): >= 80 dB stopband where the old
+  // linear path aliased everything above 8 kHz straight into the speech bands.
+  const audio = inRate === TARGET_RATE ? native : resample(native, inRate, TARGET_RATE);
   const duration = audio.length / TARGET_RATE;
   if (audio.length === 0) {
     postMessage({ type: 'result', words: [] });
@@ -176,7 +182,7 @@ self.onmessage = async (event) => {
     if (msg.type === 'load') {
       await handleLoad(msg.model);
     } else if (msg.type === 'transcribe') {
-      await handleTranscribe(msg.mono, msg.language);
+      await handleTranscribe(msg.mono, msg.sampleRate, msg.language);
     } else {
       postMessage({ type: 'error', message: 'Unknown message type: ' + String(msg.type) });
     }

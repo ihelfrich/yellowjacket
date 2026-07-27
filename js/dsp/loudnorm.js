@@ -9,7 +9,7 @@ const defaults = {
 function yieldNow() {
   return new Promise((resolve) => {
     const ch = new MessageChannel();
-    ch.port1.onmessage = () => resolve();
+    ch.port1.onmessage = () => { ch.port1.close(); ch.port2.close(); resolve(); };
     ch.port2.postMessage(0);
   });
 }
@@ -22,19 +22,7 @@ function configValue(cfg, key) {
   return cfg?.[key] ?? cfg?.params?.[key] ?? defaults[key];
 }
 
-export async function processLoudnorm(audioBuffer, cfg = {}, onProgress = null) {
-  const target = clamp(Number(configValue(cfg, 'target')), -24, -9);
-  const measurement = measureLoudness(
-    audioBuffer,
-    onProgress ? (pct) => onProgress(pct * 0.4) : null
-  );
-
-  if (measurement.integrated === -Infinity) {
-    if (onProgress) onProgress(100);
-    return audioBuffer;
-  }
-
-  const gain = 10 ** ((target - measurement.integrated) / 20);
+async function applyGain(audioBuffer, gain, onProgress, progressStart, progressSpan) {
   const gained = new AudioBuffer({
     length: audioBuffer.length,
     numberOfChannels: audioBuffer.numberOfChannels,
@@ -44,16 +32,14 @@ export async function processLoudnorm(audioBuffer, cfg = {}, onProgress = null) 
   let completed = 0;
   const total = Math.max(1, audioBuffer.length * audioBuffer.numberOfChannels);
   let lastYield = Date.now();
-
   for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
     const input = audioBuffer.getChannelData(channel);
     const output = gained.getChannelData(channel);
     for (let i = 0; i < audioBuffer.length; i++) {
       output[i] = input[i] * gain;
       completed++;
-
       if (completed % progressEvery === 0) {
-        if (onProgress) onProgress(40 + 20 * completed / total);
+        if (onProgress) onProgress(progressStart + progressSpan * completed / total);
         if (Date.now() - lastYield >= 32) {
           await yieldNow();
           lastYield = Date.now();
@@ -61,12 +47,44 @@ export async function processLoudnorm(audioBuffer, cfg = {}, onProgress = null) 
       }
     }
   }
+  return gained;
+}
 
-  return processLimiter(
+export async function processLoudnorm(audioBuffer, cfg = {}, onProgress = null) {
+  const target = clamp(Number(configValue(cfg, 'target')), -24, -9);
+  const measurement = measureLoudness(
+    audioBuffer,
+    onProgress ? (pct) => onProgress(pct * 0.3) : null
+  );
+
+  if (measurement.integrated === -Infinity) {
+    if (onProgress) onProgress(100);
+    return audioBuffer;
+  }
+
+  // measure -> gain -> true-peak limit. Limiting can eat level, so remeasure and
+  // apply one corrective pass; without it the delivered LUFS silently misses the
+  // promise whenever the limiter works hard (TRUTH 1, audit item 4).
+  const gain = 10 ** ((target - measurement.integrated) / 20);
+  const gained = await applyGain(audioBuffer, gain, onProgress, 30, 15);
+  let limited = await processLimiter(
     gained,
     { ceiling: -1 },
-    onProgress ? (pct) => onProgress(60 + pct * 0.4) : null
+    onProgress ? (pct) => onProgress(45 + pct * 0.25) : null
   );
+
+  const after = measureLoudness(limited, null);
+  const missLu = target - after.integrated;
+  if (Math.abs(missLu) > 0.05 && after.integrated !== -Infinity) {
+    const corrected = await applyGain(limited, 10 ** (missLu / 20), onProgress, 70, 10);
+    limited = await processLimiter(
+      corrected,
+      { ceiling: -1 },
+      onProgress ? (pct) => onProgress(80 + pct * 0.2) : null
+    );
+  }
+  if (onProgress) onProgress(100);
+  return limited;
 }
 
 export const loudnorm = {

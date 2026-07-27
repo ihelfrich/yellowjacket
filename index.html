@@ -255,6 +255,11 @@
 
 <input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" hidden>
 <script type="module" src="js/main.js"></script>
-<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');</script>
+<script>
+// Offline caching for the deployed site only; on localhost it would serve stale dev files.
+if ('serviceWorker' in navigator && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+  navigator.serviceWorker.register('sw.js');
+}
+</script>
 </body>
 </html>

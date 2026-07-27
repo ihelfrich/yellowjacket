@@ -107,10 +107,17 @@ a four-hour board meeting may not be.
 The loudness code follows BS.1770-5: two-stage K-weighting (redesigned per sample rate
 using the De Man parametrization, verified against the published 48 kHz coefficients),
 400 ms blocks at 75% overlap, the -70 LUFS absolute gate and -10 LU relative gate. True
-peak is estimated by oversampling and is labeled as an estimate. The denoiser is the
-spectral-gating recipe from the noisereduce literature (quietest-frames noise profile,
-mean plus 1.5 sigma threshold per bin, mask smoothing at roughly 500 Hz by 50 ms) rather
-than something improvised. Where a number is an approximation, the UI says so.
+peak runs the standard's own 4x polyphase FIR structure, verified against analytic
+intersample peaks to within 0.1 dB. The limiter derives its gain from those oversampled
+peaks and holds its ceiling as a true-peak ceiling, not a sample-peak one. 16-bit
+exports get TPDF dither with F-weighted noise shaping at 44.1 and 48 kHz (the SoX
+coefficient set), and the export reports pre-quantization overs instead of silently
+clipping them. The EQ uses Vicanek matched filters, so a 15 kHz peak still looks like
+its analog prototype instead of cramping into Nyquist. Audio headed to Whisper is
+resampled through a Kaiser polyphase sinc with 80 dB stopband; the denoiser is the
+spectral-gating recipe from the noisereduce literature rather than something
+improvised. Every one of these claims is locked by a test you can run yourself:
+node test/run.mjs.
 
 ## Running it locally
 

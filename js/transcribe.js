@@ -33,22 +33,10 @@ function isNum(v) {
   return typeof v === 'number' && isFinite(v);
 }
 
-function resampleTo16k(mono, sampleRate) {
-  if (!mono || mono.length === 0) return new Float32Array(0);
-  if (sampleRate === TARGET_RATE) return mono.slice(); // copy: the buffer gets transferred
-  const ratio = sampleRate / TARGET_RATE;
-  const outLen = Math.max(1, Math.round(mono.length / ratio));
-  const out = new Float32Array(outLen);
-  const last = mono.length - 1;
-  for (let i = 0; i < outLen; i++) {
-    const pos = i * ratio;
-    const i0 = Math.min(Math.floor(pos), last);
-    const i1 = Math.min(i0 + 1, last);
-    const frac = pos - i0;
-    out[i] = mono[i0] + (mono[i1] - mono[i0]) * frac;
-  }
-  return out;
-}
+// Resampling to 16 kHz happens INSIDE the whisper worker now, through the Kaiser
+// polyphase sinc in js/dsp/resample.js. The linear interpolation that used to live
+// here was unfiltered decimation: everything above 8 kHz aliased into the speech
+// bands the ASR reads (TRUTH 1, audit item 6).
 
 export class Transcriber extends EventTarget {
   // events: 'progress' {stage: 'download'|'transcribe', pct, note}, 'ready', 'error' {message}
@@ -95,13 +83,13 @@ export class Transcriber extends EventTarget {
     if (this._load) throw new Error('Model still loading.');
     if (!mono || mono.length === 0 || !isNum(sampleRate) || sampleRate <= 0) return [];
     const duration = mono.length / sampleRate;
-    const mono16 = resampleTo16k(mono, sampleRate);
+    const copy = mono.slice(); // the buffer gets transferred
     const language = this._language();
     const w = this._ensureWorker();
     return new Promise((resolve, reject) => {
       this._job = { resolve, reject, duration };
       this._startEstimate(duration);
-      w.postMessage({ type: 'transcribe', mono: mono16, language }, [mono16.buffer]);
+      w.postMessage({ type: 'transcribe', mono: copy, sampleRate, language }, [copy.buffer]);
     });
   }
 

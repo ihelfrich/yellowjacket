@@ -237,7 +237,7 @@ export function spliceCuts(buffer: AudioBuffer, cuts: Cut[]): AudioBuffer
 ```
 Rack order (canonical): highpass, dehum, denoise, deess, eq, gate, compressor, limiter, loudnorm.
 
-### js/dsp/eq.js — kind 'nodes'. 4 bands: HP (12dB/oct, freq), low shelf (freq,gain), 2x peaking (freq,gain,Q), high shelf (freq,gain). BiquadFilterNodes chained.
+### js/dsp/eq.js — kind 'nodes'. 4 bands: low shelf (freq,gain), 2x peaking (freq,gain,Q), high shelf (freq,gain), plus highpassDesc (4th-order Butterworth, pole Qs 0.541196/1.306563). Vicanek-2016 matched IIRFilterNode sections computed per sample rate (decramped near Nyquist), BiquadFilterNode fallback when createIIRFilter is absent. Exports matchedPeaking/matchedShelf/butterworthHighpass for tests.
 ### js/dsp/compressor.js — kind 'nodes'. DynamicsCompressorNode: threshold, ratio, attack, release, knee + makeup GainNode (auto-makeup = -threshold * (1-1/ratio) * 0.6 when auto:true).
 ### js/dsp/gate.js — kind 'buffer'. Soft gate: envelope follower (attack 2ms, release from params), gain = smoothstep between floor and 1 across [threshold-6dB, threshold]. Params: threshold dB, release ms, floor dB.
 ### js/dsp/dehum.js — kind 'nodes'. Base 50 or 60Hz + N harmonics (default 4) of notch biquads, Q 30.

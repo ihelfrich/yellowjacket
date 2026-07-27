@@ -1,3 +1,5 @@
+import { truePeakLinear } from './truepeak.js';
+
 const LOUDNESS_OFFSET = -0.691;
 const ABSOLUTE_GATE = -70;
 const RELATIVE_GATE_OFFSET = -10;
@@ -141,137 +143,24 @@ function integratedLoudness(energies) {
   return gatedCount > 0 ? energyToLufs(gatedEnergy / gatedCount) : -Infinity;
 }
 
-function interpolationPhases() {
-  const radius = 4;
-  const phases = [];
-  for (const phase of [0.25, 0.5, 0.75]) {
-    const coefficients = [];
-    let sum = 0;
-    for (let offset = -3; offset <= 4; offset++) {
-      const distance = phase - offset;
-      const sinc = distance === 0 ? 1 : Math.sin(Math.PI * distance) / (Math.PI * distance);
-      const window = 0.42
-        + 0.5 * Math.cos(Math.PI * distance / radius)
-        + 0.08 * Math.cos(2 * Math.PI * distance / radius);
-      const coefficient = sinc * window;
-      coefficients.push(coefficient);
-      sum += coefficient;
-    }
-    phases.push(coefficients.map((coefficient) => coefficient / sum));
-  }
-  return phases;
-}
-
-const TRUE_PEAK_PHASES = interpolationPhases();
-
-function estimateTruePeak4x(
-  channels,
-  length,
-  samplePeak,
-  onProgress,
-  progressStart,
-  progressSpan,
-  sampleRate
-) {
+// True peak: shared BS.1770-5 Annex 2 estimator (js/dsp/truepeak.js), run in
+// padded slabs so progress can be reported without materializing 4x arrays.
+function truePeakChunked(channels, length, samplePeak, onProgress, progressStart, progressSpan) {
+  const SLAB = 262144;
+  const PAD = 16;
   let peak = samplePeak;
-  const progressEvery = Math.max(1, Math.round(sampleRate * 0.5));
-  const total = Math.max(1, channels.length * Math.max(1, length - 1));
+  const slabs = Math.max(1, Math.ceil(length / SLAB));
   let done = 0;
-  const phase0 = TRUE_PEAK_PHASES[0];
-  const phase1 = TRUE_PEAK_PHASES[1];
-  const phase2 = TRUE_PEAK_PHASES[2];
-
   for (const channel of channels) {
-    const leadingEnd = Math.min(3, length - 1);
-    for (let i = 0; i < leadingEnd; i++) {
-      for (const coefficients of TRUE_PEAK_PHASES) {
-        let value = 0;
-        for (let tap = 0; tap < coefficients.length; tap++) {
-          const offset = tap - 3;
-          const sourceIndex = i + offset;
-          const index = sourceIndex < 0 ? 0 : sourceIndex >= length ? length - 1 : sourceIndex;
-          value += channel[index] * coefficients[tap];
-        }
-        const absolute = value < 0 ? -value : value;
-        if (absolute > peak) peak = absolute;
-      }
-
+    for (let s = 0; s < length; s += SLAB) {
+      const a = Math.max(0, s - PAD);
+      const b = Math.min(length, s + SLAB + PAD);
+      const p = truePeakLinear([channel.subarray(a, b)]);
+      if (p > peak) peak = p;
       done++;
-      if (onProgress && done % progressEvery === 0) {
-        onProgress(progressStart + progressSpan * done / total);
-      }
-    }
-
-    for (let i = 3; i <= length - 5; i++) {
-      const x0 = channel[i - 3];
-      const x1 = channel[i - 2];
-      const x2 = channel[i - 1];
-      const x3 = channel[i];
-      const x4 = channel[i + 1];
-      const x5 = channel[i + 2];
-      const x6 = channel[i + 3];
-      const x7 = channel[i + 4];
-
-      let value = x0 * phase0[0]
-        + x1 * phase0[1]
-        + x2 * phase0[2]
-        + x3 * phase0[3]
-        + x4 * phase0[4]
-        + x5 * phase0[5]
-        + x6 * phase0[6]
-        + x7 * phase0[7];
-      let absolute = value < 0 ? -value : value;
-      if (absolute > peak) peak = absolute;
-
-      value = x0 * phase1[0]
-        + x1 * phase1[1]
-        + x2 * phase1[2]
-        + x3 * phase1[3]
-        + x4 * phase1[4]
-        + x5 * phase1[5]
-        + x6 * phase1[6]
-        + x7 * phase1[7];
-      absolute = value < 0 ? -value : value;
-      if (absolute > peak) peak = absolute;
-
-      value = x0 * phase2[0]
-        + x1 * phase2[1]
-        + x2 * phase2[2]
-        + x3 * phase2[3]
-        + x4 * phase2[4]
-        + x5 * phase2[5]
-        + x6 * phase2[6]
-        + x7 * phase2[7];
-      absolute = value < 0 ? -value : value;
-      if (absolute > peak) peak = absolute;
-
-      done++;
-      if (onProgress && done % progressEvery === 0) {
-        onProgress(progressStart + progressSpan * done / total);
-      }
-    }
-
-    const trailingStart = Math.max(3, length - 4);
-    for (let i = trailingStart; i < length - 1; i++) {
-      for (const coefficients of TRUE_PEAK_PHASES) {
-        let value = 0;
-        for (let tap = 0; tap < coefficients.length; tap++) {
-          const offset = tap - 3;
-          const sourceIndex = i + offset;
-          const index = sourceIndex < 0 ? 0 : sourceIndex >= length ? length - 1 : sourceIndex;
-          value += channel[index] * coefficients[tap];
-        }
-        const absolute = value < 0 ? -value : value;
-        if (absolute > peak) peak = absolute;
-      }
-
-      done++;
-      if (onProgress && done % progressEvery === 0) {
-        onProgress(progressStart + progressSpan * done / total);
-      }
+      if (onProgress) onProgress(progressStart + progressSpan * done / (slabs * channels.length));
     }
   }
-
   return peak;
 }
 
@@ -380,15 +269,7 @@ export function measureLoudness(buffer, onProgress = null) {
     }
   }
 
-  const truePeak = estimateTruePeak4x(
-    channels,
-    length,
-    samplePeak,
-    onProgress,
-    55,
-    45,
-    sampleRate
-  );
+  const truePeak = truePeakChunked(channels, length, samplePeak, onProgress, 55, 45);
   const rms = totalSamples > 0 ? Math.sqrt(sumSquares / totalSamples) : 0;
   if (onProgress) onProgress(100);
 

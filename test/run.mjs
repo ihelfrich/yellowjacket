@@ -11,6 +11,35 @@ import {
   patternLoopSteps,
   stepTime,
 } from '../js/machine/compile.js';
+import { resample } from '../js/dsp/resample.js';
+import { truePeakDb } from '../js/dsp/truepeak.js';
+
+// The buffer-kind DSP modules construct AudioBuffers; node has none.
+if (typeof globalThis.AudioBuffer === 'undefined') {
+  globalThis.AudioBuffer = class {
+    constructor({ length, numberOfChannels, sampleRate }) {
+      this.length = length;
+      this.numberOfChannels = numberOfChannels;
+      this.sampleRate = sampleRate;
+      this._ch = Array.from({ length: numberOfChannels }, () => new Float32Array(length));
+    }
+    getChannelData(c) { return this._ch[c]; }
+  };
+}
+const { processLimiter } = await import('../js/dsp/limiter.js');
+const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
+
+function goertzelPower(x, f, sr) {
+  const c = 2 * Math.cos(2 * Math.PI * f / sr);
+  let s1 = 0;
+  let s2 = 0;
+  for (let i = 0; i < x.length; i++) {
+    const s0 = x[i] + c * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  return (s1 * s1 + s2 * s2 - c * s1 * s2) / (x.length * x.length / 4);
+}
 
 const SAMPLE_RATE = 48000;
 const BEAT_SAMPLE_RATE = 44100;
@@ -111,12 +140,17 @@ const loudnessCases = [
     close(result.truePeakDb, -6.020600, 0.01, 'gated program true peak');
     close(result.rmsDb, -10.770152, 0.01, 'gated program RMS');
   },
-  function currentIntersamplePeakGolden() {
-    // This deliberately locks the current 8-tap/3-phase estimator until TRUTH 1.
+  function intersamplePeakAnalytic() {
+    // Deliberate golden change (TRUTH 1): estimator upgraded to the BS.1770-5
+    // Annex 2 structure (48-tap 4-phase 4x FIR, js/dsp/truepeak.js). The fixture is
+    // an fs/4 sine, amplitude 0.8, phase pi/4: analytic true peak is exactly
+    // 20*log10(0.8) = -1.9382 dBTP while the sample peak sits 3.01 dB lower. The
+    // old 8-tap estimator under-read at -2.115; the new one reads within 0.1 dB
+    // and errs high, which is the correct failure direction for a peak detector.
     const pcm = tone(48000, 0.5, 12000, 0.8, Math.PI / 4);
     const result = measureLoudness({ channels: [pcm], sampleRate: 48000 });
     close(result.samplePeakDb, -4.948500, 0.01, 'intersample sample peak');
-    close(result.truePeakDb, -2.115303, 0.01, 'current intersample estimator');
+    close(result.truePeakDb, -1.9382, 0.1, 'BS.1770-5 Annex 2 intersample true peak');
   },
 ];
 
@@ -318,10 +352,93 @@ const patternCases = [
   },
 ];
 
+const truthCases = [
+  function resampleAliasRejection() {
+    // 12 kHz at 48k sits above the 16k Nyquist; after a clean resample it must
+    // vanish, not fold to 4 kHz the way the old linear path did.
+    const x = tone(48000, 1, 12000, 1);
+    const y = resample(x, 48000, 16000);
+    const alias = 10 * Math.log10(goertzelPower(y.subarray(1000, 15000), 4000, 16000) + 1e-30);
+    assert.ok(alias < -70, `alias at 4 kHz: ${alias.toFixed(1)} dB, want < -70`);
+  },
+  function resamplePassbandAndTiming() {
+    const p = tone(48000, 1, 1000, 1);
+    const yp = resample(p, 48000, 16000);
+    const pass = 10 * Math.log10(goertzelPower(yp.subarray(1000, 15000), 1000, 16000) + 1e-30);
+    close(pass, 0, 0.05, 'resample 1 kHz passband');
+    const imp = new Float32Array(48000);
+    imp[24000] = 1;
+    const yi = resample(imp, 48000, 16000);
+    let pk = 0;
+    let pki = 0;
+    for (let i = 0; i < yi.length; i++) {
+      const a = Math.abs(yi[i]);
+      if (a > pk) { pk = a; pki = i; }
+    }
+    assert.equal(pki, 8000, 'impulse position preserved through resample');
+  },
+  function truePeakAnalytic() {
+    // fs/4 sine at phase pi/4: sample peak 1/sqrt(2), true peak exactly 1.0.
+    const x = tone(48000, 0.1, 12000, 1, Math.PI / 4);
+    close(truePeakDb([x]), 0, 0.1, 'analytic intersample true peak');
+  },
+  async function limiterHoldsCeiling() {
+    const sr = 48000;
+    const buf = new AudioBuffer({ length: sr, numberOfChannels: 2, sampleRate: sr });
+    for (let c = 0; c < 2; c++) {
+      const x = buf.getChannelData(c);
+      for (let i = 0; i < sr; i++) x[i] = 0.2 * Math.sin(2 * Math.PI * 220 * i / sr);
+      for (let b = 0; b < 30; b++) {
+        const at = 2000 + b * 1440;
+        for (let k = 0; k < 48; k++) x[at + k] += 0.95 * Math.sin(2 * Math.PI * 6000 * k / sr);
+      }
+    }
+    const out = await processLimiter(buf, { params: { ceiling: -1 } });
+    const tp = truePeakDb([out.getChannelData(0), out.getChannelData(1)]);
+    assert.ok(tp <= -0.9, `clustered-peak true peak ${tp.toFixed(3)} dBTP, ceiling -1`);
+  },
+  async function limiterReleaseMonotonic() {
+    const sr = 48000;
+    const buf = new AudioBuffer({ length: sr * 2, numberOfChannels: 1, sampleRate: sr });
+    const x = buf.getChannelData(0);
+    for (let i = 0; i < x.length; i++) x[i] = 0.2 * Math.sin(2 * Math.PI * 220 * i / sr);
+    for (let k = 0; k < 480; k++) x[24000 + k] += 0.95 * Math.sin(2 * Math.PI * 6000 * k / sr);
+    const out = await processLimiter(buf, { params: { ceiling: -1 } });
+    const y = out.getChannelData(0);
+    let prev = 0;
+    for (let i = 27000; i < x.length; i++) {
+      if (Math.abs(x[i]) <= 0.1) continue;
+      const g = y[i] / x[i];
+      assert.ok(g + 1e-4 >= prev, `release dipped at ${i}`);
+      prev = g;
+    }
+    assert.ok(prev > 0.995, `release recovered to ${prev.toFixed(4)}`);
+  },
+  async function loudnormHitsTarget() {
+    // Speech-like: bursts of modulated tone with silences, integrated well below target.
+    const sr = 48000;
+    const buf = new AudioBuffer({ length: sr * 8, numberOfChannels: 1, sampleRate: sr });
+    const x = buf.getChannelData(0);
+    for (let b = 0; b < 16; b++) {
+      const at = Math.floor(b * sr * 0.5);
+      for (let i = 0; i < sr * 0.35; i++) {
+        const t = i / sr;
+        x[at + i] = 0.28 * Math.sin(2 * Math.PI * 350 * t) * (0.6 + 0.4 * Math.sin(2 * Math.PI * 3 * t));
+      }
+    }
+    const out = await processLoudnorm(buf, { params: { target: -16 } });
+    const channels = [out.getChannelData(0)];
+    const m = measureLoudness({ channels, sampleRate: sr });
+    close(m.integrated, -16, 0.5, 'loudnorm delivered LUFS');
+    assert.ok(m.truePeakDb <= -0.9, `loudnorm true peak ${m.truePeakDb.toFixed(2)} under ceiling`);
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
   ['pattern compiler', patternCases],
+  ['TRUTH 1 DSP', truthCases],
 ];
 
 for (const [name, cases] of groups) {
