@@ -34,6 +34,7 @@
   <button class="yj-tab-btn is-active" data-tab="transcript" role="tab">TRANSCRIPT</button>
   <button class="yj-tab-btn" data-tab="signal" role="tab">SIGNAL</button>
   <button class="yj-tab-btn" data-tab="rack" role="tab">RACK</button>
+  <button class="yj-tab-btn" data-tab="machine" role="tab">MACHINE</button>
 </nav>
 
 <main class="yj-main">
@@ -86,6 +87,7 @@
             <button class="yj-btn" id="btnExpVtt" disabled>VTT</button>
             <button class="yj-btn" id="btnExpJson" disabled>JSON</button>
           </div>
+          <button class="yj-btn" id="btnLift" disabled title="Send the selected words to the MACHINE as a clip">LIFT TO MACHINE</button>
         </div>
       </aside>
     </div>
@@ -157,6 +159,26 @@
             <button class="yj-btn" id="btnWav24" disabled>WAV 24</button>
           </div>
           <p class="yj-hint yj-hint-small">Exports the render if one exists, otherwise the original with cuts applied.</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ============ MACHINE ============ -->
+  <section id="tab-machine" class="yj-tabpane">
+    <div class="yj-cols">
+      <div class="yj-panel yj-grow" data-label="MACHINE / SLICE">
+        <canvas id="sliceMain" class="yj-canvas yj-canvas-slice"></canvas>
+        <div class="yj-canvas-note" id="sliceNote">Load audio. Beats get mapped after the spectrogram finishes.</div>
+      </div>
+      <aside class="yj-rail">
+        <div class="yj-panel" data-label="BEATMAP" id="beatmapControls"></div>
+        <div class="yj-panel" data-label="CLIPS">
+          <div class="yj-well yj-count yj-count-wide" id="roClips">NO CLIPS</div>
+          <div class="yj-led-row">
+            <span class="yj-led" id="ledBeatmap"></span>
+            <span class="yj-led-text" id="beatmapState">NOT ANALYZED</span>
+          </div>
         </div>
       </aside>
     </div>

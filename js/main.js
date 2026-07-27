@@ -9,6 +9,8 @@ import { REGISTRY, renderChain, spliceCuts } from './dsp/chain.js';
 import { measureLoudness } from './dsp/loudness.js';
 import { encodeWav, toSrt, toVtt, toTxt, download, editedTime } from './export.js';
 import { LevelMeter } from './meters.js';
+import { SliceView } from './machine/slice-ui.js';
+import { wordsToClip, ClipAuditioner } from './machine/cliprefs.js';
 
 const COPY = {
   idle: 'IDLE',
@@ -32,6 +34,13 @@ const COPY = {
   computingSpec: 'Computing spectrogram…',
   specReady: 'Click to seek. Zoom rides the waveform above.',
   noCuts: 'NO CUTS',
+  mapping: 'MAPPING BEATS',
+  mapped: 'BEATMAP READY',
+  mapFault: 'BEATMAP FAULT',
+  notAnalyzed: 'NOT ANALYZED',
+  lowConfidence: 'LOW CONFIDENCE · TAP OR PIN',
+  sliceReady: 'Drag to carve. Click a clip to hear it. Double-click a beat line to pin bar one.',
+  noClips: 'NO CLIPS',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -44,6 +53,8 @@ const project = {
   words: null,
   chain: REGISTRY.map((d) => ({ id: d.id, on: false, params: { ...d.defaults } })),
   renderedBuffer: null,
+  analysis: null,
+  clips: [],
 };
 
 const engine = new Engine();
@@ -53,6 +64,8 @@ const spec = new SpectrogramView($('specMain'));
 const transcript = new TranscriptView($('transcriptHost'));
 const transcriber = new Transcriber();
 const meter = new LevelMeter($('meterLive'));
+const sliceView = new SliceView($('sliceMain'), $('beatmapControls'));
+const auditioner = new ClipAuditioner(engine);
 
 let abState = 'a';           // 'a' original, 'b' rendered
 let renderFresh = false;
@@ -151,15 +164,29 @@ async function openFile(file) {
   setRenderState(COPY.renderNone, 'off');
   updateCutReadout();
 
+  project.analysis = null;
+  project.clips = [];
+  $('btnLift').disabled = true;
+  sliceView.setSource(project.mono, project.sampleRate);
+  sliceView.setWords(null);
+  sliceView.setClips(project.clips);
+  updateClipReadout();
+  setBeatmapLed('off', COPY.notAnalyzed);
+  $('sliceNote').textContent = COPY.computingSpec;
+
   status(COPY.loaded);
   statusRight();
 
   $('specNote').textContent = COPY.computingSpec;
+  const gen = loadGen;
   spec.compute(project.mono, project.sampleRate).then(() => {
     $('specNote').textContent = COPY.specReady;
     spec.render();
   }).catch(() => {
     $('specNote').textContent = 'Spectrogram fault — see console.';
+  }).finally(() => {
+    // Analysis waits for the spectrogram: both are CPU-heavy, sequential is kinder.
+    if (gen === loadGen) runAnalysis();
   });
 }
 
@@ -262,6 +289,7 @@ $('btnTranscribe').addEventListener('click', async () => {
     project.words = words;
     $('transcriptHint').hidden = true;
     transcript.setWords(words);
+    sliceView.setWords(words);
     onEdited();
     for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = false;
     const fillers = words.filter((w) => w.filler).length;
@@ -282,6 +310,12 @@ $('btnTranscribe').addEventListener('click', async () => {
 // ---------- transcript editing ----------
 transcript.addEventListener('wordclick', (e) => uiSeek(e.detail.t));
 transcript.addEventListener('edited', onEdited);
+let liftRange = null; // {i0, i1} from the last transcript range selection
+transcript.addEventListener('selectrange', (e) => {
+  liftRange = Number.isInteger(e.detail.i0) && Number.isInteger(e.detail.i1)
+    ? { i0: e.detail.i0, i1: e.detail.i1 } : null;
+  $('btnLift').disabled = !liftRange;
+});
 
 function onEdited() {
   cuts = transcript.getCuts();
@@ -499,6 +533,129 @@ function exportWav(bits) {
 $('btnWav16').addEventListener('click', () => exportWav(16));
 $('btnWav24').addEventListener('click', () => exportWav(24));
 
+// ---------- machine: beatmap analysis ----------
+let analysisWorker = null;
+let analysisBusy = false;
+// Per-run state the persistent onmessage handler reads. A closure would freeze the
+// first run's values forever and silently drop every later file's results.
+let analysisRun = { gen: -1, anchors: null, withMono: true };
+
+function setBeatmapLed(mode, text) {
+  const led = $('ledBeatmap');
+  led.className = 'yj-led' + (mode === 'on' ? ' is-on' : mode === 'busy' ? ' is-busy' : mode === 'fault' ? ' is-fault' : '');
+  $('beatmapState').textContent = text;
+}
+
+function updateClipReadout() {
+  $('roClips').textContent = project.clips.length
+    ? project.clips.length + (project.clips.length === 1 ? ' CLIP' : ' CLIPS')
+    : COPY.noClips;
+}
+
+function analysisAnchors() {
+  const a = project.analysis && project.analysis.anchors;
+  return { bpm: a && a.bpm != null ? a.bpm : null, barOneTime: a && a.barOneTime != null ? a.barOneTime : null };
+}
+
+function runAnalysis(anchors = null, withMono = true) {
+  if (!project.mono) return;
+  analysisRun = { gen: loadGen, anchors: anchors || analysisAnchors(), withMono };
+  if (!analysisWorker) {
+    analysisWorker = new Worker(new URL('../workers/analysis-worker.js', import.meta.url), { type: 'module' });
+    analysisWorker.onmessage = (e) => {
+      const msg = e.data || {};
+      if (analysisRun.gen !== loadGen && msg.type !== 'progress') return;
+      if (msg.type === 'progress') {
+        if (analysisBusy) status(COPY.mapping + ' · ' + Math.round(msg.pct) + '%', true);
+      } else if (msg.type === 'done') {
+        analysisBusy = false;
+        if (typeof sliceView.setAnalyzing === 'function') sliceView.setAnalyzing(false);
+        project.analysis = { ...msg.analysis, anchors: analysisRun.anchors };
+        sliceView.setAnalysis(project.analysis);
+        const conf = project.analysis.confidence || 0;
+        if (!project.analysis.beats || !project.analysis.beats.length) {
+          setBeatmapLed('fault', COPY.notAnalyzed);
+        } else if (conf >= 0.6) {
+          setBeatmapLed('on', COPY.mapped + ' · ' + project.analysis.tempo.toFixed(1) + ' BPM');
+        } else if (conf >= 0.3) {
+          setBeatmapLed('busy', project.analysis.tempo.toFixed(1) + ' BPM · ROUGH');
+        } else {
+          setBeatmapLed('fault', COPY.lowConfidence);
+        }
+        $('sliceNote').textContent = COPY.sliceReady;
+        status(COPY.loaded);
+      } else if (msg.type === 'error') {
+        // Cache miss on an anchors-only rerun: resend with audio. Anything else is a fault.
+        if (!analysisRun.withMono) { runAnalysis(analysisRun.anchors, true); return; }
+        analysisBusy = false;
+        if (typeof sliceView.setAnalyzing === 'function') sliceView.setAnalyzing(false);
+        setBeatmapLed('fault', COPY.mapFault);
+        statusFault(COPY.mapFault + ' — ' + (msg.message || 'unknown'));
+      }
+    };
+    analysisWorker.onerror = () => {
+      analysisBusy = false;
+      setBeatmapLed('fault', COPY.mapFault);
+    };
+  }
+  analysisBusy = true;
+  if (typeof sliceView.setAnalyzing === 'function') sliceView.setAnalyzing(true);
+  setBeatmapLed('busy', COPY.mapping);
+  const payload = { type: 'analyze', sampleRate: project.sampleRate, anchors: analysisRun.anchors, generation: analysisRun.gen };
+  if (withMono) {
+    const copy = project.mono.slice();
+    payload.mono = copy;
+    analysisWorker.postMessage(payload, [copy.buffer]);
+  } else {
+    analysisWorker.postMessage(payload);
+  }
+}
+
+// ---------- machine: slice view wiring ----------
+sliceView.addEventListener('clipadd', (e) => {
+  project.clips.push(e.detail.clip);
+  sliceView.setClips(project.clips);
+  updateClipReadout();
+});
+sliceView.addEventListener('clipdelete', (e) => {
+  project.clips = project.clips.filter((c) => c.id !== e.detail.id);
+  sliceView.setClips(project.clips);
+  updateClipReadout();
+});
+sliceView.addEventListener('audition', (e) => auditioner.play(e.detail.clip));
+sliceView.addEventListener('anchorchange', (e) => {
+  const anchors = { bpm: e.detail.bpm ?? null, barOneTime: e.detail.barOneTime ?? null };
+  if (project.analysis) project.analysis.anchors = anchors;
+  runAnalysis(anchors, false); // envelope is cached in the worker; anchors-only is cheap
+});
+sliceView.addEventListener('analyze', () => runAnalysis(null, true));
+sliceView.addEventListener('exportloop', (e) => {
+  const clip = e.detail.clip;
+  if (!clip || !project.buffer) return;
+  const buf = project.buffer;
+  const s = Math.max(0, Math.floor(clip.start * buf.sampleRate));
+  const n = Math.min(buf.length, Math.ceil(clip.end * buf.sampleRate)) - s;
+  if (n <= 0) return;
+  const out = new AudioBuffer({ length: n, numberOfChannels: buf.numberOfChannels, sampleRate: buf.sampleRate });
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    out.getChannelData(c).set(buf.getChannelData(c).subarray(s, s + n));
+  }
+  const base = (project.fileName || 'yellowjacket').replace(/\.[^.]+$/, '');
+  const label = (clip.label || clip.tag || 'clip').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'clip';
+  download(encodeWav(out, 16), base + '.' + label + '.wav', 'audio/wav');
+  status('LOOP EXPORTED · ' + (n / buf.sampleRate).toFixed(2) + 's');
+});
+
+$('btnLift').addEventListener('click', () => {
+  if (!liftRange || !project.words) return;
+  const clip = wordsToClip(project.words, liftRange.i0, liftRange.i1);
+  project.clips.push(clip);
+  sliceView.setClips(project.clips);
+  updateClipReadout();
+  document.querySelector('.yj-tab-btn[data-tab="machine"]').click();
+  if (typeof sliceView.flashClip === 'function') sliceView.flashClip(clip.id);
+});
+
 // ---------- tabs ----------
 for (const btn of document.querySelectorAll('.yj-tab-btn')) {
   btn.addEventListener('click', () => {
@@ -506,7 +663,7 @@ for (const btn of document.querySelectorAll('.yj-tab-btn')) {
     for (const pane of document.querySelectorAll('.yj-tabpane')) pane.classList.remove('is-active');
     $('tab-' + btn.dataset.tab).classList.add('is-active');
     // canvases need a size pass when they become visible
-    waveMini.render(); waveMain.render(); spec.render();
+    waveMini.render(); waveMain.render(); spec.render(); sliceView.render();
   });
 }
 
@@ -539,6 +696,8 @@ window.addEventListener('drop', (e) => {
 // ---------- keys ----------
 window.addEventListener('keydown', (e) => {
   if (e.target.matches('input, select, textarea')) return;
+  // A focused button owns Space (native click) — TAP TEMPO would double-fire otherwise.
+  if (e.code === 'Space' && e.target.closest && e.target.closest('button')) return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
   if (e.code === 'Home') engine.seek(0);
 });
@@ -549,4 +708,4 @@ status(COPY.idle);
 statusRight();
 
 // Debug handle for the curious (and for bug reports): poke the bench from the console.
-window.__yj = { engine, project, transcript, transcriber, waveMain, waveMini, spec, get cuts() { return cuts; } };
+window.__yj = { engine, project, transcript, transcriber, waveMain, waveMini, spec, sliceView, auditioner, get cuts() { return cuts; } };

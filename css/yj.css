@@ -328,6 +328,8 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-canvas { width: 100%; background: var(--yj-well); border: 1px solid var(--yj-line); }
 .yj-canvas-wave { height: 180px; flex-shrink: 0; }
 .yj-canvas-spec { flex: 1; min-height: 220px; }
+.yj-canvas-slice { flex: 1; min-height: 260px; touch-action: none; }
+.yj-canvas-slice:focus-visible { outline: 1px solid var(--yj-yellow); outline-offset: -1px; }
 .yj-canvas-note { font-family: var(--f-mono); font-size: 10px; color: var(--yj-ink-dim); padding-top: 4px; }
 
 .yj-wavestrip { flex-shrink: 0; height: 118px; }
@@ -426,6 +428,7 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   .yj-grow { flex: none; }
   .yj-grow > .yj-panel { flex-shrink: 0; }
   .yj-canvas-spec { flex: none; height: 260px; }
+  .yj-canvas-slice { flex: none; height: 280px; }
   .yj-transcript { max-height: 46vh; }
   .yj-rail { width: 100%; overflow-y: visible; }
   .yj-tabpane { overflow-y: auto; }

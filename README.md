@@ -30,7 +30,7 @@ Audio API has been able to splice, filter, and render audio offline for a decade
 is that: the local three-quarters of Descript, plus the measurement bench Descript never
 had, on a page that costs nothing to host and nothing to use.
 
-## The three benches
+## The four benches
 
 **TRANSCRIPT** is the Descript part. Pick a Whisper model, transcribe, then edit the audio
 by editing words: click a word to seek there, select a run of words and delete them, and
@@ -50,6 +50,16 @@ plus harmonics), spectral denoise, de-esser, four-band EQ, gate, compressor, loo
 limiter, and loudness normalization to a LUFS target (-16 for podcasts is the default).
 Every module has a power switch and a few honest parameters. Render, then A/B the result
 against the original before exporting WAV at 16 or 24 bit.
+
+**MACHINE** is the newest bench and the start of something bigger: it maps the beat grid
+of whatever you loaded (spectral-flux onsets, Ellis-style dynamic-programming beat
+tracking, with a confidence readout that admits when material has no usable pulse), then
+lets you carve the audio into clips. Drag to cut a region with edges that snap to beats,
+cut a whole selection into bars with one button, click any clip to hear it, and export a
+clip as a WAV loop. Selected words in the transcript lift straight over as clips, so a
+spoken phrase becomes a loop in two clicks. Tempo detection wrong? Tap the tempo or pin
+bar one and it re-tracks around your anchor. A step sequencer, parameter locks, and
+punch-in effects are on the bench next; the plan lives in docs/VISION.md.
 
 ## Models
 
