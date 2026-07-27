@@ -20,20 +20,27 @@ const TYPING_TARGETS = 'input, select, textarea, [contenteditable], button';
 export class Keybed {
   constructor() {
     this._onTrig = null;
+    this._onFill = null;
+    this._fillHeld = false;
     this._enabled = true;   // main.js gates this per tab; attach() alone is live
     this._handler = (e) => this._onKey(e);
+    this._upHandler = (e) => this._onKeyUp(e);
   }
 
-  // Stores the callback and adds ONE window keydown listener. The handler
-  // reference never changes, so addEventListener dedupes a double attach.
-  attach(onTrig) {
+  // Stores the callbacks and adds ONE keydown + ONE keyup window listener. The
+  // handler references never change, so addEventListener dedupes double attach.
+  attach(onTrig, onFill = null) {
     this._onTrig = onTrig;
+    this._onFill = onFill;
     window.addEventListener('keydown', this._handler);
+    window.addEventListener('keyup', this._upHandler);
   }
 
   detach() {
     window.removeEventListener('keydown', this._handler);
+    window.removeEventListener('keyup', this._upHandler);
     this._onTrig = null;
+    this._onFill = null;
   }
 
   get enabled() {
@@ -42,17 +49,39 @@ export class Keybed {
 
   set enabled(b) {
     this._enabled = !!b;
+    // Disabling mid-hold (tab switch with F down) must not leave fill latched.
+    if (!this._enabled && this._fillHeld) {
+      this._fillHeld = false;
+      if (this._onFill) this._onFill(false);
+    }
   }
 
   _onKey(e) {
-    if (!this._enabled || !this._onTrig) return;
-    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-    const track = KEY_TRACK[e.code];
-    if (track === undefined) return;
+    if (!this._enabled) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
     const t = e.target;
     if (t && typeof t.closest === 'function' && t.closest(TYPING_TARGETS)) return;
+    // KeyF = momentary FILL while held.
+    if (e.code === 'KeyF' && this._onFill) {
+      if (!e.repeat && !this._fillHeld) {
+        this._fillHeld = true;
+        this._onFill(true);
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (e.repeat || !this._onTrig) return;
+    const track = KEY_TRACK[e.code];
+    if (track === undefined) return;
     e.preventDefault();
     e.stopPropagation();
     this._onTrig(track);
+  }
+
+  _onKeyUp(e) {
+    if (e.code !== 'KeyF' || !this._fillHeld) return;
+    this._fillHeld = false;
+    if (this._onFill) this._onFill(false);
   }
 }

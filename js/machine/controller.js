@@ -18,7 +18,13 @@ export function initMachineController(ctx) {
 
   sequencer.setMachine(P.machine);
   patternView.setMachine(P.machine);
-  keybed.attach((i) => sequencer.trigger(i));
+  keybed.attach(
+    (i) => sequencer.trigger(i),
+    (on) => {
+      sequencer.fill = on;
+      if (typeof patternView.setFill === 'function') patternView.setFill(on);
+    }
+  );
   keybed.enabled = false;
 
   function machineHasSound() {
@@ -167,6 +173,84 @@ export function initMachineController(ctx) {
     patternView.setMachine(P.machine);
   });
   patternView.addEventListener('trig', (e) => sequencer.trigger(e.detail.track));
+  // ---------- LOCK: step data, scenes, fill ----------
+  patternView.addEventListener('stepedit', (e) => {
+    const { track, step, patch } = e.detail;
+    store.update('stepdata', (p) => {
+      const t = p.machine.tracks[track];
+      if (!t) return;
+      const sd = { ...(t.stepData[step] || {}) };
+      for (const key of Object.keys(patch || {})) {
+        const v = patch[key];
+        if (v === null || v === undefined) delete sd[key];
+        else sd[key] = v;
+      }
+      // Drop entries that carry only defaults so the model stays sparse.
+      for (const key of Object.keys(sd)) {
+        const v = sd[key];
+        if ((key === 'velocity' && v === 1) || (key === 'ratchet' && v === 1)
+          || (key === 'nudge' && v === 0) || (key === 'gate' && v === 0)
+          || (key === 'prob' && v === 100) || (key === 'pitch' && v === 0)
+          || (key === 'reverse' && !v) || (key === 'cond' && v === null)) {
+          delete sd[key];
+        }
+      }
+      if (Object.keys(sd).length) t.stepData[step] = sd;
+      else delete t.stepData[step];
+    });
+    patternView.setMachine(P.machine);
+  });
+  patternView.addEventListener('clearstep', (e) => {
+    store.update('stepdata', (p) => {
+      const t = p.machine.tracks[e.detail.track];
+      if (t) delete t.stepData[e.detail.step];
+    });
+    patternView.setMachine(P.machine);
+  });
+  patternView.addEventListener('scene', (e) => {
+    const index = e.detail.index | 0;
+    store.update('scene', (p) => {
+      const m = p.machine;
+      if (index < 0 || index >= m.scenes.length || index === m.activeScene) return;
+      // Samples are machine-sticky: a scene without a kit inherits the outgoing
+      // scene's sample refs (never copies PCM). Per-scene kits can come later.
+      const from = m.scenes[m.activeScene];
+      const to = m.scenes[index];
+      for (let i = 0; i < to.tracks.length; i++) {
+        if (!to.tracks[i].sample && from.tracks[i] && from.tracks[i].sample) {
+          to.tracks[i].sample = from.tracks[i].sample;
+          to.tracks[i].sampleId = from.tracks[i].sampleId;
+        }
+      }
+      m.activeScene = index;
+    });
+    patternView.setMachine(P.machine);
+    status('SCENE ' + (index + 1) + (sequencer.running ? ' · RUNNING' : ''));
+  });
+  patternView.addEventListener('scenecopy', (e) => {
+    const { from, to } = e.detail;
+    store.update('scene', (p) => {
+      const m = p.machine;
+      const src = m.scenes[from | 0];
+      const dst = m.scenes[to | 0];
+      if (!src || !dst || src === dst) return;
+      dst.bpm = src.bpm;
+      dst.swing = src.swing;
+      dst.seed = src.seed;
+      dst.tracks = src.tracks.map((t) => ({
+        ...t,
+        steps: t.steps.slice(),
+        stepData: JSON.parse(JSON.stringify(t.stepData || {})),
+        // sample/sampleId are shared references by design: pattern data copies, PCM never does
+      }));
+      m.activeScene = to | 0;
+    });
+    patternView.setMachine(P.machine);
+    status('SCENE ' + ((from | 0) + 1) + ' COPIED TO ' + ((to | 0) + 1));
+  });
+  patternView.addEventListener('fill', (e) => {
+    sequencer.fill = !!e.detail.on;
+  });
   patternView.addEventListener('run', () => {
     if (!machineHasSound()) {
       statusFault('Nothing to run. Carve a clip in SLICE and assign it to a track.');

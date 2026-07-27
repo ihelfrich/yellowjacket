@@ -9,12 +9,15 @@ export function createTrack() {
     sampleId: null,
     sample: null,          // runtime-resolved {channels, sampleRate, label}; never serialized
     steps: new Uint8Array(64),
-    stepData: {},          // sparse per-step: {components:[], locks:{}, condition:{}} — LOCK slice fills this
+    stepData: {},          // sparse per-step locks/components/conditions, see CONTRACT-LOCK.md
     len: 16,
     gainDb: 0,
     pan: 0,
     mute: false,
     solo: false,
+    duckSource: -1,        // -1 off; else index of the track whose hits duck this one
+    duckDb: 12,
+    choke: false,          // mono track: each hit fades the previous voice
   };
 }
 

@@ -316,7 +316,7 @@ const patternCases = [
         makeTrack(16, [0], { solo: true }),
         makeTrack(16, [0]),
       ],
-    }, 0, 0.001);
+    }, 0, 0.001).events;
     assert.deepEqual(events.map((event) => event.gain), [0, 1, 0]);
   },
   function adjacentWindowBoundary() {
@@ -325,9 +325,9 @@ const patternCases = [
       swing: 50,
       tracks: [makeTrack(16, [0, 1])],
     };
-    const left = compileWindow(machine, 0, 0.125);
-    const right = compileWindow(machine, 0.125, 0.25);
-    const whole = compileWindow(machine, 0, 0.25);
+    const left = compileWindow(machine, 0, 0.125).events;
+    const right = compileWindow(machine, 0.125, 0.25).events;
+    const whole = compileWindow(machine, 0, 0.25).events;
     assert.deepEqual(left.concat(right), whole);
     assert.equal(left.filter((event) => event.tSec === 0.125).length, 0);
     assert.equal(right.filter((event) => event.tSec === 0.125).length, 1);
@@ -434,11 +434,124 @@ const truthCases = [
   },
 ];
 
+function lockMachine(overrides = {}) {
+  return {
+    bpm: 120,
+    swing: 50,
+    activeScene: 0,
+    scenes: [{ seed: 12345 }],
+    ...overrides,
+  };
+}
+
+const lockCases = [
+  function seededProbabilityDeterministic() {
+    const track = makeTrack(16, [0, 8]);
+    track.stepData = { 0: { prob: 50 }, 8: { prob: 50 } };
+    const machine = lockMachine({ tracks: [track] });
+    const first = compileRender(machine, 25);
+    const second = compileRender(machine, 25);
+    assert.deepEqual(second, first, 'seeded probability renders identically');
+    // 50 draws at 50%: statistically certain to be strictly between none and all.
+    const fired = first.events.length;
+    assert.ok(fired >= 10 && fired <= 40, 'prob 50 over 50 draws: ' + fired);
+  },
+  function probabilityExtremes() {
+    const always = makeTrack(16, [0]);
+    always.stepData = { 0: { prob: 100 } };
+    const rare = makeTrack(16, [0]);
+    rare.stepData = { 0: { prob: 1 } };
+    const a = compileRender(lockMachine({ tracks: [always] }), 400).events.length;
+    const r = compileRender(lockMachine({ tracks: [rare] }), 400).events.length;
+    assert.equal(a, 400, 'prob 100 always fires');
+    assert.ok(r <= 40, 'prob 1 fires rarely: ' + r + '/400');
+    const half = makeTrack(16, [0]);
+    half.stepData = { 0: { prob: 50 } };
+    const h = compileRender(lockMachine({ tracks: [half] }), 400).events.length;
+    assert.ok(h >= 140 && h <= 260, 'prob 50 over 400 cycles: ' + h);
+  },
+  function conditionsAndFill() {
+    const track = makeTrack(16, [0]);
+    track.stepData = { 0: { cond: { a: 3, b: 4 } } };
+    const out = compileRender(lockMachine({ tracks: [track] }), 8);
+    // patternLoopSteps stretches to 64 (16 * b), so 8 loops = 32 track cycles;
+    // 3:4 fires on cycles 2, 6, 10, ... = 8 hits.
+    assert.equal(out.events.length, 8, '3:4 over 32 cycles');
+    for (const e of out.events) {
+      const cycle = Math.round(e.tSec / 2);
+      assert.equal((cycle - 2) % 4, 0, '3:4 fired on cycle ' + cycle);
+    }
+    const fillTrack = makeTrack(16, [0, 4]);
+    fillTrack.stepData = { 0: { cond: 'fill' }, 4: { cond: 'notfill' } };
+    const quiet = compileWindow(lockMachine({ tracks: [fillTrack] }), 0, 2, { fill: false }).events;
+    const loud = compileWindow(lockMachine({ tracks: [fillTrack] }), 0, 2, { fill: true }).events;
+    assert.deepEqual(quiet.map((e) => e.tSec), [0.5], 'notfill only when quiet');
+    assert.deepEqual(loud.map((e) => e.tSec), [0], 'fill only when filling');
+  },
+  function componentsShapeTime() {
+    const track = makeTrack(16, [0, 4]);
+    track.stepData = {
+      0: { ratchet: 3 },
+      4: { nudge: 0.25, gate: 0.5, pitch: -12 },
+    };
+    const { events } = compileWindow(lockMachine({ tracks: [track] }), 0, 2);
+    const ratchets = events.filter((e) => e.tSec < 0.2);
+    assert.deepEqual(ratchets.map((e) => +(e.tSec * 24).toFixed(6)), [0, 1, 2],
+      'ratchet x3 at exact thirds of the step');
+    const nudged = events.find((e) => e.ratchetIndex === 0 && e.tSec > 0.2);
+    close(nudged.tSec, 0.5 + 0.125 * 0.25, 1e-9, 'nudge +25%');
+    close(nudged.durSec, 0.0625, 1e-9, 'gate 50% of a step');
+    close(nudged.rate, 0.5, 1e-12, 'pitch -12 halves rate');
+  },
+  function velocityAndLocks() {
+    const track = makeTrack(16, [0, 1], { gainDb: 0, pan: -1 });
+    track.stepData = {
+      0: { velocity: 0.5 },
+      1: { gainDb: -6, pan: 1 },
+    };
+    const { events } = compileWindow(lockMachine({ tracks: [track] }), 0, 0.3);
+    close(events[0].gain, 0.5, 1e-9, 'velocity scales gain');
+    assert.equal(events[0].pan, -1, 'track pan without lock');
+    close(events[1].gain, Math.pow(10, -6 / 20), 1e-9, 'gain lock overrides');
+    assert.equal(events[1].pan, 1, 'pan lock overrides');
+  },
+  function duckRouting() {
+    const kick = makeTrack(16, [0]);
+    const bass = makeTrack(16, [8], { duckSource: 0, duckDb: 18 });
+    const self = makeTrack(16, [0], { duckSource: 2 }); // self-duck must be ignored
+    const { events, ducks } = compileWindow(
+      lockMachine({ tracks: [kick, bass, self] }), 0, 2);
+    assert.ok(events.length >= 2);
+    assert.deepEqual(ducks, [{ tSec: 0, track: 1, depthDb: 18 }],
+      'kick hit ducks the bass only, never itself');
+  },
+  function liveOfflineParity() {
+    const track = makeTrack(16, [0, 3, 7, 12]);
+    track.stepData = {
+      0: { prob: 60, ratchet: 2 },
+      3: { cond: { a: 1, b: 2 } },
+      7: { nudge: -0.3, pitch: 5 },
+      12: { velocity: 0.7, gate: 1.5 },
+    };
+    const machine = lockMachine({ tracks: [track] });
+    const whole = compileRender(machine, 4);
+    const stitched = { events: [], ducks: [] };
+    const slice = 0.173; // deliberately ugly window size
+    for (let t = 0; t < whole.totalSec; t += slice) {
+      const w = compileWindow(machine, t, Math.min(t + slice, whole.totalSec));
+      stitched.events.push(...w.events);
+      stitched.ducks.push(...w.ducks);
+    }
+    assert.deepEqual(stitched.events, whole.events, 'stitched windows equal render');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
   ['pattern compiler', patternCases],
   ['TRUTH 1 DSP', truthCases],
+  ['LOCK compiler', lockCases],
 ];
 
 for (const [name, cases] of groups) {
