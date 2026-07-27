@@ -27,6 +27,7 @@
   </div>
   <div class="yj-io">
     <button id="btnOpen" class="yj-btn">OPEN FILE</button>
+    <button id="btnOpenUrl" class="yj-btn">OPEN URL</button>
   </div>
 </header>
 
@@ -192,6 +193,18 @@
     <p>WAV, MP3, M4A, OGG, FLAC. Whatever this browser can decode.<br>
     It never leaves this machine. There's no server to send it to.</p>
     <button id="btnOpen2" class="yj-btn yj-btn-primary">OR PICK ONE</button>
+    <div class="yj-urlrow">
+      <input type="url" id="urlInput" class="yj-urlinput" placeholder="or paste a URL · direct audio link, podcast enclosure, archive.org" spellcheck="false">
+      <button id="btnLoadUrl" class="yj-btn">LOAD URL</button>
+    </div>
+    <div class="yj-riphelp" id="ripHelp" hidden>
+      <p id="ripHelpMsg">That host won't hand audio to a web page. Rip it on your machine, then drop the file here:</p>
+      <div class="yj-urlrow">
+        <input type="text" id="ripCmd" class="yj-urlinput yj-ripcmd" readonly spellcheck="false">
+        <button id="btnCopyRip" class="yj-btn">COPY</button>
+      </div>
+      <p class="yj-riphelp-note">Needs <a href="https://github.com/yt-dlp/yt-dlp" target="_blank" rel="noopener">yt-dlp</a> installed. Your download, your machine, your call.</p>
+    </div>
   </div>
 </div>
 

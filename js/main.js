@@ -34,6 +34,7 @@ const COPY = {
   computingSpec: 'Computing spectrogram…',
   specReady: 'Click to seek. Zoom rides the waveform above.',
   noCuts: 'NO CUTS',
+  fetching: 'FETCHING URL',
   mapping: 'MAPPING BEATS',
   mapped: 'BEATMAP READY',
   mapFault: 'BEATMAP FAULT',
@@ -128,15 +129,27 @@ function uiSeek(t) {
 // ---------- file loading ----------
 async function openFile(file) {
   status(COPY.decoding, true);
+  let ab;
   try {
-    const ab = await file.arrayBuffer();
-    await engine.load(ab, file.name);
+    ab = await file.arrayBuffer();
   } catch (e) {
     statusFault(COPY.decodeFail);
     return;
   }
+  await loadArrayBuffer(ab, file.name);
+}
+
+async function loadArrayBuffer(ab, name) {
+  status(COPY.decoding, true);
+  try {
+    await engine.load(ab, name);
+  } catch (e) {
+    statusFault(COPY.decodeFail);
+    return;
+  }
+  $('ripHelp').hidden = true;
   loadGen++;
-  project.fileName = file.name;
+  project.fileName = name;
   project.buffer = engine.buffer;
   project.mono = engine.mono;
   project.sampleRate = engine.sampleRate;
@@ -692,6 +705,125 @@ window.addEventListener('drop', (e) => {
   if (f) openFile(f);
   else if (project.buffer) $('dropZone').classList.add('is-hidden');
 });
+
+// ---------- load from URL ----------
+// Hosts that never hand raw audio to a cross-origin page. Attempting the fetch would
+// only produce an opaque CORS error, so go straight to the local-rip help.
+const WALLED = /(^|\.)(youtube\.com|youtu\.be|soundcloud\.com|spotify\.com|music\.apple\.com|tidal\.com|deezer\.com|bandcamp\.com|mixcloud\.com|vimeo\.com|twitch\.tv|tiktok\.com|instagram\.com|x\.com|twitter\.com)$/i;
+const MAX_FETCH_BYTES = 250 * 1024 * 1024;
+
+function shellQuote(u) {
+  return "'" + u.replace(/'/g, "'\\''") + "'";
+}
+
+function showRipHelp(url, msg) {
+  $('ripHelpMsg').textContent = msg;
+  $('ripCmd').value = 'yt-dlp -x --audio-format wav ' + shellQuote(url);
+  $('ripHelp').hidden = false;
+}
+
+async function loadFromUrl(raw) {
+  const s = (raw || '').trim();
+  if (!s) return;
+  let u;
+  try {
+    u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(s) ? s : 'https://' + s);
+  } catch (e) {
+    statusFault("That doesn't parse as a URL.");
+    return;
+  }
+  if (!/^https?:$/.test(u.protocol)) {
+    statusFault('Only http and https URLs load here.');
+    return;
+  }
+  $('ripHelp').hidden = true;
+  if (WALLED.test(u.hostname)) {
+    showRipHelp(u.href, "That host won't hand audio to a web page. Rip it on your machine, then drop the file here:");
+    return;
+  }
+  const btn = $('btnLoadUrl');
+  btn.disabled = true;
+  btn.classList.add('is-working');
+  status(COPY.fetching, true);
+  try {
+    const resp = await fetch(u.href);
+    if (!resp.ok) {
+      statusFault('FETCH FAULT · HTTP ' + resp.status + ' from ' + u.hostname);
+      return;
+    }
+    const len = Number(resp.headers.get('Content-Length')) || 0;
+    if (len > MAX_FETCH_BYTES) {
+      statusFault('That file is over 250 MB. Decoded, it would not fit in browser memory.');
+      return;
+    }
+    const type = (resp.headers.get('Content-Type') || '').toLowerCase();
+    if (type.includes('text/html')) {
+      showRipHelp(u.href, 'That URL serves a page, not audio. If a track lives on it, rip it locally and drop the file:');
+      return;
+    }
+    let ab;
+    if (resp.body && resp.body.getReader) {
+      const reader = resp.body.getReader();
+      const parts = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        got += value.length;
+        if (got > MAX_FETCH_BYTES) {
+          reader.cancel();
+          statusFault('Stopped at 250 MB. That is more than this bench can decode.');
+          return;
+        }
+        status(COPY.fetching + (len ? ' · ' + Math.round((100 * got) / len) + '%' : ' · ' + (got / 1048576).toFixed(1) + ' MB'), true);
+      }
+      const buf = new Uint8Array(got);
+      let o = 0;
+      for (const p of parts) { buf.set(p, o); o += p.length; }
+      ab = buf.buffer;
+    } else {
+      ab = await resp.arrayBuffer();
+    }
+    const name = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || u.hostname);
+    await loadArrayBuffer(ab, name);
+  } catch (e) {
+    // A TypeError here is almost always CORS: the host never opted its files in.
+    showRipHelp(u.href, "That host refused a browser fetch (no CORS headers). It isn't you, and it isn't fixable from here. Rip it locally and drop the file:");
+    statusFault('FETCH BLOCKED · ' + u.hostname);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('is-working');
+  }
+}
+
+$('btnLoadUrl').addEventListener('click', () => loadFromUrl($('urlInput').value));
+$('urlInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loadFromUrl(e.target.value);
+});
+$('btnOpenUrl').addEventListener('click', () => {
+  $('dropZone').classList.remove('is-hidden');
+  $('urlInput').focus();
+});
+$('btnCopyRip').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($('ripCmd').value);
+  } catch (e) {
+    $('ripCmd').select();
+    document.execCommand('copy');
+  }
+  $('btnCopyRip').textContent = 'COPIED';
+  setTimeout(() => { $('btnCopyRip').textContent = 'COPY'; }, 1200);
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && project.buffer) $('dropZone').classList.add('is-hidden');
+});
+// ?url= prefills the field; fetching still takes a click. A page that auto-fetches
+// whatever the query string says is a page that can be pointed at anything.
+{
+  const pre = new URLSearchParams(location.search).get('url');
+  if (pre) $('urlInput').value = pre;
+}
 
 // ---------- keys ----------
 window.addEventListener('keydown', (e) => {

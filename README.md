@@ -14,6 +14,13 @@ Face's CDN; the browser caches those, so the second session works on a plane. Yo
 never leaves the machine. If that claim sounds like marketing, open the network tab and
 watch it stay empty while you work.
 
+Audio gets in three ways: drop a file, pick one, or paste a URL. Direct links work
+whenever the host allows browser fetches (podcast enclosures, archive.org, most CDNs).
+YouTube and SoundCloud don't allow that, and no static page can change it; the tools
+that claim to are servers doing the ripping for you. Paste one of those links anyway and
+Yellowjacket writes you the yt-dlp command with your URL already in it, so the rip
+happens on your machine and the file lands back on the bench.
+
 ## Why this exists
 
 Descript proved that editing speech by editing text is the right interface, then built it
