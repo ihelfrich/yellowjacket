@@ -109,16 +109,6 @@ function energyToLufs(energy) {
   return energy > 0 ? LOUDNESS_OFFSET + 10 * Math.log10(energy) : -Infinity;
 }
 
-function blockEnergies(prefix, length, windowSize, hopSize) {
-  if (length < windowSize) return [];
-
-  const energies = [];
-  for (let start = 0; start + windowSize <= length; start += hopSize) {
-    energies.push((prefix[start + windowSize] - prefix[start]) / windowSize);
-  }
-  return energies;
-}
-
 function maxLoudness(energies) {
   let maximum = -Infinity;
   for (const energy of energies) maximum = Math.max(maximum, energyToLufs(energy));
@@ -174,23 +164,105 @@ function interpolationPhases() {
 
 const TRUE_PEAK_PHASES = interpolationPhases();
 
-function estimateTruePeak4x(channels, length, onProgress, progressStart, progressSpan, sampleRate) {
-  let peak = 0;
+function estimateTruePeak4x(
+  channels,
+  length,
+  samplePeak,
+  onProgress,
+  progressStart,
+  progressSpan,
+  sampleRate
+) {
+  let peak = samplePeak;
   const progressEvery = Math.max(1, Math.round(sampleRate * 0.5));
   const total = Math.max(1, channels.length * Math.max(1, length - 1));
   let done = 0;
+  const phase0 = TRUE_PEAK_PHASES[0];
+  const phase1 = TRUE_PEAK_PHASES[1];
+  const phase2 = TRUE_PEAK_PHASES[2];
 
   for (const channel of channels) {
-    for (let i = 0; i < length; i++) peak = Math.max(peak, Math.abs(channel[i]));
-    for (let i = 0; i < length - 1; i++) {
+    const leadingEnd = Math.min(3, length - 1);
+    for (let i = 0; i < leadingEnd; i++) {
       for (const coefficients of TRUE_PEAK_PHASES) {
         let value = 0;
         for (let tap = 0; tap < coefficients.length; tap++) {
           const offset = tap - 3;
-          const index = Math.max(0, Math.min(length - 1, i + offset));
+          const sourceIndex = i + offset;
+          const index = sourceIndex < 0 ? 0 : sourceIndex >= length ? length - 1 : sourceIndex;
           value += channel[index] * coefficients[tap];
         }
-        peak = Math.max(peak, Math.abs(value));
+        const absolute = value < 0 ? -value : value;
+        if (absolute > peak) peak = absolute;
+      }
+
+      done++;
+      if (onProgress && done % progressEvery === 0) {
+        onProgress(progressStart + progressSpan * done / total);
+      }
+    }
+
+    for (let i = 3; i <= length - 5; i++) {
+      const x0 = channel[i - 3];
+      const x1 = channel[i - 2];
+      const x2 = channel[i - 1];
+      const x3 = channel[i];
+      const x4 = channel[i + 1];
+      const x5 = channel[i + 2];
+      const x6 = channel[i + 3];
+      const x7 = channel[i + 4];
+
+      let value = x0 * phase0[0]
+        + x1 * phase0[1]
+        + x2 * phase0[2]
+        + x3 * phase0[3]
+        + x4 * phase0[4]
+        + x5 * phase0[5]
+        + x6 * phase0[6]
+        + x7 * phase0[7];
+      let absolute = value < 0 ? -value : value;
+      if (absolute > peak) peak = absolute;
+
+      value = x0 * phase1[0]
+        + x1 * phase1[1]
+        + x2 * phase1[2]
+        + x3 * phase1[3]
+        + x4 * phase1[4]
+        + x5 * phase1[5]
+        + x6 * phase1[6]
+        + x7 * phase1[7];
+      absolute = value < 0 ? -value : value;
+      if (absolute > peak) peak = absolute;
+
+      value = x0 * phase2[0]
+        + x1 * phase2[1]
+        + x2 * phase2[2]
+        + x3 * phase2[3]
+        + x4 * phase2[4]
+        + x5 * phase2[5]
+        + x6 * phase2[6]
+        + x7 * phase2[7];
+      absolute = value < 0 ? -value : value;
+      if (absolute > peak) peak = absolute;
+
+      done++;
+      if (onProgress && done % progressEvery === 0) {
+        onProgress(progressStart + progressSpan * done / total);
+      }
+    }
+
+    const trailingStart = Math.max(3, length - 4);
+    for (let i = trailingStart; i < length - 1; i++) {
+      for (const coefficients of TRUE_PEAK_PHASES) {
+        let value = 0;
+        for (let tap = 0; tap < coefficients.length; tap++) {
+          const offset = tap - 3;
+          const sourceIndex = i + offset;
+          const index = sourceIndex < 0 ? 0 : sourceIndex >= length ? length - 1 : sourceIndex;
+          value += channel[index] * coefficients[tap];
+        }
+        const absolute = value < 0 ? -value : value;
+        if (absolute > peak) peak = absolute;
       }
 
       done++;
@@ -243,7 +315,9 @@ export function measureLoudness(buffer, onProgress = null) {
 
   const coeffs = kWeightingCoeffs(sampleRate);
   const weights = channelWeights(channels.length);
-  const weightedPrefix = new Float64Array(length + 1);
+  const subBlockSize = Math.max(1, Math.round(sampleRate * 0.1));
+  const subBlockCount = Math.floor(length / subBlockSize);
+  const subBlockSums = new Float64Array(subBlockCount);
   visited = 0;
 
   for (let channelIndex = 0; channelIndex < channels.length; channelIndex++) {
@@ -253,6 +327,11 @@ export function measureLoudness(buffer, onProgress = null) {
     }
 
     const input = channels[channelIndex];
+    const weight = weights[channelIndex];
+    const coveredLength = subBlockCount * subBlockSize;
+    let subBlock = 0;
+    let subBlockEnd = subBlockSize;
+    let subBlockEnergy = 0;
     let shelfZ1 = 0;
     let shelfZ2 = 0;
     let highpassZ1 = 0;
@@ -265,7 +344,15 @@ export function measureLoudness(buffer, onProgress = null) {
       const filtered = coeffs.b2[0] * shelf + highpassZ1;
       highpassZ1 = coeffs.b2[1] * shelf - coeffs.a2[1] * filtered + highpassZ2;
       highpassZ2 = coeffs.b2[2] * shelf - coeffs.a2[2] * filtered;
-      weightedPrefix[i + 1] += weights[channelIndex] * filtered * filtered;
+      if (i < coveredLength) {
+        subBlockEnergy += weight * filtered * filtered;
+        if (i + 1 === subBlockEnd) {
+          subBlockSums[subBlock] += subBlockEnergy;
+          subBlock++;
+          subBlockEnd += subBlockSize;
+          subBlockEnergy = 0;
+        }
+      }
 
       visited++;
       if (onProgress && visited % progressEvery === 0) {
@@ -274,17 +361,29 @@ export function measureLoudness(buffer, onProgress = null) {
     }
   }
 
-  for (let i = 1; i <= length; i++) weightedPrefix[i] += weightedPrefix[i - 1];
-
-  const momentarySize = Math.max(1, Math.round(sampleRate * 0.4));
-  const blockHop = Math.max(1, Math.round(sampleRate * 0.1));
-  const shortTermSize = Math.max(1, Math.round(sampleRate * 3));
-  const momentaryEnergies = blockEnergies(weightedPrefix, length, momentarySize, blockHop);
-  const shortTermEnergies = blockEnergies(weightedPrefix, length, shortTermSize, blockHop);
+  const momentaryEnergies = new Float64Array(Math.max(0, subBlockCount - 3));
+  let momentarySum = 0;
+  let shortTermSum = 0;
+  let shortTermMaximum = -Infinity;
+  for (let block = 0; block < subBlockCount; block++) {
+    const energy = subBlockSums[block];
+    momentarySum += energy;
+    shortTermSum += energy;
+    if (block >= 4) momentarySum -= subBlockSums[block - 4];
+    if (block >= 30) shortTermSum -= subBlockSums[block - 30];
+    if (block >= 3) {
+      momentaryEnergies[block - 3] = momentarySum / (subBlockSize * 4);
+    }
+    if (block >= 29) {
+      const loudness = energyToLufs(shortTermSum / (subBlockSize * 30));
+      if (loudness > shortTermMaximum) shortTermMaximum = loudness;
+    }
+  }
 
   const truePeak = estimateTruePeak4x(
     channels,
     length,
+    samplePeak,
     onProgress,
     55,
     45,
@@ -296,7 +395,7 @@ export function measureLoudness(buffer, onProgress = null) {
   return {
     integrated: integratedLoudness(momentaryEnergies),
     momentaryMax: maxLoudness(momentaryEnergies),
-    shortTermMax: maxLoudness(shortTermEnergies),
+    shortTermMax: shortTermMaximum,
     samplePeakDb: samplePeak > 0 ? 20 * Math.log10(samplePeak) : -Infinity,
     truePeakDb: truePeak > 0 ? 20 * Math.log10(truePeak) : -Infinity,
     rmsDb: rms > 0 ? 20 * Math.log10(rms) : -Infinity,

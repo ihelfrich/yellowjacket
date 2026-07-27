@@ -75,13 +75,24 @@ over cuts). AudioContext created lazily on first user gesture (browser autoplay 
 All sources connect through this.master (GainNode) -> ctx.destination. 'ended' fires when
 the last scheduled segment finishes on its own.
 
+### js/render/peaks.js  (worker-safe, pure)
+```js
+export function buildPeakPyramid(mono: Float32Array): PeakPyramid
+// { mono, length, levels: [{block: 64|512|4096, min: Float32Array, max: Float32Array}] }
+// one immutable pyramid per source; layout documented in the module header
+export function queryPeaks(pyramid, startSample, endSample, columns, outMin, outMax): void
+// fills per-column min/max; coarsest level with >= 1 block per column, direct
+// sample scan below the level-0 block size; allocation-free with out arrays
+```
+
 ### js/waveform.js
 ```js
 export class WaveformView extends EventTarget {
   // events: 'seek' {t}, 'select' {start, end} (null when cleared),
   //         'view' {start, end} (fires after any zoom/pan so siblings can sync)
   constructor(canvas)
-  setBuffer(mono: Float32Array, sampleRate)
+  setBuffer(mono: Float32Array, sampleRate, pyramid?)  // pyramid: shared PeakPyramid
+                                 // built from this same mono; absent = build own
   setCuts(cuts: Cut[])           // draw cut ranges as hazard-striped dimmed zones
   setPlayhead(t)                 // cheap, no full redraw (layered canvas or overlay draw)
   setSelection(sel|null)
@@ -90,7 +101,7 @@ export class WaveformView extends EventTarget {
   render()
 }
 ```
-Peaks: min/max per pixel column computed from mono, cached per zoom level. Drag = select
+Peaks: min/max per pixel column via render/peaks.js queryPeaks, cached per zoom level. Drag = select
 range; click = seek; wheel/trackpad = zoom around cursor; shift+drag = pan. DPR-aware
 (devicePixelRatio). Colors from CSS custom properties read at render time
 (getComputedStyle(document.documentElement).getPropertyValue(...)): waveform body
@@ -127,8 +138,10 @@ window. Frequency ruler labels at 50/100/200/500/1k/2k/5k/10k.
 
 ### workers/whisper-worker.js (module worker)
 VERIFIED specifics (do not deviate):
-- Import: `import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';`
-  Pin exactly 4.2.0 — every 3.x has a broken word-timestamp bug with chunk_length_s=30.
+- Import: `import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';`
+  Pinned 3.7.1 deliberately: every 4.x release to date fails session creation on the
+  onnx-community *_timestamped quantized decoders (ORT QDQ/MatMulNBits regression,
+  transformers.js#1707). Bump only when a 4.x release demonstrably loads them.
 - Models are the onnx-community *_timestamped family (alignment_heads exported for
   return_timestamps:'word'). Plain Xenova/onnx-community whisper exports DO NOT work for word timestamps.
 - Device config per the official whisper-word-timestamps example:

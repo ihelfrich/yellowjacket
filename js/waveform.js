@@ -1,6 +1,9 @@
 // Yellowjacket — time-domain waveform view. Oscilloscope pane: min/max peaks
 // cached per column at the current zoom, static layer drawn to an offscreen
 // canvas on render(), playhead updates blit that layer and draw overlays only.
+// Peak pyramid comes from render/peaks.js (shared with machine/slice-ui.js).
+
+import { buildPeakPyramid, queryPeaks } from './render/peaks.js';
 
 const ZOOM_STEP = 1.25;                       // zoom factor per wheel notch
 const DRAG_PX = 4;                            // click vs drag threshold, CSS px
@@ -8,7 +11,6 @@ const RULER_STEPS = [1, 5, 10, 30, 60, 300, 600, 1800, 3600]; // adaptive tick s
 const HATCH_COLOR = 'rgba(255,212,0,.28)';    // cut hatch, matches --yj-hazard-dim
 const HATCH_PITCH = 8;                        // perpendicular pitch between hatch lines, CSS px
 const CUT_DIM = 'rgba(0,0,0,.45)';            // darkening under the hatch
-const L1 = 64, L2 = 512, L3 = 4096;           // peak pyramid block sizes, samples
 
 export class WaveformView extends EventTarget {
   // events: 'seek' {t}, 'select' {start,end} (detail null when cleared),
@@ -57,11 +59,13 @@ export class WaveformView extends EventTarget {
 
   // ---------- public API ----------
 
-  setBuffer(mono, sampleRate) {
+  setBuffer(mono, sampleRate, pyramid) {
+    // pyramid: optional shared PeakPyramid built from this same mono array
+    // (render/peaks.js). When absent the view builds its own.
     this.mono = mono && mono.length ? mono : null;
     this.sampleRate = sampleRate || 0;
     this.duration = this.mono && this.sampleRate ? this.mono.length / this.sampleRate : 0;
-    this._buildPyramid();
+    this._pyr = this.mono ? (pyramid || buildPeakPyramid(this.mono)) : null;
     this._view = { start: 0, end: this.duration };
     this._cuts = [];
     this._sel = null;
@@ -146,94 +150,16 @@ export class WaveformView extends EventTarget {
 
   // ---------- peaks ----------
 
-  _buildPyramid() {
-    const d = this.mono;
-    if (!d || d.length < L1 * 2) { this._pyr = null; return; }
-    const n1 = Math.ceil(d.length / L1);
-    const min1 = new Float32Array(n1);
-    const max1 = new Float32Array(n1);
-    for (let i = 0; i < n1; i++) {
-      const s = i * L1;
-      const e = Math.min(s + L1, d.length);
-      let mn = d[s], mx = d[s];
-      for (let j = s + 1; j < e; j++) {
-        const v = d[j];
-        if (v < mn) mn = v; else if (v > mx) mx = v;
-      }
-      min1[i] = mn;
-      max1[i] = mx;
-    }
-    const fold = (minSrc, maxSrc, f) => {
-      const n = Math.ceil(minSrc.length / f);
-      const mn = new Float32Array(n);
-      const mx = new Float32Array(n);
-      for (let i = 0; i < n; i++) {
-        const s = i * f;
-        const e = Math.min(s + f, minSrc.length);
-        let a = minSrc[s], b = maxSrc[s];
-        for (let j = s + 1; j < e; j++) {
-          if (minSrc[j] < a) a = minSrc[j];
-          if (maxSrc[j] > b) b = maxSrc[j];
-        }
-        mn[i] = a;
-        mx[i] = b;
-      }
-      return [mn, mx];
-    };
-    const [min2, max2] = fold(min1, max1, L2 / L1);
-    const [min3, max3] = fold(min2, max2, L3 / L2);
-    this._pyr = { min1, max1, min2, max2, min3, max3 };
-  }
-
-  _blockMinMax(minA, maxA, a, b, block) {
-    const i0 = Math.max(0, Math.floor(a / block));
-    const i1 = Math.min(minA.length, Math.ceil(b / block));
-    let mn = Infinity, mx = -Infinity;
-    for (let i = i0; i < i1; i++) {
-      if (minA[i] < mn) mn = minA[i];
-      if (maxA[i] > mx) mx = maxA[i];
-    }
-    return mn === Infinity ? [0, 0] : [mn, mx];
-  }
-
-  _rangeMinMax(a, b) {
-    const len = b - a;
-    const p = this._pyr;
-    if (p && len >= L3 * 2) return this._blockMinMax(p.min3, p.max3, a, b, L3);
-    if (p && len >= L2 * 2) return this._blockMinMax(p.min2, p.max2, a, b, L2);
-    if (p && len >= L1 * 2) return this._blockMinMax(p.min1, p.max1, a, b, L1);
-    const d = this.mono;
-    let mn = d[a], mx = d[a];
-    for (let i = a + 1; i < b; i++) {
-      const v = d[i];
-      if (v < mn) mn = v; else if (v > mx) mx = v;
-    }
-    return [mn, mx];
-  }
-
   _computePeaks() {
     this._peaksDirty = false;
     const w = this._w;
-    if (!w || !this.mono || !this.duration) { this._peaks = null; return; }
-    const v = this._view;
-    const sr = this.sampleRate;
-    const s0 = v.start * sr;
-    const spp = (v.end - v.start) * sr / w;
-    const mins = new Float32Array(w);
-    const maxs = new Float32Array(w);
-    const n = this.mono.length;
-    for (let x = 0; x < w; x++) {
-      let a = Math.floor(s0 + x * spp);
-      let b = Math.floor(s0 + (x + 1) * spp);
-      if (b <= a) b = a + 1;
-      if (a < 0) a = 0;
-      if (b > n) b = n;
-      if (a >= b) { mins[x] = 0; maxs[x] = 0; continue; }
-      const mm = this._rangeMinMax(a, b);
-      mins[x] = mm[0];
-      maxs[x] = mm[1];
+    if (!w || !this.mono || !this.duration || !this._pyr) { this._peaks = null; return; }
+    if (!this._peaks || this._peaks.mins.length !== w) {
+      this._peaks = { mins: new Float32Array(w), maxs: new Float32Array(w) };
     }
-    this._peaks = { mins, maxs };
+    const sr = this.sampleRate;
+    queryPeaks(this._pyr, this._view.start * sr, this._view.end * sr, w,
+      this._peaks.mins, this._peaks.maxs);
   }
 
   // ---------- drawing ----------

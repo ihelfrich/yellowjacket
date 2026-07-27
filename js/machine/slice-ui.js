@@ -1,12 +1,14 @@
 // Yellowjacket MACHINE — SLICE strip view. Source waveform with beat grid,
 // onset ticks, word-boundary ticks, and carve-able ClipRef blocks. Follows the
-// waveform.js pattern (min/max peak pyramid, DPR-aware backing store, static
-// layer on an offscreen canvas, overlays composited over a blit) without
-// importing WaveformView: the strip draws different furniture on top.
+// waveform.js pattern (shared min/max peak pyramid from render/peaks.js,
+// DPR-aware backing store, static layer on an offscreen canvas, overlays
+// composited over a blit) without importing WaveformView: the strip draws
+// different furniture on top.
 // Controls (ANALYZE / TAP TEMPO / CLEAR ANCHORS / CUT AT BEATS / EXPORT LOOP
 // plus the editable BPM well and confidence readout) render into controlsHost.
 
 import { makeClip, snapToBeat } from './cliprefs.js';
+import { buildPeakPyramid, queryPeaks } from '../render/peaks.js';
 
 const ZOOM_STEP = 1.25;         // zoom factor per wheel notch, same feel as waveform.js
 const DRAG_PX = 4;              // click vs drag threshold, CSS px
@@ -16,7 +18,6 @@ const BEAT_HIT_PX = 5;          // CSS px, dblclick-a-beat-line tolerance
 const EDGE_GRAB_PX = 5;         // CSS px, grab zone around a clip edge handle
 const HANDLE = 7;               // CSS px, square handle side
 const RULER_STEPS = [1, 5, 10, 30, 60, 300, 600, 1800, 3600]; // adaptive tick steps, sec
-const L1 = 64, L2 = 512, L3 = 4096;  // peak pyramid block sizes, samples
 const TOP_PAD = 32;             // CSS px above the wave: word ticks + B-labels + clip labels
 const BOT_PAD = 20;             // CSS px below the wave: onset ticks + time ruler
 const TAP_MIN = 4;              // taps before an anchor BPM is set (contract)
@@ -91,11 +92,13 @@ export class SliceView extends EventTarget {
 
   // ---------- public API ----------
 
-  setSource(mono, sampleRate) {
+  setSource(mono, sampleRate, pyramid) {
+    // pyramid: optional shared PeakPyramid built from this same mono array
+    // (render/peaks.js). When absent the view builds its own.
     this.mono = mono && mono.length ? mono : null;
     this.sampleRate = sampleRate || 0;
     this.duration = this.mono && this.sampleRate ? this.mono.length / this.sampleRate : 0;
-    this._buildPyramid();
+    this._pyr = this.mono ? (pyramid || buildPeakPyramid(this.mono)) : null;
     this._view = { start: 0, end: this.duration };
     this._analysis = null;
     this._anchors = { bpm: null, barOneTime: null };
@@ -389,94 +392,16 @@ export class SliceView extends EventTarget {
 
   // ---------- peaks ----------
 
-  _buildPyramid() {
-    const d = this.mono;
-    if (!d || d.length < L1 * 2) { this._pyr = null; return; }
-    const n1 = Math.ceil(d.length / L1);
-    const min1 = new Float32Array(n1);
-    const max1 = new Float32Array(n1);
-    for (let i = 0; i < n1; i++) {
-      const s = i * L1;
-      const e = Math.min(s + L1, d.length);
-      let mn = d[s], mx = d[s];
-      for (let j = s + 1; j < e; j++) {
-        const v = d[j];
-        if (v < mn) mn = v; else if (v > mx) mx = v;
-      }
-      min1[i] = mn;
-      max1[i] = mx;
-    }
-    const fold = (minSrc, maxSrc, f) => {
-      const n = Math.ceil(minSrc.length / f);
-      const mn = new Float32Array(n);
-      const mx = new Float32Array(n);
-      for (let i = 0; i < n; i++) {
-        const s = i * f;
-        const e = Math.min(s + f, minSrc.length);
-        let a = minSrc[s], b = maxSrc[s];
-        for (let j = s + 1; j < e; j++) {
-          if (minSrc[j] < a) a = minSrc[j];
-          if (maxSrc[j] > b) b = maxSrc[j];
-        }
-        mn[i] = a;
-        mx[i] = b;
-      }
-      return [mn, mx];
-    };
-    const [min2, max2] = fold(min1, max1, L2 / L1);
-    const [min3, max3] = fold(min2, max2, L3 / L2);
-    this._pyr = { min1, max1, min2, max2, min3, max3 };
-  }
-
-  _blockMinMax(minA, maxA, a, b, block) {
-    const i0 = Math.max(0, Math.floor(a / block));
-    const i1 = Math.min(minA.length, Math.ceil(b / block));
-    let mn = Infinity, mx = -Infinity;
-    for (let i = i0; i < i1; i++) {
-      if (minA[i] < mn) mn = minA[i];
-      if (maxA[i] > mx) mx = maxA[i];
-    }
-    return mn === Infinity ? [0, 0] : [mn, mx];
-  }
-
-  _rangeMinMax(a, b) {
-    const len = b - a;
-    const p = this._pyr;
-    if (p && len >= L3 * 2) return this._blockMinMax(p.min3, p.max3, a, b, L3);
-    if (p && len >= L2 * 2) return this._blockMinMax(p.min2, p.max2, a, b, L2);
-    if (p && len >= L1 * 2) return this._blockMinMax(p.min1, p.max1, a, b, L1);
-    const d = this.mono;
-    let mn = d[a], mx = d[a];
-    for (let i = a + 1; i < b; i++) {
-      const v = d[i];
-      if (v < mn) mn = v; else if (v > mx) mx = v;
-    }
-    return [mn, mx];
-  }
-
   _computePeaks() {
     this._peaksDirty = false;
     const w = this._w;
-    if (!w || !this.mono || !this.duration) { this._peaks = null; return; }
-    const v = this._view;
-    const sr = this.sampleRate;
-    const s0 = v.start * sr;
-    const spp = (v.end - v.start) * sr / w;
-    const mins = new Float32Array(w);
-    const maxs = new Float32Array(w);
-    const n = this.mono.length;
-    for (let x = 0; x < w; x++) {
-      let a = Math.floor(s0 + x * spp);
-      let b = Math.floor(s0 + (x + 1) * spp);
-      if (b <= a) b = a + 1;
-      if (a < 0) a = 0;
-      if (b > n) b = n;
-      if (a >= b) { mins[x] = 0; maxs[x] = 0; continue; }
-      const mm = this._rangeMinMax(a, b);
-      mins[x] = mm[0];
-      maxs[x] = mm[1];
+    if (!w || !this.mono || !this.duration || !this._pyr) { this._peaks = null; return; }
+    if (!this._peaks || this._peaks.mins.length !== w) {
+      this._peaks = { mins: new Float32Array(w), maxs: new Float32Array(w) };
     }
-    this._peaks = { mins, maxs };
+    const sr = this.sampleRate;
+    queryPeaks(this._pyr, this._view.start * sr, this._view.end * sr, w,
+      this._peaks.mins, this._peaks.maxs);
   }
 
   // ---------- drawing ----------

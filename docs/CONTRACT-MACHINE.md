@@ -82,7 +82,7 @@ export class ClipAuditioner {                                     // owns ONE Au
 export class SliceView extends EventTarget {
   // events: 'clipadd' {clip}, 'clipdelete' {id}, 'audition' {clip}, 'anchorchange' {bpm, barOneTime}
   constructor(canvas, controlsHost)
-  setSource(mono, sampleRate)         // draws waveform strip (reuse peak logic pattern from waveform.js, do NOT import WaveformView)
+  setSource(mono, sampleRate, pyramid?) // draws waveform strip (peaks via render/peaks.js, shared pyramid optional; do NOT import WaveformView)
   setAnalysis(analysis)               // beat grid: thin --yj-line verticals per beat, heavier --yj-amber-dim per bar, downbeat tick labels B1 B2..; onset ticks as 3px marks along the bottom; confidence + BPM readout well
   setWords(words|null)                // word boundary ticks along the top, dim
   setClips(clips)                     // clip spans as translucent --yj-select blocks with square handles, label in 9px mono

@@ -6,9 +6,38 @@
 <title>Yellowjacket · audio bench</title>
 <meta name="description" content="A text-first audio bench that runs entirely in your browser: transcription, text-based cutting, spectral analysis, repair, loudness, export. Nothing uploads.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23FFD400'/%3E%3Cpath d='M0 20 L12 32 L4 32 L0 28 Z M8 20 L20 32 L12 32 L0 20 Z M16 20 L28 32 L20 32 L8 20 Z M24 20 L32 28 L32 32 L28 32 L16 20 Z M32 20 L32 24 L24 20 Z' fill='%230B0A07'/%3E%3Cpath d='M6 4 L13 4 L16 10 L19 4 L26 4 L19 16 L13 16 Z' fill='%230B0A07'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/fonts/fonts.css">
+<link rel="preload" href="assets/fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/plex-mono-600.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="modulepreload" href="js/audio-engine.js">
+<link rel="modulepreload" href="js/render/peaks.js">
+<link rel="modulepreload" href="js/waveform.js">
+<link rel="modulepreload" href="js/spectrogram.js">
+<link rel="modulepreload" href="js/transcribe.js">
+<link rel="modulepreload" href="js/transcript-ui.js">
+<link rel="modulepreload" href="js/dsp/eq.js">
+<link rel="modulepreload" href="js/dsp/dehum.js">
+<link rel="modulepreload" href="js/dsp/denoise.js">
+<link rel="modulepreload" href="js/dsp/deess.js">
+<link rel="modulepreload" href="js/dsp/gate.js">
+<link rel="modulepreload" href="js/dsp/compressor.js">
+<link rel="modulepreload" href="js/dsp/limiter.js">
+<link rel="modulepreload" href="js/dsp/loudness.js">
+<link rel="modulepreload" href="js/dsp/loudnorm.js">
+<link rel="modulepreload" href="js/dsp/chain.js">
+<link rel="modulepreload" href="js/meters.js">
+<link rel="modulepreload" href="js/machine/cliprefs.js">
+<link rel="modulepreload" href="js/machine/slice-ui.js">
+<link rel="modulepreload" href="js/export.js">
+<link rel="modulepreload" href="js/machine/compile.js">
+<link rel="modulepreload" href="js/machine/sequencer.js">
+<link rel="modulepreload" href="js/machine/pattern-ui.js">
+<link rel="modulepreload" href="js/machine/keybed.js">
+<link rel="modulepreload" href="js/app/project-store.js">
+<link rel="modulepreload" href="js/app/bench-controller.js">
+<link rel="modulepreload" href="js/app/source-controller.js">
+<link rel="modulepreload" href="js/machine/controller.js">
+<link rel="modulepreload" href="js/main.js">
 <link rel="stylesheet" href="css/yj.css">
 </head>
 <body>
@@ -226,5 +255,6 @@
 
 <input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" hidden>
 <script type="module" src="js/main.js"></script>
+<script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');</script>
 </body>
 </html>
