@@ -12,7 +12,7 @@ const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
-  const { sliceView, patternView, songView, voiceView, crateView, clipList } = views;
+  const { sliceView, patternView, songView, voiceView, crateView, clipList, constellation } = views;
   const P = store.project;
   const R = store.runtime;
 
@@ -40,8 +40,10 @@ export function initMachineController(ctx) {
   }
 
   function refreshClips() {
+    const selId = sliceView.selectedClip ? sliceView.selectedClip.id : null;
     sliceView.setClips(P.clips);
-    if (clipList) clipList.setClips(P.clips, sliceView.selectedClip ? sliceView.selectedClip.id : null);
+    if (clipList) clipList.setClips(P.clips, selId);
+    if (constellation) constellation.setClips(P.clips, selId);
     updateClipReadout();
   }
 
@@ -121,8 +123,24 @@ export function initMachineController(ctx) {
   });
   sliceView.addEventListener('clipselect', (e) => {
     patternView.setClipHint(e.detail.clip ? (e.detail.clip.label || e.detail.clip.tag) : null);
-    if (clipList) clipList.setSelected(e.detail.clip ? e.detail.clip.id : null);
+    const id = e.detail.clip ? e.detail.clip.id : null;
+    if (clipList) clipList.setSelected(id);
+    if (constellation) constellation.setSelected(id);
   });
+
+  // ---------- constellation: the kit as a timbre map ----------
+  if (constellation) {
+    constellation.addEventListener('pick', (e) => {
+      const clip = sliceView.selectClip(e.detail.id);
+      if (clipList) clipList.setSelected(clip ? clip.id : null);
+      if (clip) {
+        auditioner.play(clip);
+        patternView.setClipHint(clip.label || clip.tag);
+        status('SLICE · ' + (clip.label || clip.tag) + ' · '
+          + (clip.end - clip.start).toFixed(2) + 's');
+      }
+    });
+  }
 
   // ---------- clip list: the readable half of SLICE ----------
   if (clipList) {
@@ -516,6 +534,8 @@ export function initMachineController(ctx) {
             gain: 1,
             tag: pick.role.toLowerCase(),
             label: pick.label,
+            score: pick.score,
+            features: pick.features,   // the constellation projects these
           });
         }
       });

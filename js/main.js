@@ -15,6 +15,7 @@ import { Sequencer } from './machine/sequencer.js';
 import { PatternView } from './machine/pattern-ui.js';
 import { SongView } from './machine/song-ui.js';
 import { ClipListView } from './machine/cliplist-ui.js';
+import { ConstellationView } from './machine/constellation-ui.js';
 import { VoiceView } from './machine/voice-ui.js';
 import { CrateView } from './machine/crate-ui.js';
 import { Keybed } from './machine/keybed.js';
@@ -104,6 +105,7 @@ const views = {
   patternView: new PatternView($('patternHost')),
   songView: new SongView($('songHost')),
   clipList: new ClipListView($('clipListHost')),
+  constellation: new ConstellationView($('constellationMain')),
   voiceView: new VoiceView($('voiceHost')),
   crateView: new CrateView($('crateHost')),
   repairPanel: new RepairPanel($('repairHost')),

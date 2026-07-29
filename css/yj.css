@@ -388,6 +388,12 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-wire-chip.is-armed { border-color: var(--yj-yellow); color: var(--yj-yellow); animation: yj-blink 0.8s steps(2) infinite; }
 .yj-wire-chip.is-bound { color: var(--yj-ink); }
 
+.yj-constellation {
+  width: 100%; height: 190px; display: block;
+  background: var(--yj-well); border: 1px solid var(--yj-line);
+  touch-action: none;
+}
+
 /* ---------- credit line ---------- */
 .yj-credit {
   font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.05em;

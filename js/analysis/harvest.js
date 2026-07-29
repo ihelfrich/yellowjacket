@@ -379,7 +379,14 @@ function select(candidates) {
     c.picked = true;
     counters[c.role]++;
     c.label = `${c.role} ${counters[c.role]}`;
-    picks.push({ t0: c.t0, t1: c.t1, role: c.role, label: c.label, score: c.score });
+    // The features are what the constellation projects; computing them and
+    // throwing them away was a waste of the only timbral model we have.
+    const f = c.features;
+    picks.push({
+      t0: c.t0, t1: c.t1, role: c.role, label: c.label, score: c.score,
+      features: [f.attackDb, f.sustainDb, f.low, f.mid, f.high,
+        f.centroidHz, f.flatness, f.harmonicity],
+    });
   }
   return picks;
 }

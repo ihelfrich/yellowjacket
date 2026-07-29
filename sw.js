@@ -3,7 +3,7 @@
 // Cross-origin requests (CDN transformers.js, HF model shards) are never intercepted;
 // they manage their own caching. Scope-relative URLs keep this working under
 // the /yellowjacket/ GitHub Pages subpath.
-const VERSION = 'yj-v13';
+const VERSION = 'yj-v14';
 
 const PRECACHE = [
   'js/app/persist.js',
@@ -63,6 +63,8 @@ const PRECACHE = [
   './js/machine/pattern-ui.js',
   './js/machine/song-ui.js',
   './js/machine/cliplist-ui.js',
+  './js/machine/constellation-ui.js',
+  './js/analysis/constellation.js',
   './js/machine/voice-ui.js',
   './js/machine/sequencer.js',
   './js/machine/slice-ui.js',

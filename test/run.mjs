@@ -22,6 +22,7 @@ import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '..
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
 import { harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS } from '../js/analysis/harvest.js';
+import { project2d, standardize, axisLabel } from '../js/analysis/constellation.js';
 import { stretchSamples, stretchMode } from '../js/dsp/stretch.js';
 import { plateImpulse, delayTimeFor, dampingCoeff } from '../js/dsp/space.js';
 import { nextId, addMeta, removeMeta, listFromIndex } from '../js/app/crate.js';
@@ -1206,6 +1207,62 @@ const clipCases = [
   },
 ];
 
+const constellationCases = [
+  function standardizeHandlesMixedScalesAndConstants() {
+    // Features span dB in the tens, ratios in [0,1] and Hz in the thousands, so
+    // without standardising the centroid alone would dictate both axes.
+    const rows = [[10, 0.2, 4000], [12, 0.9, 200], [11, 0.5, 9000]];
+    const z = standardize(rows);
+    for (let j = 0; j < 3; j++) {
+      let mean = 0;
+      for (const r of z) mean += r[j];
+      close(mean / z.length, 0, 1e-9, 'column ' + j + ' centred');
+    }
+    const constant = standardize([[5, 1], [5, 2], [5, 3]]);
+    for (const r of constant) assert.ok(Number.isFinite(r[0]), 'a constant column stays finite');
+  },
+  function twoClustersSeparate() {
+    // Two obviously different timbres, four of each: the projection must put
+    // them on opposite sides, which is the whole point of the map.
+    const kicky = () => [14, -34, 0.85, 0.12, 0.02, 90, 0.03, 0.8];
+    const hatty = () => [16, -40, 0.02, 0.10, 0.86, 9000, 0.55, 0.05];
+    const jitter = (v, i) => v.map((x, j) => x * (1 + 0.01 * Math.sin(i * 7 + j)));
+    const rows = [];
+    for (let i = 0; i < 4; i++) rows.push(jitter(kicky(), i));
+    for (let i = 0; i < 4; i++) rows.push(jitter(hatty(), i + 40));
+    const out = project2d(rows);
+    assert.equal(out.points.length, 8, 'a point per slice');
+    const meanX = (from, to) => {
+      let acc = 0;
+      for (let i = from; i < to; i++) acc += out.points[i].x;
+      return acc / (to - from);
+    };
+    const a = meanX(0, 4);
+    const b = meanX(4, 8);
+    assert.ok(Math.abs(a - b) > 0.8, 'the two families sit apart on the main axis: ' + a.toFixed(2) + ' vs ' + b.toFixed(2));
+    assert.ok(out.explained > 0.5, 'two axes explain most of the variation: ' + out.explained.toFixed(2));
+    for (const p of out.points) {
+      assert.ok(p.x >= -1.0001 && p.x <= 1.0001, 'x inside the box');
+      assert.ok(p.y >= -1.0001 && p.y <= 1.0001, 'y inside the box');
+    }
+  },
+  function deterministicAndDegenerateSafe() {
+    const rows = [[1, 2, 3, 4, 5, 6, 7, 8], [2, 1, 4, 3, 6, 5, 8, 7], [5, 5, 5, 5, 1, 1, 1, 1]];
+    assert.deepEqual(project2d(rows).points, project2d(rows).points, 'same input, same map');
+    assert.deepEqual(project2d([]).points, [], 'no slices, no points');
+    assert.deepEqual(project2d([[1, 2, 3]]).points, [{ x: 0, y: 0 }], 'one slice sits at the origin');
+    const identical = project2d([[1, 1], [1, 1], [1, 1]]);
+    for (const p of identical.points) {
+      assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), 'identical slices stay finite');
+    }
+  },
+  function axisLabelsNameTheDominantFeature() {
+    assert.equal(axisLabel([0, 0, 0, 0, 0, 0, 0, 0.9]), '+PITCHED', 'positive dominant feature');
+    assert.equal(axisLabel([-0.9, 0.1]), '-ATTACK', 'negative dominant feature');
+    assert.equal(axisLabel(null), '?', 'no vector, no claim');
+  },
+];
+
 const crateCases = [
   function indexMathRoundtrips() {
     let index = { maxId: 0, items: [] };
@@ -1508,6 +1565,7 @@ const groups = [
   ['midi clock', midiCases],
   ['song compiler', songCases],
   ['harvest', harvestCases],
+  ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],
   ['undo history', undoCases],
