@@ -65,6 +65,8 @@ function serializeTrack(track) {
     duckSource: track.duckSource,
     duckDb: track.duckDb,
     choke: !!track.choke,
+    sendVerb: track.sendVerb,
+    sendDelay: track.sendDelay,
   };
 }
 
@@ -116,6 +118,7 @@ export function serializeProject(project, runtime) {
       activeScene: machine.activeScene,
       scenes: machine.scenes.map(serializeScene),
       song: machine.song ? clone(machine.song) : null,
+      space: machine.space ? clone(machine.space) : null,
     },
     assets,
     repairs: clone(runtime.repairs || []),
@@ -142,7 +145,10 @@ function applyTrack(track, saved) {
     if (Number.isFinite(sv.res)) v.res = Math.max(0.5, Math.min(8, sv.res));
     if (Number.isFinite(sv.hpf)) v.hpf = Math.max(20, Math.min(2000, sv.hpf));
     if (Number.isFinite(sv.drive)) v.drive = Math.max(0, Math.min(24, sv.drive));
+    if (Number.isFinite(sv.fitSteps)) v.fitSteps = Math.max(0, Math.min(64, sv.fitSteps | 0));
   }
+  if (Number.isFinite(saved.sendVerb)) track.sendVerb = Math.max(0, Math.min(1, saved.sendVerb));
+  if (Number.isFinite(saved.sendDelay)) track.sendDelay = Math.max(0, Math.min(1, saved.sendDelay));
   track.steps.fill(0);
   if (Array.isArray(saved.steps)) {
     const n = Math.min(MAX_STEPS, saved.steps.length);
@@ -250,6 +256,18 @@ export function applySnapshot(json, { project, runtime }) {
       }
       machine.song.loop = savedSong.loop !== false;
     }
+  }
+
+  // Space rack merges into the existing object (the bus graph closes over it).
+  if (machine.space && savedMachine.space && typeof savedMachine.space === 'object') {
+    const sp = machine.space;
+    const sv = savedMachine.space;
+    if (Number.isFinite(sv.verbSec)) sp.verbSec = Math.max(0.1, Math.min(8, sv.verbSec));
+    if (Number.isFinite(sv.verbDecay)) sp.verbDecay = Math.max(0.5, Math.min(8, sv.verbDecay));
+    if (Number.isFinite(sv.verbMix)) sp.verbMix = Math.max(0, Math.min(1, sv.verbMix));
+    if (typeof sv.delayDivision === 'string') sp.delayDivision = sv.delayDivision;
+    if (Number.isFinite(sv.delayFeedback)) sp.delayFeedback = Math.max(0, Math.min(0.95, sv.delayFeedback));
+    if (Number.isFinite(sv.delayMix)) sp.delayMix = Math.max(0, Math.min(1, sv.delayMix));
   }
 
   for (const key of Object.keys(project.assets)) delete project.assets[key];

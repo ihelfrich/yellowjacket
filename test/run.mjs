@@ -21,6 +21,8 @@ import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '..
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
 import { harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS } from '../js/analysis/harvest.js';
+import { stretchSamples, stretchMode } from '../js/dsp/stretch.js';
+import { plateImpulse, delayTimeFor, dampingCoeff } from '../js/dsp/space.js';
 import { nextId, addMeta, removeMeta, listFromIndex } from '../js/app/crate.js';
 import { existsSync } from 'node:fs';
 
@@ -689,6 +691,11 @@ function persistFixture() {
   s0.tracks[0].voice.res = 2.5;
   s0.tracks[0].voice.hpf = 60;
   s0.tracks[0].voice.drive = 9;
+  s0.tracks[0].voice.fitSteps = 16;
+  s0.tracks[0].sendVerb = 0.45;
+  s0.tracks[0].sendDelay = 0.2;
+  p.machine.space.delayDivision = '1/16';
+  p.machine.space.delayFeedback = 0.55;
   p.machine.song.chain.push({ scene: 0, reps: 2 }, { scene: 1, reps: 4 });
   p.machine.song.loop = false;
   return { p, r, idA, idB };
@@ -1166,6 +1173,106 @@ const crateCases = [
   },
 ];
 
+// ---------- conform: stretch + space (CONTRACT-CONFORM) ----------
+
+const conformCases = [
+  function ratioOneIsIdentityAndLengthsAreExact() {
+    // Identity at ratio 1 is what makes leaving CONFORM armed safe.
+    const src = new Float32Array(8192);
+    const rand = mulberry32(0xC0FFEE);
+    for (let i = 0; i < src.length; i++) {
+      src[i] = 0.4 * Math.sin(2 * Math.PI * 220 * i / 44100) + 0.1 * (rand() * 2 - 1);
+    }
+    for (const mode of ['auto', 'percussive', 'tonal', 'resample']) {
+      const same = stretchSamples(src, 1, 44100, { mode });
+      assert.deepEqual(same, src, 'ratio 1 is sample-identical: ' + mode);
+      for (const ratio of [0.5, 1.5, 2]) {
+        const out = stretchSamples(src, ratio, 44100, { mode });
+        assert.equal(out.length, Math.round(src.length * ratio), 'exact length ' + mode + ' x' + ratio);
+        for (let i = 0; i < out.length; i += 97) {
+          assert.ok(Number.isFinite(out[i]), 'finite output ' + mode);
+        }
+      }
+    }
+  },
+  function roleChoosesTheEngine() {
+    // The point of the slice: HARVEST already knows what the sound is.
+    for (const role of ['KICK', 'SNARE', 'HAT']) {
+      assert.equal(stretchMode(role), 'percussive', role + ' is percussive');
+    }
+    for (const role of ['BASS', 'TONE', 'VOX', 'FX', 'CRASH', 'NONSENSE', undefined]) {
+      assert.equal(stretchMode(role), 'tonal', String(role) + ' is tonal');
+    }
+  },
+  function tonalPathHoldsPitchWhereResampleDoesNot() {
+    const sr = 44100;
+    const n = sr;
+    const src = new Float32Array(n);
+    for (let i = 0; i < n; i++) src[i] = 0.5 * Math.sin(2 * Math.PI * 440 * i / sr);
+    const stretched = stretchSamples(src, 2, sr, { mode: 'tonal' });
+    const resampled = stretchSamples(src, 2, sr, { mode: 'resample' });
+    const mid = (x) => x.subarray(Math.floor(x.length * 0.25), Math.floor(x.length * 0.75));
+    const p440 = goertzelPower(mid(stretched), 440, sr);
+    const p220 = goertzelPower(mid(stretched), 220, sr);
+    assert.ok(p440 > p220 * 20, 'tonal stretch keeps 440 Hz dominant');
+    const r440 = goertzelPower(mid(resampled), 440, sr);
+    const r220 = goertzelPower(mid(resampled), 220, sr);
+    assert.ok(r220 > r440 * 20, 'resample drops an octave, proving the modes differ');
+  },
+  function percussivePathKeepsTransientCount() {
+    const sr = 44100;
+    const n = sr;
+    const src = new Float32Array(n);
+    for (let k = 0; k < 8; k++) {
+      const at = Math.round(k * sr / 8);
+      for (let i = 0; i < 60; i++) src[at + i] = (1 - i / 60) * (i % 2 ? -1 : 1);
+    }
+    const out = stretchSamples(src, 2, sr, { mode: 'percussive' });
+    assert.equal(out.length, 2 * n, 'length exact');
+    // Count peaks over a threshold, with a hold so one click counts once.
+    let clicks = 0;
+    let hold = 0;
+    for (let i = 0; i < out.length; i++) {
+      if (hold > 0) { hold--; continue; }
+      if (Math.abs(out[i]) > 0.5) { clicks++; hold = Math.round(sr * 0.05); }
+    }
+    assert.equal(clicks, 8, 'all 8 transients survive, none doubled: got ' + clicks);
+  },
+  function plateIsDeterministicAndDecays() {
+    const sr = 44100;
+    const a = plateImpulse(sr, 1.5, 0.7, 10);
+    const b = plateImpulse(sr, 1.5, 0.7, 10);
+    assert.deepEqual(a.left, b.left, 'plate is deterministic (left)');
+    assert.deepEqual(a.right, b.right, 'plate is deterministic (right)');
+    assert.equal(a.left.length, Math.round((1.5 + 0.01) * sr), 'length includes predelay');
+    const pre = Math.round(0.01 * sr);
+    for (let i = 0; i < pre; i++) assert.equal(a.left[i], 0, 'predelay is silent');
+    const rms = (x, from, to) => {
+      let acc = 0;
+      for (let i = from; i < to; i++) acc += x[i] * x[i];
+      return Math.sqrt(acc / (to - from));
+    };
+    const n = a.left.length;
+    const t1 = rms(a.left, pre, pre + Math.floor((n - pre) / 3));
+    const t2 = rms(a.left, pre + Math.floor((n - pre) / 3), pre + Math.floor(2 * (n - pre) / 3));
+    const t3 = rms(a.left, pre + Math.floor(2 * (n - pre) / 3), n);
+    assert.ok(t1 > t2 && t2 > t3, 'tail decays monotonically: ' + [t1, t2, t3].map((v) => v.toFixed(4)));
+    for (let i = 0; i < n; i += 131) assert.ok(Number.isFinite(a.left[i]), 'finite impulse');
+  },
+  function delayDivisionsAndDamping() {
+    close(delayTimeFor(120, '1/4'), 0.5, 1e-12, 'quarter at 120');
+    close(delayTimeFor(120, '1/8'), 0.25, 1e-12, 'eighth at 120');
+    close(delayTimeFor(120, '1/8.'), 0.375, 1e-12, 'dotted eighth is 1.5x');
+    close(delayTimeFor(120, '1/8t'), 1 / 6, 1e-12, 'triplet eighth is 2/3x');
+    close(delayTimeFor(120, '1/16'), 0.125, 1e-12, 'sixteenth at 120');
+    assert.ok(delayTimeFor(120, 'nonsense') > 0, 'unknown division falls back, never NaN');
+    const lo = dampingCoeff(200, 48000);
+    const hi = dampingCoeff(8000, 48000);
+    assert.ok(lo > hi, 'damping coefficient falls as cutoff rises');
+    assert.ok(lo > 0 && lo < 1 && hi > 0 && hi < 1, 'coefficient stays inside (0,1)');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -1179,6 +1286,7 @@ const groups = [
   ['song compiler', songCases],
   ['harvest', harvestCases],
   ['crate index', crateCases],
+  ['conform', conformCases],
 ];
 
 for (const [name, cases] of groups) {

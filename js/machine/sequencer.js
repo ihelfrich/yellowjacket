@@ -5,6 +5,9 @@
 // FREEZE is the performance.
 
 import { encodeWav, encodeWavWithStats } from '../export.js';
+import { stretchSamples } from '../dsp/stretch.js';
+import { plateImpulse, delayTimeFor, dampingCoeff } from '../dsp/space.js';
+import { processLimiter } from '../dsp/limiter.js';
 import {
   compileRender,
   compileSong,
@@ -72,6 +75,7 @@ export class Sequencer extends EventTarget {
     this._song = null;
     this._songTimer = 0;
     this._songAnchor = 0;
+    this._rack = null;
   }
 
   setMachine(machine) {
@@ -80,7 +84,7 @@ export class Sequencer extends EventTarget {
     this._bufferCache = [];
   }
 
-  trackBuffer(i, reversed = false) {
+  trackBuffer(i, reversed = false, fitSec = null) {
     const index = trackIndex(i);
     const ctx = this._engine && this._engine.ctx;
     const tracks = this._machine && this._machine.tracks;
@@ -90,17 +94,76 @@ export class Sequencer extends EventTarget {
 
     let cached = this._bufferCache[index];
     if (!cached || cached.ctx !== ctx || cached.sample !== sample) {
-      cached = { ctx, sample, buffer: createTrackBuffer(ctx, sample, false), rbuffer: null };
+      cached = { ctx, sample, buffer: createTrackBuffer(ctx, sample, false), rbuffer: null, fitted: new Map() };
       this._bufferCache[index] = cached;
+    }
+    if (fitSec > 0) {
+      const key = fitKey(reversed, fitSec);
+      if (!cached.fitted.has(key)) {
+        let baked = null;
+        try { baked = createFittedBuffer(ctx, sample, reversed, fitSec); } catch (e) { baked = null; }
+        cached.fitted.set(key, baked);
+      }
+      const fittedBuffer = cached.fitted.get(key);
+      if (fittedBuffer) return fittedBuffer;
+      // bake failed: fall through to the natural-speed buffer, never drop the voice
     }
     if (!reversed) return cached.buffer;
     if (!cached.rbuffer) cached.rbuffer = createTrackBuffer(ctx, sample, true);
     return cached.rbuffer;
   }
 
+  // Bake every fitted buffer the current machine needs BEFORE transport starts.
+  // Baking costs tens of milliseconds per slice, which is fine here and would
+  // be a dropped audio frame inside the scheduler (CONTRACT-CONFORM 3).
+  prebake(scenes) {
+    const ctx = this._engine && this._engine.ctx;
+    if (!ctx || !this._machine) return;
+    const list = Array.isArray(scenes) && scenes.length
+      ? scenes
+      : [{ tracks: this._machine.tracks, bpm: this._machine.bpm }];
+    for (const scene of list) {
+      const tracks = scene && scene.tracks;
+      if (!Array.isArray(tracks)) continue;
+      const bpm = scene.bpm > 0 ? scene.bpm : 120;
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        const steps = track && track.voice ? track.voice.fitSteps : 0;
+        if (!track || !track.sample || !(steps > 0)) continue;
+        const fitSec = steps * (60 / bpm / 4);
+        // Warm the cache for both directions the pattern might ask for.
+        this.trackBuffer(i, false, fitSec);
+        if (track.voice.reverse) this.trackBuffer(i, true, fitSec);
+      }
+    }
+  }
+
+  // One live rack per context/destination. Rebuilt when the space settings or
+  // tempo change, since the plate impulse and delay time are baked from them.
+  _liveRack(ctx, dest) {
+    const space = (this._machine && this._machine.space) || {};
+    const bpm = (this._machine && this._machine.bpm) || 120;
+    const sig = [ctx.sampleRate, space.verbSec, space.verbDecay, space.verbMix,
+      space.delayDivision, space.delayFeedback, space.delayMix, bpm].join('|');
+    if (this._rack && this._rack.ctx === ctx && this._rack.dest === dest && this._rack.sig === sig) {
+      return this._rack;
+    }
+    const rack = createSpaceRack(ctx, dest, space, bpm);
+    rack.sig = sig;
+    this._rack = rack;
+    return rack;
+  }
+
   bumpTrack(i) {
     const index = trackIndex(i);
     if (index >= 0) this._bufferCache[index] = null;
+  }
+
+  // Send amounts are baked into the strip graph, so changing one rebuilds the
+  // strips on the next voice rather than mutating a live node.
+  bumpStrips() {
+    this._resetStrips();
+    this._strips = [];
   }
 
   start() {
@@ -116,6 +179,7 @@ export class Sequencer extends EventTarget {
     resumeContext(ctx);
     this._ctx = ctx;
     this._master = master;
+    this.prebake();   // fitted buffers cost tens of ms: never inside the scheduler
     this._anchor = ctx.currentTime + START_DELAY_SEC;
     this._scheduledUntil = 0;
     this._lastStep = -1;
@@ -179,12 +243,20 @@ export class Sequencer extends EventTarget {
       ctx,
       strips,
       dest: ctx.destination,
-      buffer: (index, reversed) => {
-        const key = reversed ? 'r' : 'f';
+      tracks,
+      rack: createSpaceRack(ctx, ctx.destination, this._machine && this._machine.space,
+        this._machine && this._machine.bpm),
+      buffer: (index, reversed, fitSec) => {
+        const key = (fitSec > 0 ? fitKey(reversed, fitSec) : (reversed ? 'r' : 'f'));
         if (!buffers[index]) buffers[index] = {};
         if (buffers[index][key] === undefined) {
           const track = tracks[index];
-          buffers[index][key] = createTrackBuffer(ctx, track && track.sample, reversed);
+          const sample = track && track.sample;
+          let baked = null;
+          if (sample && fitSec > 0) {
+            try { baked = createFittedBuffer(ctx, sample, reversed, fitSec); } catch (e) { baked = null; }
+          }
+          buffers[index][key] = baked || createTrackBuffer(ctx, sample, reversed);
         }
         return buffers[index][key];
       },
@@ -198,7 +270,7 @@ export class Sequencer extends EventTarget {
       applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
-    return encodeWav(rendered, 16);
+    return encodeWav(await masterLimit(rendered), 16);
   }
 
   // ---- song transport (CONTRACT-SONG 2): one precompiled stream feeds the
@@ -216,6 +288,7 @@ export class Sequencer extends EventTarget {
     resumeContext(ctx);
     this._ctx = ctx;
     this._master = master;
+    this.prebake(this._machine && this._machine.scenes);
     const scenes = this._machine && Array.isArray(this._machine.scenes)
       ? this._machine.scenes
       : [];
@@ -273,6 +346,8 @@ export class Sequencer extends EventTarget {
     const cache = new Map();
     const strips = [];
     const lastTrackVoice = [];
+    const songRack = createSpaceRack(ctx, ctx.destination, this._machine && this._machine.space,
+      this._machine && this._machine.bpm);
     const schedulers = compiled.sections.map((section) => {
       const scene = scenes[section.scene];
       const tracks = scene && Array.isArray(scene.tracks) ? scene.tracks : [];
@@ -280,7 +355,9 @@ export class Sequencer extends EventTarget {
         ctx,
         strips,
         dest: ctx.destination,
-        buffer: (index, reversed) => songBuffer(ctx, cache, tracks, index, reversed),
+        tracks,
+        rack: songRack,
+        buffer: (index, reversed, fitSec) => songBuffer(ctx, cache, tracks, index, reversed, fitSec),
         lastTrackVoice,
         machine: { tracks },
       };
@@ -294,7 +371,8 @@ export class Sequencer extends EventTarget {
       applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
-    const { blob, stats } = encodeWavWithStats(rendered, bitDepth === 16 ? 16 : 24);
+    const mastered = await masterLimit(rendered);
+    const { blob, stats } = encodeWavWithStats(mastered, bitDepth === 16 ? 16 : 24);
     return { bytes: await blob.arrayBuffer(), stats, totalSec: compiled.totalSec };
   }
 
@@ -305,7 +383,9 @@ export class Sequencer extends EventTarget {
       ctx,
       strips: this._strips,
       dest: master,
-      buffer: (index, reversed) => songBuffer(ctx, cache, tracks, index, reversed),
+      tracks,
+      rack: this._liveRack(ctx, master),
+      buffer: (index, reversed, fitSec) => songBuffer(ctx, cache, tracks, index, reversed, fitSec),
       lastTrackVoice: this._lastTrackVoice,
       machine: { tracks },
       voices: this._voices,
@@ -423,7 +503,8 @@ export class Sequencer extends EventTarget {
       ctx,
       strips: this._strips,
       dest: master,
-      buffer: (index, reversed) => this.trackBuffer(index, reversed),
+      rack: this._liveRack(ctx, this._master),
+      buffer: (index, reversed, fitSec) => this.trackBuffer(index, reversed, fitSec),
       lastTrackVoice: this._lastTrackVoice,
       machine: this._machine,
       voices: this._voices,
@@ -532,9 +613,12 @@ export function planEnvelope(event, bufferSec = Infinity) {
 // buffer(index, reversed), lastTrackVoice, machine, voices?, owner? }.
 function scheduleEvent(scheduler, event, when, oneShot = false) {
   const { ctx } = scheduler;
-  const buffer = scheduler.buffer(event.track, !!event.reverse);
+  const buffer = scheduler.buffer(event.track, !!event.reverse, event.fitSec || null);
   if (!buffer || !(event.gain > 0)) return;
-  const strip = ensureStrip(scheduler.strips, event.track, ctx, scheduler.dest);
+  const stripTracks = scheduler.machine && scheduler.machine.tracks;
+  const strip = ensureStrip(scheduler.strips, event.track, ctx, scheduler.dest,
+    scheduler.tracks ? scheduler.tracks[event.track] : (stripTracks && stripTracks[event.track]),
+    scheduler.rack);
   const startAt = Math.max(ctx.currentTime || 0, when);
 
   const gainNode = ctx.createGain();
@@ -670,6 +754,34 @@ function compileTrigger(machine, index) {
   return events.length ? events[0] : null;
 }
 
+// Baking a fitted buffer costs 37-61 ms for a 2 s slice (measured), so it can
+// never happen on the audio path: prebake() runs it before transport starts and
+// this returns the unstretched buffer if a bake is somehow missing.
+// Key: sample identity + reverse + fitSec, so live and offline agree exactly.
+function fitKey(reversed, fitSec) {
+  return (reversed ? 'r' : 'f') + ':' + Math.round(fitSec * 10000);
+}
+
+function createFittedBuffer(ctx, sample, reversed, fitSec) {
+  const rate = Math.round(Number(sample.sampleRate));
+  const frames = sample.channels[0] ? sample.channels[0].length : 0;
+  if (!frames || !(fitSec > 0) || !(rate > 0)) return null;
+  const target = Math.max(1, Math.round(fitSec * rate));
+  const ratio = target / frames;
+  const mode = 'auto';
+  const role = sample.role;
+  const out = [];
+  for (const channel of sample.channels) {
+    const src = reversed ? Float32Array.from(channel).reverse() : channel;
+    out.push(stretchSamples(src, ratio, rate, { mode, role }));
+  }
+  const length = out[0] ? out[0].length : 0;
+  if (!length) return null;
+  const buffer = ctx.createBuffer(out.length, length, rate);
+  for (let c = 0; c < out.length; c++) buffer.getChannelData(c).set(out[c]);
+  return buffer;
+}
+
 function createTrackBuffer(ctx, sample, reversed = false) {
   if (!sample || !sample.channels || !sample.channels.length) return null;
   const sampleRate = Math.round(Number(sample.sampleRate));
@@ -701,14 +813,24 @@ function createTrackBuffer(ctx, sample, reversed = false) {
 
 // Per-song buffer resolution: samples come from the section's own scene, and
 // the forward/reversed AudioBuffers cache on the whole sample object.
-function songBuffer(ctx, cache, tracks, index, reversed) {
+function songBuffer(ctx, cache, tracks, index, reversed, fitSec) {
   const track = tracks[index];
   const sample = track && track.sample;
   if (!ctx || !sample) return null;
   let entry = cache.get(sample);
   if (!entry || entry.ctx !== ctx) {
-    entry = { ctx, forward: createTrackBuffer(ctx, sample, false), reversed: null };
+    entry = { ctx, forward: createTrackBuffer(ctx, sample, false), reversed: null, fitted: new Map() };
     cache.set(sample, entry);
+  }
+  if (fitSec > 0) {
+    const key = fitKey(reversed, fitSec);
+    if (!entry.fitted.has(key)) {
+      let baked = null;
+      try { baked = createFittedBuffer(ctx, sample, reversed, fitSec); } catch (e) { baked = null; }
+      entry.fitted.set(key, baked);
+    }
+    const fittedBuffer = entry.fitted.get(key);
+    if (fittedBuffer) return fittedBuffer;
   }
   if (!reversed) return entry.forward;
   if (!entry.reversed) entry.reversed = createTrackBuffer(ctx, sample, true);
@@ -729,7 +851,70 @@ function songSampleRate(scenes, sections) {
   return Math.round(sampleRate);
 }
 
-function ensureStrip(strips, index, ctx, dest) {
+// SPACE rack (CONTRACT-CONFORM 4): one plate and one tempo-synced delay per
+// context, fed from the per-track strips so a duck ducks the sends too, and
+// so the cost is two gain nodes per track rather than per voice.
+// Master stage for offline renders: the same lookahead true-peak limiter the
+// RACK uses, at a -0.3 dBTP ceiling. Eight tracks plus sends sum well past
+// unity, and a bench that reports true peak to 0.1 dB cannot ship clipped WAVs.
+async function masterLimit(buffer) {
+  try {
+    return await processLimiter(buffer, { ceiling: -0.3 });
+  } catch (e) {
+    return buffer;   // never lose a render to the master stage
+  }
+}
+
+function createSpaceRack(ctx, dest, space, bpm) {
+  const s = space || {};
+  const rack = { ctx, dest, verbIn: null, delayIn: null };
+  try {
+    const convolver = ctx.createConvolver();
+    // MUST be false: ConvolverNode's own equal-power scaling would discard
+    // the unity-RMS normalization plateImpulse applies (space agent hazard 1).
+    convolver.normalize = false;
+    const ir = plateImpulse(ctx.sampleRate, s.verbSec, s.verbDecay, 12);
+    const irBuffer = ctx.createBuffer(2, ir.left.length, ctx.sampleRate);
+    irBuffer.getChannelData(0).set(ir.left);
+    irBuffer.getChannelData(1).set(ir.right);
+    convolver.buffer = irBuffer;
+    const verbIn = ctx.createGain();
+    const verbOut = ctx.createGain();
+    // plateImpulse normalizes to unity RMS PER SAMPLE, so convolving with it
+    // multiplies level by roughly sqrt(N) for a noise-like tail. Trimming by
+    // 1/sqrt(N) is what makes verbMix mean the same thing at every plate
+    // length; a flat constant here clips the master (measured: 15% of samples
+    // pinned at full scale before this fix).
+    const verbNorm = 1 / Math.sqrt(Math.max(1, irBuffer.length));
+    verbOut.gain.value = (s.verbMix != null ? s.verbMix : 0.9) * verbNorm;
+    verbIn.connect(convolver);
+    convolver.connect(verbOut);
+    verbOut.connect(dest);
+    rack.verbIn = verbIn;
+  } catch (e) { /* no convolver: the dry path is unaffected */ }
+  try {
+    const delayTime = delayTimeFor(bpm, s.delayDivision);
+    const delayIn = ctx.createGain();
+    const delayNode = ctx.createDelay(Math.max(0.05, delayTime * 2 + 0.5));
+    delayNode.delayTime.value = delayTime;
+    const feedback = ctx.createGain();
+    feedback.gain.value = Math.max(0, Math.min(0.9, s.delayFeedback != null ? s.delayFeedback : 0.38));
+    const a = dampingCoeff(3200, ctx.sampleRate);
+    const damp = ctx.createIIRFilter([1 - a, 0], [1, -a]);
+    const delayOut = ctx.createGain();
+    delayOut.gain.value = (s.delayMix != null ? s.delayMix : 0.8) * 0.5;
+    delayIn.connect(delayNode);
+    delayNode.connect(damp);
+    damp.connect(feedback);
+    feedback.connect(delayNode);   // damped feedback loop
+    delayNode.connect(delayOut);
+    delayOut.connect(dest);
+    rack.delayIn = delayIn;
+  } catch (e) { /* no delay: dry path unaffected */ }
+  return rack;
+}
+
+function ensureStrip(strips, index, ctx, dest, track, rack) {
   const existing = strips[index];
   if (existing && existing.ctx === ctx && existing.dest === dest) return existing;
   if (existing) {
@@ -738,6 +923,22 @@ function ensureStrip(strips, index, ctx, dest) {
   const duckGain = ctx.createGain();
   duckGain.connect(dest);
   const strip = { ctx, dest, duckGain };
+  const verbAmt = track && Number.isFinite(track.sendVerb) ? track.sendVerb : 0;
+  const delayAmt = track && Number.isFinite(track.sendDelay) ? track.sendDelay : 0;
+  if (rack && rack.verbIn && verbAmt > 0) {
+    const send = ctx.createGain();
+    send.gain.value = verbAmt;
+    duckGain.connect(send);
+    send.connect(rack.verbIn);
+    strip.verbSend = send;
+  }
+  if (rack && rack.delayIn && delayAmt > 0) {
+    const send = ctx.createGain();
+    send.gain.value = delayAmt;
+    duckGain.connect(send);
+    send.connect(rack.delayIn);
+    strip.delaySend = send;
+  }
   strips[index] = strip;
   return strip;
 }

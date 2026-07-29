@@ -338,6 +338,16 @@ export function initMachineController(ctx) {
   patternView.addEventListener('voiceopen', (e) => openVoice(e.detail.track));
   voiceView.addEventListener('close', () => { $('voiceHost').hidden = true; voiceTrack = -1; });
   voiceView.addEventListener('trig', (e) => sequencer.trigger(e.detail.track));
+  // Sends live on the track, not the voice: they are mix controls, and they
+  // sit with gain and pan (CONTRACT-CONFORM 4).
+  voiceView.addEventListener('send', (e) => {
+    const { track, which, value } = e.detail;
+    store.update('mix', (p) => {
+      const t = p.machine.tracks[track];
+      if (t) t[which] = Math.max(0, Math.min(1, value));
+    });
+    sequencer.bumpStrips ? sequencer.bumpStrips() : null;
+  });
   voiceView.addEventListener('voiceedit', (e) => {
     const { track, patch } = e.detail;
     store.update('voice', (p) => {
@@ -346,6 +356,19 @@ export function initMachineController(ctx) {
       if (!t.voice) t.voice = normalizeVoice(null);
       Object.assign(t.voice, patch);
     });
+    // Bake now, while the user is still turning the knob. A fitted bake costs
+    // a couple of hundred milliseconds and would drop frames if it happened
+    // when they hit play (CONTRACT-CONFORM 3).
+    if ('fitSteps' in patch || 'reverse' in patch) {
+      const steps = P.machine.tracks[track] && P.machine.tracks[track].voice.fitSteps;
+      if (steps > 0) {
+        status('FITTING · stretching the slice to ' + steps + ' steps', true);
+        setTimeout(() => {
+          sequencer.prebake();
+          status('FIT · ' + steps + ' STEPS AT ' + P.machine.bpm.toFixed(1) + ' BPM');
+        }, 0);
+      }
+    }
   });
 
   // Section seconds without compiling events: steps x stepDur x reps per entry.

@@ -16,6 +16,7 @@ export function createVoice() {
     res: 0.7,              // lowpass resonance 0.5..8
     hpf: 20,               // Hz; <= 25 = off
     drive: 0,              // dB 0..24; 0 = off
+    fitSteps: 0,           // 0 = off; else stretch the slice to N steps (CONTRACT-CONFORM)
   };
 }
 
@@ -34,6 +35,19 @@ export function createTrack() {
     duckSource: -1,        // -1 off; else index of the track whose hits duck this one
     duckDb: 12,
     choke: false,          // mono track: each hit fades the previous voice
+    sendVerb: 0,           // 0..1 into the plate bus (CONTRACT-CONFORM space rack)
+    sendDelay: 0,          // 0..1 into the tempo-synced delay bus
+  };
+}
+
+export function createSpace() {
+  return {
+    verbSec: 1.8,
+    verbDecay: 2.5,
+    verbMix: 0.9,
+    delayDivision: '1/8.',
+    delayFeedback: 0.38,
+    delayMix: 0.8,
   };
 }
 
@@ -55,6 +69,7 @@ export function createMachine() {
     pendingScene: null,
     scenes: Array.from({ length: 8 }, (_, i) => createScene(i)),
     song: { chain: [], loop: true },   // patterns of patterns, see CONTRACT-SONG.md
+    space: createSpace(),              // send rack, see CONTRACT-CONFORM.md
   };
   // Active-scene aliases keep compile.js and PatternView working unchanged: they read
   // machine.bpm / machine.swing / machine.tracks and never learn about scenes.

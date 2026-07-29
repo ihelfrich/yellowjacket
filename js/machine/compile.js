@@ -41,6 +41,9 @@ export function normalizeVoice(voice) {
     res: clamp(finiteOr(v.res, VOICE_DEFAULT_RES), 0.5, 8),
     hpf: clamp(finiteOr(v.hpf, VOICE_DEFAULT_HPF_HZ), 20, 2000),
     drive: clamp(finiteOr(v.drive, VOICE_DEFAULT_DRIVE_DB), 0, 24),
+    // 0 = play at natural speed; else conform the slice to N steps
+    // at the scene tempo (CONTRACT-CONFORM 2).
+    fitSteps: clamp(Math.round(finiteOr(v.fitSteps, 0)), 0, 64),
   };
 }
 
@@ -132,6 +135,8 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
       resQ: voice.lpf < LPF_OFF_HZ ? voice.res : null,
       hpfHz: voice.hpf > HPF_OFF_HZ ? voice.hpf : null,
       driveDb: voice.drive > 0 ? voice.drive : null,
+      // Unswung on purpose: swing moves onsets, never durations.
+      fitSec: voice.fitSteps > 0 ? voice.fitSteps * (60 / bpm / 4) : null,
     });
   }
   // Duck routing: source track index -> [{ track, depthDb }]
@@ -221,6 +226,7 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
         }
         if (p.hpfHz !== null) event.hpfHz = p.hpfHz;
         if (p.driveDb !== null) event.driveDb = p.driveDb;
+        if (p.fitSec !== null) event.fitSec = p.fitSec;
         events.push(event);
         const targets = duckTargets.get(p.track);
         if (targets && gain > 0) {

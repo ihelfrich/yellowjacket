@@ -190,6 +190,27 @@ export class VoiceView extends EventTarget {
     drive.addEventListener('input', () => this._patch('drive', Math.round(Number(drive.value))));
     group('DRIVE', drive, driveVal);
 
+    // CONFORM: 0 = natural speed. Otherwise the slice stretches to N steps at
+    // the scene tempo, keeping its pitch (percussive and tonal engines picked
+    // by the slice's harvested role).
+    const fit = range(0, 32, 1, 0, 'Conform the slice to N steps at the scene tempo; 0 is off');
+    const fitVal = val();
+    fit.addEventListener('input', () => this._patch('fitSteps', Math.round(Number(fit.value))));
+    group('FIT', fit, fitVal);
+
+    const sVerb = range(0, 100, 1, 0, 'Send into the plate');
+    const sVerbVal = val();
+    sVerb.addEventListener('input', () => this._emit('send', { track: this._track, which: 'sendVerb', value: Number(sVerb.value) / 100 }));
+    group('VERB', sVerb, sVerbVal);
+
+    const sDelay = range(0, 100, 1, 0, 'Send into the tempo-synced delay');
+    const sDelayVal = val();
+    sDelay.addEventListener('input', () => this._emit('send', { track: this._track, which: 'sendDelay', value: Number(sDelay.value) / 100 }));
+    group('DLY', sDelay, sDelayVal);
+
+    this._fit = fit; this._fitVal = fitVal;
+    this._sVerb = sVerb; this._sVerbVal = sVerbVal;
+    this._sDelay = sDelay; this._sDelayVal = sDelayVal;
     this._lpf = lpf; this._lpfVal = lpfVal;
     this._res = res; this._resVal = resVal;
     this._hpf = hpf; this._hpfVal = hpfVal;
@@ -261,6 +282,15 @@ export class VoiceView extends EventTarget {
     this._rel.value = String(v.release);
     this._relVal.textContent = v.release + ' ms';
     this._rev.classList.toggle('is-on', v.reverse);
+    const fitSteps = v.fitSteps == null ? 0 : v.fitSteps;
+    this._fit.value = String(fitSteps);
+    this._fitVal.textContent = fitSteps === 0 ? 'OFF' : fitSteps + ' STEP' + (fitSteps === 1 ? '' : 'S');
+    const sv = t && Number.isFinite(t.sendVerb) ? t.sendVerb : 0;
+    this._sVerb.value = String(Math.round(sv * 100));
+    this._sVerbVal.textContent = sv === 0 ? 'OFF' : Math.round(sv * 100) + '%';
+    const sd = t && Number.isFinite(t.sendDelay) ? t.sendDelay : 0;
+    this._sDelay.value = String(Math.round(sd * 100));
+    this._sDelayVal.textContent = sd === 0 ? 'OFF' : Math.round(sd * 100) + '%';
     const lpf = v.lpf == null ? 20000 : v.lpf;
     this._lpf.value = String(lpf);
     this._lpfVal.textContent = lpf >= 18000 ? 'OFF' : (lpf >= 1000 ? (lpf / 1000).toFixed(1) + 'k' : lpf + ' Hz');
