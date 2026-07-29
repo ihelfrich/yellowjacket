@@ -16,6 +16,13 @@ const OUTLIER_FRAC = 0.3; // reject intervals outside +/-30% of the estimate
 export function planTicks(fromSec, toSec, bpm, phase) {
   const period = 60 / (bpm * PPQN);
   let next = phase == null ? fromSec : phase;
+  // A stalled tab leaves the phase far behind the window. Emitting every tick
+  // it missed sends hundreds of bytes stamped in the past, which arrive as one
+  // burst and shove the slave instead of resuming (Codex finding 10: a 10 s
+  // stall produced 484 ticks for an 80 ms window). Skip forward on the grid.
+  if (period > 0 && next < fromSec) {
+    next += Math.ceil((fromSec - next) / period) * period;
+  }
   const ticks = [];
   while (next < toSec) {
     ticks.push(next);

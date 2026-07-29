@@ -141,10 +141,13 @@ export function initMachineController(ctx) {
     }
     store.update('machine', (p) => {
       const label = clip.label || clip.tag;
-      const id = registerAsset(p, { kind: 'sample', label, sampleRate: buf.sampleRate, frames: n });
+      // HARVEST's role rides along as clip.tag; without it every fitted slice
+      // would take the tonal path and smear drum transients.
+      const role = clip.tag ? String(clip.tag).toUpperCase() : undefined;
+      const id = registerAsset(p, { kind: 'sample', label, sampleRate: buf.sampleRate, frames: n, role });
       const track = p.machine.tracks[e.detail.track];
       track.sampleId = id;
-      track.sample = { channels, sampleRate: buf.sampleRate, label };
+      track.sample = { channels, sampleRate: buf.sampleRate, label, role };
     });
     sequencer.bumpTrack(e.detail.track);
     patternView.setMachine(P.machine);
@@ -562,7 +565,7 @@ export function initMachineController(ctx) {
         });
         const track = p.machine.tracks[slot];
         track.sampleId = assetId;
-        track.sample = { channels: [pcm], sampleRate: meta.sampleRate, label: meta.name };
+        track.sample = { channels: [pcm], sampleRate: meta.sampleRate, label: meta.name, role: meta.role };
         if (meta.voice) Object.assign(track.voice, meta.voice);
       });
       sequencer.bumpTrack(slot);

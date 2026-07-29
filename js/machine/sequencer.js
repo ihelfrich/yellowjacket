@@ -84,7 +84,7 @@ export class Sequencer extends EventTarget {
     this._bufferCache = [];
   }
 
-  trackBuffer(i, reversed = false, fitSec = null) {
+  trackBuffer(i, reversed = false, fitSec = null, offsetSec = 0, sliceSec = 0) {
     const index = trackIndex(i);
     const ctx = this._engine && this._engine.ctx;
     const tracks = this._machine && this._machine.tracks;
@@ -98,10 +98,12 @@ export class Sequencer extends EventTarget {
       this._bufferCache[index] = cached;
     }
     if (fitSec > 0) {
-      const key = fitKey(reversed, fitSec);
+      const key = fitKey(reversed, fitSec, offsetSec, sliceSec);
       if (!cached.fitted.has(key)) {
         let baked = null;
-        try { baked = createFittedBuffer(ctx, sample, reversed, fitSec); } catch (e) { baked = null; }
+        try {
+          baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+        } catch (e) { baked = null; }
         cached.fitted.set(key, baked);
       }
       const fittedBuffer = cached.fitted.get(key);
@@ -131,9 +133,22 @@ export class Sequencer extends EventTarget {
         const steps = track && track.voice ? track.voice.fitSteps : 0;
         if (!track || !track.sample || !(steps > 0)) continue;
         const fitSec = steps * (60 / bpm / 4);
-        // Warm the cache for both directions the pattern might ask for.
-        this.trackBuffer(i, false, fitSec);
-        if (track.voice.reverse) this.trackBuffer(i, true, fitSec);
+        const v = track.voice;
+        const bufSec = track.sample.channels[0]
+          ? track.sample.channels[0].length / track.sample.sampleRate : 0;
+        const trimmed = (v.start > 0 || v.end < 1) && bufSec > 0;
+        const sliceSec = trimmed ? (v.end - v.start) * bufSec : 0;
+        const fwdOffset = trimmed ? v.start * bufSec : 0;
+        const revOffset = trimmed ? (1 - v.end) * bufSec : 0;
+        // A step lock can flip reverse on a track whose voice is forward, so
+        // both directions get baked whenever any lock asks for it.
+        let anyReverseLock = false;
+        const data = track.stepData || {};
+        for (const key of Object.keys(data)) {
+          if (data[key] && data[key].reverse) { anyReverseLock = true; break; }
+        }
+        this.trackBuffer(i, false, fitSec, fwdOffset, sliceSec);
+        if (v.reverse || anyReverseLock) this.trackBuffer(i, true, fitSec, revOffset, sliceSec);
       }
     }
   }
@@ -227,7 +242,9 @@ export class Sequencer extends EventTarget {
   }
 
   async renderWav(loops) {
-    const compiled = compileRender(this._machine, loops, { fill: false });
+    // FREEZE prints the performance: if FILL was held, those hits are part
+    // of what was heard (Codex finding 7, verified compile-side).
+    const compiled = compileRender(this._machine, loops, { fill: !!this.fill });
     const sampleRate = renderSampleRate(this._machine);
     const length = Math.max(1, Math.ceil(compiled.totalSec * sampleRate));
     const OfflineCtx = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
@@ -246,15 +263,17 @@ export class Sequencer extends EventTarget {
       tracks,
       rack: createSpaceRack(ctx, ctx.destination, this._machine && this._machine.space,
         this._machine && this._machine.bpm),
-      buffer: (index, reversed, fitSec) => {
-        const key = (fitSec > 0 ? fitKey(reversed, fitSec) : (reversed ? 'r' : 'f'));
+      buffer: (index, reversed, fitSec, offsetSec, sliceSec) => {
+        const key = (fitSec > 0 ? fitKey(reversed, fitSec, offsetSec, sliceSec) : (reversed ? 'r' : 'f'));
         if (!buffers[index]) buffers[index] = {};
         if (buffers[index][key] === undefined) {
           const track = tracks[index];
           const sample = track && track.sample;
           let baked = null;
           if (sample && fitSec > 0) {
-            try { baked = createFittedBuffer(ctx, sample, reversed, fitSec); } catch (e) { baked = null; }
+            try {
+              baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+            } catch (e) { baked = null; }
           }
           buffers[index][key] = baked || createTrackBuffer(ctx, sample, reversed);
         }
@@ -267,7 +286,8 @@ export class Sequencer extends EventTarget {
       scheduleEvent(scheduler, event, event.tSec);
     }
     for (const seg of compiled.ducks) {
-      applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination), seg.tSec, seg.depthDb);
+      applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination,
+        tracks[seg.track], songRack), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
     return encodeWav(await masterLimit(rendered), 16);
@@ -357,7 +377,8 @@ export class Sequencer extends EventTarget {
         dest: ctx.destination,
         tracks,
         rack: songRack,
-        buffer: (index, reversed, fitSec) => songBuffer(ctx, cache, tracks, index, reversed, fitSec),
+        buffer: (index, reversed, fitSec, offsetSec, sliceSec) =>
+        songBuffer(ctx, cache, tracks, index, reversed, fitSec, offsetSec, sliceSec),
         lastTrackVoice,
         machine: { tracks },
       };
@@ -368,7 +389,8 @@ export class Sequencer extends EventTarget {
       scheduleEvent(schedulers[sec], event, event.tSec);
     }
     for (const seg of compiled.ducks) {
-      applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination), seg.tSec, seg.depthDb);
+      applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination,
+        tracks[seg.track], songRack), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
     const mastered = await masterLimit(rendered);
@@ -385,7 +407,8 @@ export class Sequencer extends EventTarget {
       dest: master,
       tracks,
       rack: this._liveRack(ctx, master),
-      buffer: (index, reversed, fitSec) => songBuffer(ctx, cache, tracks, index, reversed, fitSec),
+      buffer: (index, reversed, fitSec, offsetSec, sliceSec) =>
+        songBuffer(ctx, cache, tracks, index, reversed, fitSec, offsetSec, sliceSec),
       lastTrackVoice: this._lastTrackVoice,
       machine: { tracks },
       voices: this._voices,
@@ -466,7 +489,9 @@ export class Sequencer extends EventTarget {
       if (at >= to) break;
       if (at >= from) {
         applyDuck(
-          ensureStrip(this._strips, ducks[d].track, this._ctx, this._master),
+          ensureStrip(this._strips, ducks[d].track, this._ctx, this._master,
+            this._machine && this._machine.tracks && this._machine.tracks[ducks[d].track],
+            this._liveRack(this._ctx, this._master)),
           this._songAnchor + at,
           ducks[d].depthDb,
         );
@@ -504,7 +529,8 @@ export class Sequencer extends EventTarget {
       strips: this._strips,
       dest: master,
       rack: this._liveRack(ctx, this._master),
-      buffer: (index, reversed, fitSec) => this.trackBuffer(index, reversed, fitSec),
+      buffer: (index, reversed, fitSec, offsetSec, sliceSec) =>
+        this.trackBuffer(index, reversed, fitSec, offsetSec, sliceSec),
       lastTrackVoice: this._lastTrackVoice,
       machine: this._machine,
       voices: this._voices,
@@ -533,7 +559,9 @@ export class Sequencer extends EventTarget {
       scheduleEvent(scheduler, event, this._anchor + event.tSec);
     }
     for (const seg of ducks) {
-      applyDuck(ensureStrip(this._strips, seg.track, ctx, this._master), this._anchor + seg.tSec, seg.depthDb);
+      applyDuck(ensureStrip(this._strips, seg.track, ctx, this._master,
+        this._machine && this._machine.tracks && this._machine.tracks[seg.track],
+        this._liveRack(ctx, this._master)), this._anchor + seg.tSec, seg.depthDb);
     }
     this._scheduledUntil = toSec;
     this._emitSteps(patternNow);
@@ -613,7 +641,9 @@ export function planEnvelope(event, bufferSec = Infinity) {
 // buffer(index, reversed), lastTrackVoice, machine, voices?, owner? }.
 function scheduleEvent(scheduler, event, when, oneShot = false) {
   const { ctx } = scheduler;
-  const buffer = scheduler.buffer(event.track, !!event.reverse, event.fitSec || null);
+  const fitted = event.fitSec > 0;
+  const buffer = scheduler.buffer(event.track, !!event.reverse, event.fitSec || null,
+    event.offsetSec || 0, event.sliceSec || 0);
   if (!buffer || !(event.gain > 0)) return;
   const stripTracks = scheduler.machine && scheduler.machine.tracks;
   const strip = ensureStrip(scheduler.strips, event.track, ctx, scheduler.dest,
@@ -627,7 +657,8 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   panNode.connect(strip.duckGain);
   panNode.pan.value = event.pan;
 
-  const plan = planEnvelope(event, buffer.duration);
+  const plan = planEnvelope(fitted ? { ...event, sliceSec: buffer.duration, rate: 1 } : event,
+    buffer.duration);
   const g = gainNode.gain;
   g.setValueAtTime(0, startAt);
   g.linearRampToValueAtTime(event.gain, startAt + plan.attackSec);
@@ -708,7 +739,12 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   scheduler.lastTrackVoice[event.track] = voice;
 
   try {
-    if (event.sliceSec != null) {
+    if (fitted && buffer.duration > 0) {
+      // The fitted bake already IS the trimmed span stretched to fitSec, so
+      // it plays whole from zero. Re-applying original-domain trim offsets
+      // here is exactly the bug the bake fix removed.
+      src.start(startAt);
+    } else if (event.sliceSec != null) {
       // Trim plays through offset/duration (buffer-domain seconds); the
       // reversed buffer is the whole sample baked backwards, never re-sliced.
       src.start(startAt, Math.max(0, event.offsetSec || 0), event.sliceSec);
@@ -758,21 +794,35 @@ function compileTrigger(machine, index) {
 // never happen on the audio path: prebake() runs it before transport starts and
 // this returns the unstretched buffer if a bake is somehow missing.
 // Key: sample identity + reverse + fitSec, so live and offline agree exactly.
-function fitKey(reversed, fitSec) {
-  return (reversed ? 'r' : 'f') + ':' + Math.round(fitSec * 10000);
+function fitKey(reversed, fitSec, offsetSec, sliceSec) {
+  return (reversed ? 'r' : 'f') + ':' + Math.round(fitSec * 10000)
+    + ':' + Math.round((offsetSec || 0) * 10000)
+    + ':' + Math.round((sliceSec || 0) * 10000);
 }
 
-function createFittedBuffer(ctx, sample, reversed, fitSec) {
+// Bakes the TRIMMED span (not the whole sample) to fitSec, so the fitted
+// buffer IS the slice and plays from offset 0. Stretching the whole sample and
+// then applying original-domain trim offsets reads the wrong audio for the
+// wrong duration: with start .25 / end .5 on a 4 s sample fitted to 2 s it
+// played original seconds 2-4 for 1 s instead of 1-2 for 2 s (verified).
+export function createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec) {
   const rate = Math.round(Number(sample.sampleRate));
   const frames = sample.channels[0] ? sample.channels[0].length : 0;
   if (!frames || !(fitSec > 0) || !(rate > 0)) return null;
+  // offsetSec/sliceSec are already in the domain of the buffer that will be
+  // read: for reversed playback the compiler flips them to (1 - end) * bufSec.
+  const from = Math.max(0, Math.min(frames - 1, Math.round((offsetSec || 0) * rate)));
+  const span = sliceSec > 0
+    ? Math.max(1, Math.min(frames - from, Math.round(sliceSec * rate)))
+    : frames - from;
   const target = Math.max(1, Math.round(fitSec * rate));
-  const ratio = target / frames;
+  const ratio = target / span;
   const mode = 'auto';
   const role = sample.role;
   const out = [];
   for (const channel of sample.channels) {
-    const src = reversed ? Float32Array.from(channel).reverse() : channel;
+    const whole = reversed ? Float32Array.from(channel).reverse() : channel;
+    const src = (from === 0 && span === frames) ? whole : whole.subarray(from, from + span);
     out.push(stretchSamples(src, ratio, rate, { mode, role }));
   }
   const length = out[0] ? out[0].length : 0;
@@ -813,7 +863,7 @@ function createTrackBuffer(ctx, sample, reversed = false) {
 
 // Per-song buffer resolution: samples come from the section's own scene, and
 // the forward/reversed AudioBuffers cache on the whole sample object.
-function songBuffer(ctx, cache, tracks, index, reversed, fitSec) {
+function songBuffer(ctx, cache, tracks, index, reversed, fitSec, offsetSec, sliceSec) {
   const track = tracks[index];
   const sample = track && track.sample;
   if (!ctx || !sample) return null;
@@ -823,10 +873,12 @@ function songBuffer(ctx, cache, tracks, index, reversed, fitSec) {
     cache.set(sample, entry);
   }
   if (fitSec > 0) {
-    const key = fitKey(reversed, fitSec);
+    const key = fitKey(reversed, fitSec, offsetSec, sliceSec);
     if (!entry.fitted.has(key)) {
       let baked = null;
-      try { baked = createFittedBuffer(ctx, sample, reversed, fitSec); } catch (e) { baked = null; }
+      try {
+        baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+      } catch (e) { baked = null; }
       entry.fitted.set(key, baked);
     }
     const fittedBuffer = entry.fitted.get(key);

@@ -950,7 +950,7 @@ const midiCases = [
 
 // ---------- song compiler (CONTRACT-SONG) ----------
 
-const { planEnvelope } = await import('../js/machine/sequencer.js');
+const { planEnvelope, createFittedBuffer } = await import('../js/machine/sequencer.js');
 
 function songMachine() {
   const mkTrack = (steps, extras = {}) => ({
@@ -1258,6 +1258,29 @@ const conformCases = [
     const t3 = rms(a.left, pre + Math.floor(2 * (n - pre) / 3), n);
     assert.ok(t1 > t2 && t2 > t3, 'tail decays monotonically: ' + [t1, t2, t3].map((v) => v.toFixed(4)));
     for (let i = 0; i < n; i += 131) assert.ok(Number.isFinite(a.left[i]), 'finite impulse');
+  },
+  function fitBakesTheTrimmedSpanOnly() {
+    // Regression for the fit+trim bug an adversarial review caught: stretching
+    // the WHOLE sample and then applying original-domain trim offsets played
+    // original seconds 2-4 for 1 s instead of 1-2 for 2 s. The bake now takes
+    // the trimmed span, so the fitted buffer IS the slice.
+    const sr = 44100;
+    const frames = 4 * sr;
+    const pcm = new Float32Array(frames);
+    // Mark ONLY the region the trim selects, so region identity is checkable.
+    for (let i = Math.round(0.25 * frames); i < Math.round(0.5 * frames); i++) pcm[i] = 1;
+    const ctx = { createBuffer: (ch, len, rate) => new AudioBuffer({ numberOfChannels: ch, length: len, sampleRate: rate }) };
+    const sample = { channels: [pcm], sampleRate: sr, role: 'TONE' };
+    const fitSec = 2;
+    const baked = createFittedBuffer(ctx, sample, false, fitSec, 0.25 * 4, 0.25 * 4);
+    assert.ok(baked, 'a fitted buffer is produced');
+    close(baked.length / sr, fitSec, 0.001, 'fitted buffer lasts exactly fitSec');
+    const data = baked.getChannelData(0);
+    let inside = 0;
+    for (let i = 0; i < data.length; i += 37) if (Math.abs(data[i]) > 0.5) inside++;
+    const sampled = Math.ceil(data.length / 37);
+    assert.ok(inside > sampled * 0.9,
+      'the fitted buffer holds the SELECTED region, not a neighbouring one: ' + inside + '/' + sampled);
   },
   function delayDivisionsAndDamping() {
     close(delayTimeFor(120, '1/4'), 0.5, 1e-12, 'quarter at 120');

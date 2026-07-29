@@ -426,11 +426,20 @@ export function harvest(mono, sampleRate, onsets) {
     .sort((a, b) => a - b);
   const seeded = new Set(sustainSeeds(onsetTimes, duration));
   const times = onsetTimes.concat(Array.from(seeded)).sort((a, b) => a - b);
+  // A real onset's window must be bounded by the next REAL onset, never by a
+  // synthetic seed: otherwise a seed at 0.5 s truncates a one-second held note
+  // to its first half and the rest of the sound is lost (Codex finding 8,
+  // reproduced: a 1 s 440 Hz tone with onsets=[0] yielded only [0, 0.5]).
+  const nextRealAfter = (t) => {
+    for (let i = 0; i < onsetTimes.length; i++) if (onsetTimes[i] > t) return onsetTimes[i];
+    return Infinity;
+  };
 
   const candidates = [];
   for (let i = 0; i < times.length; i++) {
     const t0 = times[i];
-    const next = i + 1 < times.length ? times[i + 1] : Infinity;
+    const nextAny = i + 1 < times.length ? times[i + 1] : Infinity;
+    const next = seeded.has(t0) ? nextAny : nextRealAfter(t0);
     const t1 = Math.min(next, t0 + MAX_WINDOW_SEC, duration);
     if (t1 - t0 < MIN_WINDOW_SEC) continue;
     const features = featuresFor(mono, sampleRate, t0, t1);
@@ -438,6 +447,10 @@ export function harvest(mono, sampleRate, onsets) {
     const { terms, scores } = roleScores(features);
     let role = ROLES[0];
     for (const name of ROLES) if (scores[name] > scores[role]) role = name;
+    // A window that matches NO role is not material: without this it fell
+    // through to ROLES[0] and shipped as a confident "KICK 1" with score 0
+    // (Codex finding 11, reproduced on a bare 3 kHz sine).
+    if (!(scores[role] > 0)) continue;
     const loudness = clamp01((features.peakDb - LOUD_FLOOR_DB) / -LOUD_FLOOR_DB);
     candidates.push({
       index: candidates.length,
