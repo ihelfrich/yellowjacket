@@ -4,9 +4,10 @@
 // only the duck bus, and live and offline scheduling share one code path so a
 // FREEZE is the performance.
 
-import { encodeWav } from '../export.js';
+import { encodeWav, encodeWavWithStats } from '../export.js';
 import {
   compileRender,
+  compileSong,
   compileWindow,
   patternLoopSteps,
   stepTime,
@@ -16,8 +17,11 @@ const TICK_MS = 25;
 const LOOKAHEAD_SEC = 0.2;
 const START_DELAY_SEC = 0.01;
 const MIN_RENDER_RATE = 44100;
+// Voice envelope defaults (CONTRACT-SONG 1): used when an event carries no
+// attackSec/releaseSec of its own.
 const ATTACK_SEC = 0.003;
 const RELEASE_SEC = 0.008;
+const STOP_PAD_SEC = 0.005;
 const CHOKE_SEC = 0.003;
 // Duck pump: dip in ~5 ms, hold ~60 ms, recover with a ~180 ms tail.
 const DUCK_DIP_TC = 0.0017;
@@ -41,6 +45,10 @@ export class Sequencer extends EventTarget {
     this._lastTrackVoice = [];   // per track, for choke
     this._strips = [];
     this._bufferCache = [];
+    this._songPlaying = false;
+    this._song = null;
+    this._songTimer = 0;
+    this._songAnchor = 0;
   }
 
   setMachine(machine) {
@@ -74,6 +82,7 @@ export class Sequencer extends EventTarget {
 
   start() {
     if (this._running) return;
+    this.stopSong();   // pattern and song transports are exclusive (CONTRACT-SONG 2)
     const ctx = this._engine && this._engine.ctx;
     const master = this._engine && this._engine.master;
     if (!ctx || !master || ctx.state === 'closed') {
@@ -169,6 +178,223 @@ export class Sequencer extends EventTarget {
     return encodeWav(rendered, 16);
   }
 
+  // ---- song transport (CONTRACT-SONG 2): one precompiled stream feeds the
+  // same lookahead pass and scheduleEvent path that pattern play uses. ----
+
+  playSong() {
+    if (this._songPlaying) return;
+    this.stop();   // song and pattern transports are exclusive
+    const ctx = this._engine && this._engine.ctx;
+    const master = this._engine && this._engine.master;
+    if (!ctx || !master || ctx.state === 'closed') return;
+    const compiled = compileSong(this._machine, { fill: false });
+    if (!compiled.sections.length || !(compiled.totalSec > 0)) return;
+
+    resumeContext(ctx);
+    this._ctx = ctx;
+    this._master = master;
+    const scenes = this._machine && Array.isArray(this._machine.scenes)
+      ? this._machine.scenes
+      : [];
+    // Buffer cache keyed on the whole sample object: trim plays through
+    // src.start offsets, never by baking new buffers.
+    const cache = new Map();
+    this._song = {
+      compiled,
+      schedulers: compiled.sections.map(
+        (section) => this._songScheduler(ctx, master, scenes, section.scene, cache),
+      ),
+      until: 0,
+      pass: 0,
+      evPass: 0,
+      evIdx: 0,
+      evSec: 0,
+      duckPass: 0,
+      duckIdx: 0,
+      posSection: -1,
+      posRep: -1,
+    };
+    this._songAnchor = ctx.currentTime + START_DELAY_SEC;
+    this._songPlaying = true;
+    this._songTick();
+    if (this._songPlaying) this._songTimer = setInterval(() => this._songTick(), TICK_MS);
+  }
+
+  stopSong() {
+    const wasPlaying = this._songPlaying;
+    this._songPlaying = false;
+    if (this._songTimer) clearInterval(this._songTimer);
+    this._songTimer = 0;
+    this._song = null;
+    if (wasPlaying) {
+      this._cancelVoices();
+      this._resetStrips();
+    }
+  }
+
+  get songPlaying() {
+    return this._songPlaying;
+  }
+
+  async renderSongWav(bitDepth = 24) {
+    const compiled = compileSong(this._machine, { fill: false });
+    const scenes = this._machine && Array.isArray(this._machine.scenes)
+      ? this._machine.scenes
+      : [];
+    const sampleRate = songSampleRate(scenes, compiled.sections);
+    const length = Math.max(1, Math.ceil(compiled.totalSec * sampleRate));
+    const OfflineCtx = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
+    if (!OfflineCtx) throw new Error('OfflineAudioContext is not available');
+
+    const ctx = new OfflineCtx(2, length, sampleRate);
+    const cache = new Map();
+    const strips = [];
+    const lastTrackVoice = [];
+    const schedulers = compiled.sections.map((section) => {
+      const scene = scenes[section.scene];
+      const tracks = scene && Array.isArray(scene.tracks) ? scene.tracks : [];
+      return {
+        ctx,
+        strips,
+        dest: ctx.destination,
+        buffer: (index, reversed) => songBuffer(ctx, cache, tracks, index, reversed),
+        lastTrackVoice,
+        machine: { tracks },
+      };
+    });
+    let sec = 0;
+    for (const event of compiled.events) {
+      while (sec < compiled.sections.length - 1 && event.tSec >= compiled.sections[sec].endSec) sec++;
+      scheduleEvent(schedulers[sec], event, event.tSec);
+    }
+    for (const seg of compiled.ducks) {
+      applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination), seg.tSec, seg.depthDb);
+    }
+    const rendered = await ctx.startRendering();
+    const { blob, stats } = encodeWavWithStats(rendered, bitDepth === 16 ? 16 : 24);
+    return { bytes: await blob.arrayBuffer(), stats, totalSec: compiled.totalSec };
+  }
+
+  _songScheduler(ctx, master, scenes, sceneIndex, cache) {
+    const scene = scenes[sceneIndex];
+    const tracks = scene && Array.isArray(scene.tracks) ? scene.tracks : [];
+    return {
+      ctx,
+      strips: this._strips,
+      dest: master,
+      buffer: (index, reversed) => songBuffer(ctx, cache, tracks, index, reversed),
+      lastTrackVoice: this._lastTrackVoice,
+      machine: { tracks },
+      voices: this._voices,
+      owner: this,
+    };
+  }
+
+  _songTick() {
+    if (!this._songPlaying || !this._song) return;
+    const ctx = this._ctx;
+    if (!ctx || ctx.state === 'closed') {
+      this.stopSong();
+      return;
+    }
+    const song = this._song;
+    const total = song.compiled.totalSec;
+    const loop = !!(this._machine && this._machine.song && this._machine.song.loop);
+    const songNow = Math.max(0, ctx.currentTime - this._songAnchor);
+
+    if (songNow >= (song.pass + 1) * total) {
+      this._emitSongEnd();
+      if (!loop) {
+        this.stopSong();
+        return;
+      }
+      // Re-anchor per pass: the precompiled stream replays one pass later.
+      while ((song.pass + 1) * total <= songNow) song.pass++;
+    }
+
+    const from = Math.max(song.until, songNow);
+    let to = ctx.currentTime + LOOKAHEAD_SEC - this._songAnchor;
+    if (!loop) to = Math.min(to, (song.pass + 1) * total);
+    if (to > from) {
+      this._songSchedule(from, to);
+      song.until = to;
+    }
+    this._emitSongPos(songNow - song.pass * total);
+  }
+
+  // Schedules the precompiled stream over the absolute song-time window
+  // [from, to), wrapping passes when the song loops. Cursors persist across
+  // ticks so each event schedules exactly once.
+  _songSchedule(from, to) {
+    const song = this._song;
+    const { events, ducks, sections, totalSec } = song.compiled;
+
+    let pass = song.evPass;
+    let i = song.evIdx;
+    let sec = song.evSec;
+    while (pass * totalSec < to) {
+      if (i >= events.length) {
+        pass++;
+        i = 0;
+        sec = 0;
+        continue;
+      }
+      const at = pass * totalSec + events[i].tSec;
+      if (at >= to) break;
+      if (at >= from) {
+        while (sec < sections.length - 1 && events[i].tSec >= sections[sec].endSec) sec++;
+        scheduleEvent(song.schedulers[sec], events[i], this._songAnchor + at);
+      }
+      i++;
+    }
+    song.evPass = pass;
+    song.evIdx = i;
+    song.evSec = sec;
+
+    let duckPass = song.duckPass;
+    let d = song.duckIdx;
+    while (duckPass * totalSec < to) {
+      if (d >= ducks.length) {
+        duckPass++;
+        d = 0;
+        continue;
+      }
+      const at = duckPass * totalSec + ducks[d].tSec;
+      if (at >= to) break;
+      if (at >= from) {
+        applyDuck(
+          ensureStrip(this._strips, ducks[d].track, this._ctx, this._master),
+          this._songAnchor + at,
+          ducks[d].depthDb,
+        );
+      }
+      d++;
+    }
+    song.duckPass = duckPass;
+    song.duckIdx = d;
+  }
+
+  _emitSongPos(wrapped) {
+    const song = this._song;
+    if (!song) return;
+    const sections = song.compiled.sections;
+    let index = 0;
+    while (index < sections.length - 1 && wrapped >= sections[index].endSec) index++;
+    const section = sections[index];
+    const rep = Math.max(0, Math.min(
+      section.reps - 1,
+      Math.floor((wrapped - section.startSec) / section.loopSec),
+    ));
+    if (index === song.posSection && rep === song.posRep) return;
+    song.posSection = index;
+    song.posRep = rep;
+    this.dispatchEvent(new CustomEvent('songpos', { detail: { section: index, rep } }));
+  }
+
+  _emitSongEnd() {
+    this.dispatchEvent(new CustomEvent('songend'));
+  }
+
   _liveStrips(ctx, master) {
     return {
       ctx,
@@ -258,6 +484,26 @@ export class Sequencer extends EventTarget {
   }
 }
 
+// Pure envelope plan, seconds relative to voice start; exported so the
+// harness can pin it without Web Audio. CONTRACT-SONG 1: attack ramp over
+// attackSec, then a release ramp that ENDS at the effective wall end
+// (min of gate wall and sliceSec/rate), clamped so it never starts before
+// the attack peak. Every voice declicks at its end.
+export function planEnvelope(event, bufferSec = Infinity) {
+  const rate = event && event.rate > 0 ? event.rate : 1;
+  const attackSec = event && event.attackSec != null ? event.attackSec : ATTACK_SEC;
+  const releaseSec = event && event.releaseSec != null ? event.releaseSec : RELEASE_SEC;
+  const spanSec = event && event.sliceSec != null ? event.sliceSec : bufferSec;
+  let wallEnd = spanSec / rate;
+  if (event && event.durSec != null) wallEnd = Math.min(wallEnd, event.durSec);
+  if (!Number.isFinite(wallEnd)) {
+    return { attackSec, releaseSec, releaseStartSec: null, releaseEndSec: null, stopSec: null };
+  }
+  const releaseStartSec = Math.max(attackSec, wallEnd - releaseSec);
+  const releaseEndSec = Math.max(wallEnd, releaseStartSec);
+  return { attackSec, releaseSec, releaseStartSec, releaseEndSec, stopSec: releaseEndSec + STOP_PAD_SEC };
+}
+
 // One scheduling path for live and offline. scheduler: { ctx, strips, dest,
 // buffer(index, reversed), lastTrackVoice, machine, voices?, owner? }.
 function scheduleEvent(scheduler, event, when, oneShot = false) {
@@ -273,16 +519,15 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   panNode.connect(strip.duckGain);
   panNode.pan.value = event.pan;
 
-  // Envelope: 3 ms attack; optional gate hold + 8 ms release.
+  const plan = planEnvelope(event, buffer.duration);
   const g = gainNode.gain;
   g.setValueAtTime(0, startAt);
-  g.linearRampToValueAtTime(event.gain, startAt + ATTACK_SEC);
+  g.linearRampToValueAtTime(event.gain, startAt + plan.attackSec);
   let stopAt = null;
-  if (event.durSec != null) {
-    const relStart = startAt + Math.max(ATTACK_SEC, event.durSec);
-    g.setValueAtTime(event.gain, relStart);
-    g.linearRampToValueAtTime(0, relStart + RELEASE_SEC);
-    stopAt = relStart + RELEASE_SEC + 0.005;
+  if (plan.releaseEndSec != null) {
+    g.setValueAtTime(event.gain, startAt + plan.releaseStartSec);
+    g.linearRampToValueAtTime(0, startAt + plan.releaseEndSec);
+    stopAt = startAt + plan.stopSec;
   }
 
   const src = ctx.createBufferSource();
@@ -321,7 +566,13 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   scheduler.lastTrackVoice[event.track] = voice;
 
   try {
-    src.start(startAt);
+    if (event.sliceSec != null) {
+      // Trim plays through offset/duration (buffer-domain seconds); the
+      // reversed buffer is the whole sample baked backwards, never re-sliced.
+      src.start(startAt, Math.max(0, event.offsetSec || 0), event.sliceSec);
+    } else {
+      src.start(startAt);
+    }
     if (stopAt != null) src.stop(stopAt);
   } catch (e) {
     if (scheduler.voices) scheduler.voices.delete(voice);
@@ -381,6 +632,36 @@ function createTrackBuffer(ctx, sample, reversed = false) {
   } catch (e) {
     return null;
   }
+}
+
+// Per-song buffer resolution: samples come from the section's own scene, and
+// the forward/reversed AudioBuffers cache on the whole sample object.
+function songBuffer(ctx, cache, tracks, index, reversed) {
+  const track = tracks[index];
+  const sample = track && track.sample;
+  if (!ctx || !sample) return null;
+  let entry = cache.get(sample);
+  if (!entry || entry.ctx !== ctx) {
+    entry = { ctx, forward: createTrackBuffer(ctx, sample, false), reversed: null };
+    cache.set(sample, entry);
+  }
+  if (!reversed) return entry.forward;
+  if (!entry.reversed) entry.reversed = createTrackBuffer(ctx, sample, true);
+  return entry.reversed;
+}
+
+// Highest sample rate across every scene the chain visits (>= 44100).
+function songSampleRate(scenes, sections) {
+  let sampleRate = MIN_RENDER_RATE;
+  for (const section of sections) {
+    const scene = scenes[section.scene];
+    const tracks = scene && Array.isArray(scene.tracks) ? scene.tracks : [];
+    for (const track of tracks) {
+      const rate = Number(track && track.sample && track.sample.sampleRate);
+      if (Number.isFinite(rate) && rate > sampleRate) sampleRate = rate;
+    }
+  }
+  return Math.round(sampleRate);
 }
 
 function ensureStrip(strips, index, ctx, dest) {

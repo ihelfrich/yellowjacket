@@ -139,6 +139,7 @@ export function initPersistController(ctx) {
       views.sliceView.setClips(P.clips);
       ctx.api.updateClipReadout();
       views.patternView.setMachine(P.machine);
+      if (ctx.api.songRefresh) ctx.api.songRefresh();
       ctx.api.rebuildRack();
       ctx.api.repairsRestored();
       if (ctx.api.wireRestored) ctx.api.wireRestored();

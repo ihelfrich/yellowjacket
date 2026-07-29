@@ -13,6 +13,8 @@ import { SliceView } from './machine/slice-ui.js';
 import { ClipAuditioner } from './machine/cliprefs.js';
 import { Sequencer } from './machine/sequencer.js';
 import { PatternView } from './machine/pattern-ui.js';
+import { SongView } from './machine/song-ui.js';
+import { VoiceView } from './machine/voice-ui.js';
 import { Keybed } from './machine/keybed.js';
 import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
@@ -98,6 +100,8 @@ const views = {
   transcript: new TranscriptView($('transcriptHost')),
   sliceView: new SliceView($('sliceMain'), $('beatmapControls')),
   patternView: new PatternView($('patternHost')),
+  songView: new SongView($('songHost')),
+  voiceView: new VoiceView($('voiceHost')),
   repairPanel: new RepairPanel($('repairHost')),
 };
 const auditioner = new ClipAuditioner(engine);

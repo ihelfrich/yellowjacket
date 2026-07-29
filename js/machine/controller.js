@@ -5,12 +5,13 @@
 import { wordsToClip } from './cliprefs.js';
 import { registerAsset } from '../app/project-store.js';
 import { encodeWav, download } from '../export.js';
+import { patternLoopSteps, normalizeVoice } from './compile.js';
 
 const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
-  const { sliceView, patternView } = views;
+  const { sliceView, patternView, songView, voiceView } = views;
   const P = store.project;
   const R = store.runtime;
 
@@ -322,7 +323,95 @@ export function initMachineController(ctx) {
     $('sliceNote').textContent = COPY.computingSpec;
   }
 
+  // ---------- SONG: voice drawer + arrangement (CONTRACT-SONG) ----------
+  let voiceTrack = -1;
+
+  function openVoice(track) {
+    voiceTrack = track;
+    const t = P.machine.tracks[track];
+    if (t && !t.voice) t.voice = normalizeVoice(null);   // pre-SONG saves
+    voiceView.setTrack(track, t);
+    $('voiceHost').hidden = false;
+  }
+
+  patternView.addEventListener('voiceopen', (e) => openVoice(e.detail.track));
+  voiceView.addEventListener('close', () => { $('voiceHost').hidden = true; voiceTrack = -1; });
+  voiceView.addEventListener('trig', (e) => sequencer.trigger(e.detail.track));
+  voiceView.addEventListener('voiceedit', (e) => {
+    const { track, patch } = e.detail;
+    store.update('voice', (p) => {
+      const t = p.machine.tracks[track];
+      if (!t) return;
+      if (!t.voice) t.voice = normalizeVoice(null);
+      Object.assign(t.voice, patch);
+    });
+  });
+
+  // Section seconds without compiling events: steps x stepDur x reps per entry.
+  function songSectionSecs() {
+    return P.machine.song.chain.map((entry) => {
+      const scene = P.machine.scenes[entry.scene | 0];
+      if (!scene) return 0;
+      const steps = patternLoopSteps(scene.tracks);
+      return steps * (60 / (scene.bpm || 120) / 4) * entry.reps;
+    });
+  }
+
+  function refreshSong() {
+    songView.setSong(P.machine.song, P.machine.scenes, songSectionSecs(), P.machine.activeScene);
+  }
+
+  songView.addEventListener('chainedit', (e) => {
+    store.update('song', (p) => {
+      p.machine.song.chain.length = 0;
+      for (const entry of e.detail.chain) p.machine.song.chain.push(entry);
+    });
+    refreshSong();
+  });
+  songView.addEventListener('loop', (e) => {
+    store.update('song', (p) => { p.machine.song.loop = !!e.detail.loop; });
+  });
+  songView.addEventListener('audition', (e) => {
+    patternView.dispatchEvent(new CustomEvent('scene', { detail: { index: e.detail.scene } }));
+    refreshSong();
+  });
+  songView.addEventListener('play', () => {
+    sequencer.playSong();
+    songView.setPlaying(sequencer.songPlaying);
+    if (sequencer.songPlaying) status('SONG RUNNING · every pass rolls the same dice');
+    else statusFault('SONG · nothing to play. Add sections with sound in them.');
+  });
+  songView.addEventListener('stop', () => {
+    sequencer.stopSong();
+    songView.setPlaying(false);
+    status(COPY.loaded);
+  });
+  songView.addEventListener('render', async () => {
+    try {
+      status('RENDERING SONG…', true);
+      const { bytes, stats, totalSec } = await sequencer.renderSongWav(24);
+      const stem = (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '');
+      download(bytes, stem + '-song.wav', 'audio/wav');
+      const parts = ['SONG PRINTED · ' + totalSec.toFixed(1) + 'S · 24-BIT'];
+      if (stats && stats.overs) parts.push(stats.overs + ' OVERS');
+      status(parts.join(' · '));
+    } catch (err) {
+      statusFault('SONG RENDER FAULT · ' + (err.message || err));
+    }
+  });
+  sequencer.addEventListener('songpos', (e) => songView.setPosition(e.detail.section, e.detail.rep));
+  sequencer.addEventListener('songend', () => {
+    if (!P.machine.song.loop) songView.setPlaying(false);
+  });
+  // Scene edits change section durations; keep the readout honest.
+  store.addEventListener('change', (e) => {
+    const kind = e.detail && e.detail.kind;
+    if (kind === 'machine' || kind === 'scene' || kind === 'source') refreshSong();
+  });
+  refreshSong();
+
   ctx.api.machineReset = resetForSource;
   ctx.api.updateClipReadout = updateClipReadout;
+  ctx.api.songRefresh = refreshSong;
   ctx.api.setKeybedEnabled = (b) => { keybed.enabled = b; };
 }

@@ -54,6 +54,7 @@ function serializeTrack(track) {
   for (let i = 0; i < n; i++) steps[i] = src[i];
   return {
     sampleId: typeof track.sampleId === 'string' ? track.sampleId : null,
+    voice: clone(track.voice || {}),
     steps,
     stepData: clone(track.stepData || {}),
     len: track.len,
@@ -114,6 +115,7 @@ export function serializeProject(project, runtime) {
     machine: {
       activeScene: machine.activeScene,
       scenes: machine.scenes.map(serializeScene),
+      song: machine.song ? clone(machine.song) : null,
     },
     assets,
     repairs: clone(runtime.repairs || []),
@@ -126,6 +128,17 @@ export function serializeProject(project, runtime) {
 function applyTrack(track, saved) {
   track.sampleId = typeof saved.sampleId === 'string' ? saved.sampleId : null;
   track.sample = null;   // PCM attaches after sample files load (RestorePlan)
+  // Voice merges known fields with clamps; pre-SONG saves lack it: defaults stay.
+  if (saved.voice && typeof saved.voice === 'object' && track.voice) {
+    const v = track.voice;
+    const sv = saved.voice;
+    if (Number.isFinite(sv.start)) v.start = Math.max(0, Math.min(0.995, sv.start));
+    if (Number.isFinite(sv.end)) v.end = Math.max(v.start + 0.005, Math.min(1, sv.end));
+    if (Number.isFinite(sv.pitch)) v.pitch = Math.max(-24, Math.min(24, sv.pitch));
+    if (Number.isFinite(sv.attack)) v.attack = Math.max(1, Math.min(500, sv.attack));
+    if (Number.isFinite(sv.release)) v.release = Math.max(2, Math.min(2000, sv.release));
+    if (typeof sv.reverse === 'boolean') v.reverse = sv.reverse;
+  }
   track.steps.fill(0);
   if (Array.isArray(saved.steps)) {
     const n = Math.min(MAX_STEPS, saved.steps.length);
@@ -216,6 +229,24 @@ export function applySnapshot(json, { project, runtime }) {
   const active = savedMachine.activeScene;
   machine.activeScene = Number.isInteger(active) && active >= 0 && active < machine.scenes.length ? active : 0;
   machine.pendingScene = null;
+
+  // Song chain merges into the existing object; entries clamp to real scenes.
+  if (machine.song) {
+    machine.song.chain.length = 0;
+    const savedSong = savedMachine.song;
+    if (savedSong && typeof savedSong === 'object') {
+      if (Array.isArray(savedSong.chain)) {
+        for (const entry of savedSong.chain) {
+          if (!entry || typeof entry !== 'object') continue;
+          const scene = entry.scene | 0;
+          if (scene < 0 || scene >= machine.scenes.length) continue;
+          const reps = Math.max(1, Math.min(99, entry.reps | 0 || 1));
+          machine.song.chain.push({ scene, reps });
+        }
+      }
+      machine.song.loop = savedSong.loop !== false;
+    }
+  }
 
   for (const key of Object.keys(project.assets)) delete project.assets[key];
   if (json.assets && typeof json.assets === 'object') {

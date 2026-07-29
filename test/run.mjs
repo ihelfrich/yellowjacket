@@ -7,7 +7,9 @@ import { trackBeats } from '../js/analysis/beattrack.js';
 import { kWeightingCoeffs, measureLoudness } from '../js/dsp/loudness.js';
 import {
   compileRender,
+  compileSong,
   compileWindow,
+  normalizeVoice,
   patternLoopSteps,
   stepTime,
 } from '../js/machine/compile.js';
@@ -676,6 +678,13 @@ function persistFixture() {
   p.wire.noteBase = 60;
   p.wire.mappings.fill = { kind: 'cc', channel: 0, num: 64 };
   p.wire.mappings.mute3 = { kind: 'note', channel: 9, num: 42 };
+  s0.tracks[0].voice.start = 0.1;
+  s0.tracks[0].voice.end = 0.9;
+  s0.tracks[0].voice.pitch = -12;
+  s0.tracks[0].voice.release = 240;
+  s0.tracks[0].voice.reverse = true;
+  p.machine.song.chain.push({ scene: 0, reps: 2 }, { scene: 1, reps: 4 });
+  p.machine.song.loop = false;
   return { p, r, idA, idB };
 }
 
@@ -926,6 +935,92 @@ const midiCases = [
   },
 ];
 
+// ---------- song compiler (CONTRACT-SONG) ----------
+
+const { planEnvelope } = await import('../js/machine/sequencer.js');
+
+function songMachine() {
+  const mkTrack = (steps, extras = {}) => ({
+    sample: { channels: [new Float32Array(4410)], sampleRate: 44100 },
+    steps: Uint8Array.from(steps),
+    stepData: {},
+    len: 16,
+    gainDb: 0, pan: 0, mute: false, solo: false,
+    duckSource: -1, duckDb: 12, choke: false,
+    ...extras,
+  });
+  const scene = (i, bpm, tracks) => ({ id: 's' + i, name: 'S' + i, bpm, swing: 50, seed: (i + 1) * 7919, tracks });
+  const scenes = [
+    scene(0, 120, [mkTrack([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])]),
+    scene(1, 60, [mkTrack([1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0])]),
+  ];
+  const m = { activeScene: 0, scenes, song: { chain: [], loop: true } };
+  Object.defineProperties(m, {
+    tracks: { get() { return this.scenes[this.activeScene].tracks; } },
+    bpm: { get() { return this.scenes[this.activeScene].bpm; } },
+    swing: { get() { return this.scenes[this.activeScene].swing; } },
+  });
+  return m;
+}
+
+const songCases = [
+  function voiceNeutralIsInvisible() {
+    const a = songMachine();
+    const b = songMachine();
+    b.scenes[0].tracks[0].voice = normalizeVoice(null);
+    const ea = compileRender(a, 2).events;
+    const eb = compileRender(b, 2).events;
+    assert.deepEqual(eb, ea, 'default voice compiles identically to no voice');
+    for (const ev of ea) {
+      assert.ok(!('offsetSec' in ev) && !('attackSec' in ev), 'neutral events carry no voice fields');
+    }
+  },
+  function voicePitchAndTrim() {
+    const m = songMachine();
+    m.scenes[0].tracks[0].voice = { start: 0.25, end: 0.75, pitch: -12, attack: 3, release: 8, reverse: false };
+    const ev = compileRender(m, 1).events[0];
+    assert.equal(ev.rate, 0.5, 'pitch -12 halves the rate exactly');
+    close(ev.offsetSec, 0.025, 1e-12, 'trim start offset (0.25 of 100 ms)');
+    close(ev.sliceSec, 0.05, 1e-12, 'trim span');
+    const mr = songMachine();
+    mr.scenes[0].tracks[0].voice = { start: 0.25, end: 0.75, pitch: 0, attack: 3, release: 8, reverse: true };
+    const evr = compileRender(mr, 1).events[0];
+    assert.equal(evr.reverse, true, 'voice reverse');
+    close(evr.offsetSec, 0.025, 1e-12, 'reversed offset = (1-end)*bufSec');
+  },
+  function compileSongSections() {
+    const m = songMachine();
+    m.song.chain.push({ scene: 0, reps: 4 }, { scene: 1, reps: 1 });
+    const song = compileSong(m);
+    assert.equal(song.sections.length, 2, 'two sections');
+    assert.equal(song.sections[0].endSec, 8, 'A: 16 steps at 120 x4 = 8 s');
+    assert.equal(song.sections[1].startSec, 8, 'B starts exactly at the boundary');
+    assert.equal(song.sections[1].loopSec, 4, 'B: 16 steps at 60 = 4 s');
+    assert.equal(song.totalSec, 12, 'total');
+    const bEvents = song.events.filter((e) => e.tSec >= 8);
+    close(bEvents[0].tSec, 8, 1e-12, 'B grid lands on the section start');
+    close(bEvents[1].tSec, 10, 1e-9, 'B spacing uses scene B bpm');
+  },
+  function songParityAndDeterminism() {
+    const m = songMachine();
+    m.song.chain.push({ scene: 0, reps: 1 }, { scene: 0, reps: 1 });
+    const song = compileSong(m);
+    const twice = compileRender(m, 2);
+    assert.deepEqual(song.events, twice.events, 'chain [Ax1,Ax1] equals render(A,2)');
+    assert.deepEqual(compileSong(m), song, 'compiles are deterministic');
+  },
+  function envelopePlanShape() {
+    // 100 ms slice at half rate = 200 ms wall; release ends AT the wall end.
+    const p = planEnvelope({ rate: 0.5, sliceSec: 0.1, attackSec: 0.01, releaseSec: 0.05 });
+    close(p.releaseEndSec, 0.2, 1e-12, 'release ends at wall end');
+    close(p.releaseStartSec, 0.15, 1e-12, 'release starts releaseSec earlier');
+    const gated = planEnvelope({ rate: 1, sliceSec: 0.5, durSec: 0.0625, attackSec: 0.003, releaseSec: 0.008 });
+    close(gated.releaseEndSec, 0.0625, 1e-12, 'gate lock wins when shorter');
+    const clamped = planEnvelope({ rate: 1, sliceSec: 0.004, attackSec: 0.003, releaseSec: 0.05 });
+    assert.ok(clamped.releaseStartSec >= 0.003, 'release never starts before the attack peak');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -936,6 +1031,7 @@ const groups = [
   ['persist roundtrip', persistCases],
   ['op1 patch', op1Cases],
   ['midi clock', midiCases],
+  ['song compiler', songCases],
 ];
 
 for (const [name, cases] of groups) {

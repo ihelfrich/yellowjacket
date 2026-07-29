@@ -91,8 +91,20 @@ four pages, set per-track lengths for polymeter, swing the grid MPC-style, fire 
 live from keys 1 through 8, and mix with per-track gain, pan, mute, and solo. Live
 playback and offline render come from one event compiler, so FREEZE prints exactly what
 you heard: the loop becomes the new bench source while the machine keeps its pattern,
-and you can slice the freeze and go around again. Parameter locks, step components, and
-punch-in effects are next; the plan lives in docs/VISION.md.
+and you can slice the freeze and go around again.
+
+Every track's sample is an editable VOICE: trim its start and end on a
+waveform, pitch it up to two octaves either way, shape attack and release,
+play it reversed. A pitched-down vocal tail becomes a bass; the first tenth
+of a kick becomes a hat. Step locks stack on top, so a voice pitched -12 with
+a +7 lock on step eleven plays -5 there, deterministically, every pass.
+
+SONG is the fourth state: chain scenes into an arrangement (A×4 B×4 D×8 …),
+loop it or let it end, and print the whole thing as one 24-bit WAV. The song
+compiler is the pattern compiler applied per section, so what RENDER SONG
+writes is sample-for-sample what PLAY SONG played, seeded dice and all.
+Punch-in effects and the CHARACTER color rack are next; the plan lives in
+docs/VISION.md.
 
 ## Out the wire
 

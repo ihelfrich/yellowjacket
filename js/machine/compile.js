@@ -6,6 +6,31 @@ const DEFAULT_BPM = 120;
 const DEFAULT_SWING = 50;
 const DEFAULT_LOOP_STEPS = 16;
 const MAX_LOOP_STEPS = 256;
+// Voice defaults per CONTRACT-SONG 1; attack/release in ms, trim as fractions.
+const VOICE_MIN_SPAN = 0.005;
+const VOICE_DEFAULT_ATTACK_MS = 3;
+const VOICE_DEFAULT_RELEASE_MS = 8;
+
+// Fills defaults when the voice object or any field is missing, with the
+// CONTRACT-SONG 1 clamps. Old saves and untouched tracks normalize to the
+// neutral voice, which must compile byte-identically to pre-voice output.
+export function normalizeVoice(voice) {
+  const v = voice && typeof voice === 'object' ? voice : {};
+  let start = clamp(finiteOr(v.start, 0), 0, 1);
+  let end = clamp(finiteOr(v.end, 1), 0, 1);
+  if (end - start < VOICE_MIN_SPAN) {
+    end = Math.min(1, start + VOICE_MIN_SPAN);
+    start = Math.max(0, end - VOICE_MIN_SPAN);
+  }
+  return {
+    start,
+    end,
+    pitch: clamp(finiteOr(v.pitch, 0), -24, 24),
+    attack: clamp(finiteOr(v.attack, VOICE_DEFAULT_ATTACK_MS), 1, 500),
+    release: clamp(finiteOr(v.release, VOICE_DEFAULT_RELEASE_MS), 2, 2000),
+    reverse: !!v.reverse,
+  };
+}
 
 export function stepTime(step, bpm, swing) {
   const g = Math.trunc(Number(step));
@@ -69,6 +94,8 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
     const track = tracks[trackIndex];
     if (!track || !track.sample || !track.steps) continue;
     const gainDb = clamp(finiteOr(track.gainDb, 0), -24, 6);
+    const voice = normalizeVoice(track.voice);
+    const bufSec = sampleSeconds(track.sample);
     prepared.push({
       track: trackIndex,
       steps: track.steps,
@@ -77,6 +104,17 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
       silent: !!track.mute || (anySolo && !track.solo),
       gain: Math.pow(10, gainDb / 20),
       pan: clamp(finiteOr(track.pan, 0), -1, 1),
+      voicePitch: voice.pitch,
+      voiceReverse: voice.reverse,
+      // Trim in buffer-domain seconds; reversed playback reads the baked
+      // reversed buffer, so its offset flips: (1 - end) * bufSec (CONTRACT-SONG 1).
+      trim: (voice.start > 0 || voice.end < 1) && bufSec > 0 ? {
+        forward: voice.start * bufSec,
+        reversed: (1 - voice.end) * bufSec,
+        sliceSec: (voice.end - voice.start) * bufSec,
+      } : null,
+      attackSec: voice.attack !== VOICE_DEFAULT_ATTACK_MS ? voice.attack / 1000 : null,
+      releaseSec: voice.release !== VOICE_DEFAULT_RELEASE_MS ? voice.release / 1000 : null,
     });
   }
   // Duck routing: source track index -> [{ track, depthDb }]
@@ -138,8 +176,10 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
       const pan = sd && sd.pan !== undefined && sd.pan !== null
         ? clamp(finiteOr(sd.pan, 0), -1, 1) : p.pan;
       const pitch = clamp(finiteOr(sd && sd.pitch, 0), -12, 12);
-      const rate = Math.pow(2, pitch / 12);
-      const reverse = !!(sd && sd.reverse);
+      // Lock pitch ADDS semitones to voice pitch; lock reverse XORs voice
+      // reverse (CONTRACT-SONG 1). Neutral voice reproduces today's values.
+      const rate = Math.pow(2, (pitch + p.voicePitch) / 12);
+      const reverse = !!(sd && sd.reverse) !== p.voiceReverse;
       const gateFrac = sd && sd.gate ? clamp(finiteOr(sd.gate, 0), 0.05, 4) : 0;
       const durSec = gateFrac ? gateFrac * stepDur : null;
       const nudge = clamp(finiteOr(sd && sd.nudge, 0), -0.5, 0.5);
@@ -149,7 +189,16 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
       for (let k = 0; k < ratchet; k++) {
         const tSec = base + (k * stepDur) / ratchet;
         if (tSec < from || tSec >= to) continue;
-        events.push({ tSec, track: p.track, gain, pan, rate, reverse, durSec, ratchetIndex: k });
+        const event = { tSec, track: p.track, gain, pan, rate, reverse, durSec, ratchetIndex: k };
+        // Voice fields are optional and neutral when absent, so a default
+        // voice keeps the event shape identical to pre-voice output.
+        if (p.trim) {
+          event.offsetSec = reverse ? p.trim.reversed : p.trim.forward;
+          event.sliceSec = p.trim.sliceSec;
+        }
+        if (p.attackSec !== null) event.attackSec = p.attackSec;
+        if (p.releaseSec !== null) event.releaseSec = p.releaseSec;
+        events.push(event);
         const targets = duckTargets.get(p.track);
         if (targets && gain > 0) {
           for (const target of targets) {
@@ -169,6 +218,48 @@ export function compileRender(machine, loops, opts = {}) {
   const totalSec = loopSec * count;
   const { events, ducks } = compileWindow(machine, 0, totalSec, opts);
   return { events, ducks, loopSec, totalSec };
+}
+
+// Song compiler (CONTRACT-SONG 2): each chain entry compiles through
+// compileRender on a scene facade, so a song is literally patterns of
+// patterns. Every entry's cycle counter restarts at 0: re-entering a scene
+// later in the chain replays the same seeded rolls, deterministically.
+export function compileSong(machine, opts = {}) {
+  const scenes = machine && Array.isArray(machine.scenes) ? machine.scenes : [];
+  const song = machine && machine.song;
+  const chain = song && Array.isArray(song.chain) ? song.chain : [];
+  const events = [];
+  const ducks = [];
+  const sections = [];
+  let startSec = 0;
+  for (const entry of chain) {
+    const sceneIndex = clamp(Math.trunc(finiteOr(entry && entry.scene, 0)), 0, 7);
+    const scene = scenes[sceneIndex];
+    if (!scene) continue;
+    const reps = clamp(Math.floor(finiteOr(entry && entry.reps, 1)), 1, 99);
+    // Facade: compileRender sees a flat machine with this scene active; each
+    // section uses its own scene's bpm/swing. FILL is compiled off for songs.
+    const facade = {
+      scenes,
+      activeScene: sceneIndex,
+      tracks: scene.tracks,
+      bpm: scene.bpm,
+      swing: scene.swing,
+    };
+    const part = compileRender(facade, reps, { ...opts, fill: false });
+    for (const event of part.events) {
+      event.tSec += startSec;
+      events.push(event);
+    }
+    for (const seg of part.ducks) {
+      seg.tSec += startSec;
+      ducks.push(seg);
+    }
+    const endSec = startSec + part.totalSec;
+    sections.push({ scene: sceneIndex, startSec, loopSec: part.loopSec, reps, endSec });
+    startSec = endSec;
+  }
+  return { events, ducks, sections, totalSec: startSec };
 }
 
 function sceneSeed(machine) {
@@ -192,6 +283,19 @@ function swingRatio(value) {
   const swing = normalizedSwing(value);
   // Grooveboxes label triplet swing as 66 even though its exact ratio is 2/3.
   return swing === 66 ? 2 / 3 : swing / 100;
+}
+
+// Duration matching the AudioBuffer the sequencer bakes: max channel length
+// over the rounded sample rate.
+function sampleSeconds(sample) {
+  const sampleRate = Math.round(Number(sample && sample.sampleRate));
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) return 0;
+  let frames = 0;
+  const channels = sample.channels || [];
+  for (const channel of channels) {
+    if (channel && Number.isFinite(channel.length)) frames = Math.max(frames, channel.length);
+  }
+  return frames / sampleRate;
 }
 
 function trackLength(track) {

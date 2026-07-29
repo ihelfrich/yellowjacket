@@ -108,7 +108,8 @@ export class PatternView extends EventTarget {
   // 'clearstep' {track, step}, 'scene' {index}, 'scenecopy' {from, to},
   // 'fill' {on}. The contract names no control for assign/cleartrack, so:
   // click on a track's sample-name well = assign, Alt+click = cleartrack
-  // (stated in the well's title text).
+  // (stated in the well's title text). SONG slice adds: 'voiceopen' {track}
+  // from the per-row [V] button (the integrator opens the VOICE drawer).
   constructor(host) {
     super();
     this.host = host;
@@ -400,6 +401,10 @@ export class PatternView extends EventTarget {
       return b;
     };
 
+    const vbtn = sq('V', 'Voice: trim, pitch and envelope for track ' + (i + 1));
+    vbtn.classList.add('yj-pattern-vbtn');
+    vbtn.addEventListener('click', () => this._emit('voiceopen', { track: i }));
+
     const trig = sq('T', 'Fire track ' + (i + 1) + ' once (key ' + (i + 1) + ')');
     trig.disabled = true;
     trig.addEventListener('pointerdown', (e) => {
@@ -414,7 +419,7 @@ export class PatternView extends EventTarget {
       }
     });
 
-    row.append(key, name, trig);
+    row.append(key, name, vbtn, trig);
 
     const cells = [];
     for (let col = 0; col < COLS; col++) {

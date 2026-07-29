@@ -4,10 +4,22 @@
 
 let assetCounter = 0;
 
+export function createVoice() {
+  return {
+    start: 0,              // 0..1 fraction into the sample, see CONTRACT-SONG.md
+    end: 1,
+    pitch: 0,              // semitones, -24..24; rate = 2^(pitch/12)
+    attack: 3,             // ms
+    release: 8,            // ms
+    reverse: false,
+  };
+}
+
 export function createTrack() {
   return {
     sampleId: null,
     sample: null,          // runtime-resolved {channels, sampleRate, label}; never serialized
+    voice: createVoice(),
     steps: new Uint8Array(64),
     stepData: {},          // sparse per-step locks/components/conditions, see CONTRACT-LOCK.md
     len: 16,
@@ -38,6 +50,7 @@ export function createMachine() {
     activeScene: 0,
     pendingScene: null,
     scenes: Array.from({ length: 8 }, (_, i) => createScene(i)),
+    song: { chain: [], loop: true },   // patterns of patterns, see CONTRACT-SONG.md
   };
   // Active-scene aliases keep compile.js and PatternView working unchanged: they read
   // machine.bpm / machine.swing / machine.tracks and never learn about scenes.

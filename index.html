@@ -204,6 +204,7 @@
     <div class="yj-substate" role="tablist">
       <button class="yj-substate-btn is-active" data-mstate="slice" role="tab">SLICE</button>
       <button class="yj-substate-btn" data-mstate="pattern" role="tab">PATTERN</button>
+      <button class="yj-substate-btn" data-mstate="song" role="tab">SONG</button>
       <button class="yj-substate-btn" data-mstate="wire" role="tab">WIRE</button>
     </div>
     <div id="mstate-slice" class="yj-mstate is-active">
@@ -231,6 +232,13 @@
     <div id="mstate-pattern" class="yj-mstate">
       <div class="yj-panel yj-grow" data-label="MACHINE / PATTERN">
         <div id="patternHost" class="yj-pattern-host"></div>
+        <div id="voiceHost" class="yj-voice-host" hidden></div>
+      </div>
+    </div>
+    <div id="mstate-song" class="yj-mstate">
+      <div class="yj-panel yj-grow" data-label="MACHINE / SONG">
+        <div id="songHost"></div>
+        <p class="yj-canvas-note">Chain scenes into an arrangement. Every pass rolls the same seeded dice, so RENDER prints exactly the song you heard.</p>
       </div>
     </div>
     <div id="mstate-wire" class="yj-mstate">
