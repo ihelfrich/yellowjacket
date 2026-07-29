@@ -433,4 +433,16 @@ export function initBenchController(ctx) {
   ctx.api.statusRight = statusRight;
   ctx.api.benchReset = resetForSource;
   ctx.api.getLiftRange = () => liftRange;
+  ctx.api.rebuildRack = buildRack;
+  // Restore path: words came back from a saved session, light the same surfaces
+  // a fresh transcription would.
+  ctx.api.wordsRestored = () => {
+    if (!P.words) return;
+    $('transcriptHint').hidden = true;
+    transcript.setWords(P.words);
+    sliceView.setWords(P.words);
+    onEdited();
+    for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = false;
+    $('roFillers').textContent = P.words.filter((w) => w.filler).length + ' FOUND';
+  };
 }

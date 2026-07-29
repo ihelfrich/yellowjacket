@@ -13,6 +13,8 @@ import {
 } from '../js/machine/compile.js';
 import { resample } from '../js/dsp/resample.js';
 import { truePeakDb } from '../js/dsp/truepeak.js';
+import { createProject, registerAsset } from '../js/app/project-store.js';
+import { serializeProject, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
 
 // The buffer-kind DSP modules construct AudioBuffers; node has none.
 if (typeof globalThis.AudioBuffer === 'undefined') {
@@ -623,6 +625,161 @@ const repairCases = [
   },
 ];
 
+// ---------- persist roundtrip (CONTRACT-PERSIST) ----------
+
+function persistChain() {
+  return [
+    { id: 'highpass', on: true, params: { freq: 80 } },
+    { id: 'eq', on: false, params: { lowGain: 0, midGain: 0 } },
+  ];
+}
+
+// A populated project + runtime pair: words, clips, chain edits, repairs,
+// anchors, two sample assets with one ref shared across scenes.
+function persistFixture() {
+  const p = createProject(persistChain());
+  const r = { repairs: [], analysis: null, sourceBytes: null };
+  p.fileName = 'field-notes.mp3';
+  p.words = [
+    { text: 'hello', start: 0.1, end: 0.4, deleted: false, filler: false },
+    { text: 'um', start: 0.6, end: 0.7, deleted: true, filler: true },
+  ];
+  p.clips.push({ id: 'c1', start: 0.1, end: 1.1, gain: 1, tag: 'word', label: 'hello' });
+  p.chain[1].on = true;
+  p.chain[1].params.lowGain = 3;
+  r.repairs.push({ id: 'rp1', t0: 1.0, t1: 1.2, f0: 2000, f1: 8000, strength: 1, enabled: true, label: 'R1' });
+  r.analysis = { tempo: 128.2, beats: [0.1], anchors: { bpm: 128, barOneTime: 0.46 } };
+  r.sourceBytes = new ArrayBuffer(4321);
+  const pcmA = { channels: [Float32Array.from([0.1, -0.2, 0.3]), Float32Array.from([0.05, 0, -0.5])], sampleRate: 44100, label: 'KICK' };
+  const pcmB = { channels: [Float32Array.from([1, -1, 0.5, 0.25])], sampleRate: 48000, label: 'HAT' };
+  const idA = registerAsset(p, { kind: 'sample', label: 'KICK', sampleRate: 44100, frames: 3 });
+  const idB = registerAsset(p, { kind: 'sample', label: 'HAT', sampleRate: 48000, frames: 4 });
+  const s0 = p.machine.scenes[0];
+  s0.bpm = 174;
+  s0.tracks[0].sampleId = idA;
+  s0.tracks[0].sample = pcmA;
+  s0.tracks[0].steps[4] = 1;
+  s0.tracks[0].stepData[4] = { velocity: 0.5, futureKnob: 7 };
+  s0.tracks[2].sampleId = idB;
+  s0.tracks[2].sample = pcmB;
+  const s1 = p.machine.scenes[1];
+  s1.bpm = 96;
+  s1.tracks[0].sampleId = idA;   // shared ref: must dedupe to one file
+  s1.tracks[0].sample = pcmA;
+  p.machine.activeScene = 1;
+  return { p, r, idA, idB };
+}
+
+const persistCases = [
+  function serializeShapeAndDedupe() {
+    const { p, r, idA, idB } = persistFixture();
+    const { json, sampleFiles } = serializeProject(p, r);
+    assert.equal(json.formatVersion, FORMAT_VERSION, 'formatVersion');
+    assert.deepEqual(json.sourceBytes, { size: 4321 }, 'sourceBytes size only');
+    assert.equal(sampleFiles.length, 2, '3 refs dedupe to 2 files');
+    const fileA = sampleFiles.find((f) => f.id === idA);
+    assert.equal(fileA.bytes.byteLength, 2 * 3 * 4, 'per-channel f32 bytes');
+    assert.equal(json.assets[idA].channelCount, 2, 'channelCount derived from PCM');
+    assert.equal(json.assets[idB].channelCount, 1, 'mono channelCount');
+    assert.ok(!Object.getOwnPropertyNames(json.machine).includes('tracks'), 'no aliased machine.tracks');
+    assert.ok(!('sample' in json.machine.scenes[0].tracks[0]), 'runtime PCM never serialized');
+  },
+  function roundtripDeepEqual() {
+    const { p, r } = persistFixture();
+    const { json, sampleFiles } = serializeProject(p, r);
+    const wire = JSON.parse(JSON.stringify(json));
+    const p2 = createProject(persistChain());
+    const r2 = { repairs: [], analysis: null, sourceBytes: null };
+    const plan = applySnapshot(wire, { project: p2, runtime: r2 });
+    for (const att of plan.sampleAttachments) {
+      const meta = wire.assets[att.assetId];
+      const file = sampleFiles.find((f) => f.id === att.assetId);
+      const flat = new Float32Array(file.bytes);
+      const channels = [];
+      for (let c = 0; c < meta.channelCount; c++) channels.push(flat.slice(c * meta.frames, (c + 1) * meta.frames));
+      p2.machine.scenes[att.sceneIndex].tracks[att.trackIndex].sample = { channels, sampleRate: meta.sampleRate, label: meta.label };
+    }
+    r2.sourceBytes = new ArrayBuffer(4321);
+    r2.analysis = { anchors: plan.anchors };
+    const round = serializeProject(p2, r2);
+    const a = { ...round.json };
+    const b = { ...wire };
+    delete a.savedAt;
+    delete b.savedAt;
+    assert.deepEqual(a, b, 'serialize -> apply -> serialize is a fixed point');
+    for (const f of sampleFiles) {
+      const again = round.sampleFiles.find((x) => x.id === f.id);
+      assert.deepEqual(new Uint8Array(again.bytes), new Uint8Array(f.bytes), 'f32 bytes bit-identical: ' + f.id);
+    }
+  },
+  function applyMutatesInPlace() {
+    const { p, r } = persistFixture();
+    const { json } = serializeProject(p, r);
+    const p2 = createProject(persistChain());
+    const r2 = { repairs: [], analysis: null, sourceBytes: null };
+    const refs = {
+      machine: p2.machine,
+      scenes: p2.machine.scenes,
+      steps: p2.machine.scenes[0].tracks[0].steps,
+      clips: p2.clips,
+      chainEntry: p2.chain[1],
+      chainParams: p2.chain[1].params,
+      assets: p2.assets,
+      repairs: r2.repairs,
+    };
+    applySnapshot(JSON.parse(JSON.stringify(json)), { project: p2, runtime: r2 });
+    assert.equal(p2.machine, refs.machine, 'machine object kept (controllers hold refs)');
+    assert.equal(p2.machine.scenes, refs.scenes, 'scenes array kept');
+    assert.equal(p2.machine.scenes[0].tracks[0].steps, refs.steps, 'steps Uint8Array instance kept');
+    assert.equal(p2.clips, refs.clips, 'clips array kept');
+    assert.equal(p2.chain[1], refs.chainEntry, 'chain entry kept (rack UI closes over it)');
+    assert.equal(p2.chain[1].params, refs.chainParams, 'chain params object kept');
+    assert.equal(p2.assets, refs.assets, 'assets object kept');
+    assert.equal(r2.repairs, refs.repairs, 'repairs array kept');
+    assert.ok(p2.machine.scenes[0].tracks[0].steps instanceof Uint8Array, 'steps stay typed');
+    assert.equal(p2.chain[1].params.lowGain, 3, 'chain params merged by id');
+  },
+  function sceneAliasSafety() {
+    const { p, r } = persistFixture();
+    const { json } = serializeProject(p, r);
+    assert.equal(json.machine.scenes[0].bpm, 174, 'scene 0 bpm, not the active-scene alias');
+    assert.equal(json.machine.scenes[1].bpm, 96, 'scene 1 bpm');
+    const p2 = createProject(persistChain());
+    applySnapshot(JSON.parse(JSON.stringify(json)), { project: p2, runtime: { repairs: [], analysis: null, sourceBytes: null } });
+    assert.equal(p2.machine.activeScene, 1, 'activeScene restored');
+    assert.equal(p2.machine.bpm, 96, 'bpm alias reads restored active scene');
+    assert.equal(p2.machine.scenes[0].bpm, 174, 'inactive scene written directly');
+    assert.ok(typeof Object.getOwnPropertyDescriptor(p2.machine, 'bpm').get === 'function', 'alias still an accessor');
+  },
+  function forwardToleranceAndClamps() {
+    const { p, r } = persistFixture();
+    const { json } = serializeProject(p, r);
+    const wire = JSON.parse(JSON.stringify(json));
+    wire.futureTopLevel = { note: 'newer bench, same version' };
+    wire.machine.scenes[0].tracks[0].stepData['4'].anotherFutureKey = 'q';
+    wire.machine.scenes[0].tracks[1].steps = new Array(100).fill(2);
+    const p2 = createProject(persistChain());
+    applySnapshot(wire, { project: p2, runtime: { repairs: [], analysis: null, sourceBytes: null } });
+    assert.equal(p2.machine.scenes[0].tracks[0].stepData['4'].futureKnob, 7, 'unknown stepData key survives');
+    assert.equal(p2.machine.scenes[0].tracks[0].stepData['4'].anotherFutureKey, 'q', 'wire-added key survives');
+    assert.equal(p2.machine.scenes[0].tracks[1].steps.length, 64, 'oversized wire steps clamp to 64');
+    assert.equal(p2.machine.scenes[0].tracks[1].steps[63], 2, 'clamped values land');
+  },
+  function versionGuardThrowsTyped() {
+    const target = () => ({ project: createProject(persistChain()), runtime: { repairs: [], analysis: null, sourceBytes: null } });
+    assert.throws(
+      () => applySnapshot({ formatVersion: 3 }, target()),
+      (err) => err.name === 'FormatVersionError' && err.formatVersion === 3,
+      'newer formatVersion throws typed',
+    );
+    assert.throws(
+      () => applySnapshot(null, target()),
+      (err) => err.name === 'FormatVersionError',
+      'null json throws typed',
+    );
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -630,6 +787,7 @@ const groups = [
   ['TRUTH 1 DSP', truthCases],
   ['LOCK compiler', lockCases],
   ['spectral repair', repairCases],
+  ['persist roundtrip', persistCases],
 ];
 
 for (const [name, cases] of groups) {

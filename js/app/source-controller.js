@@ -22,8 +22,13 @@ export function initSourceController(ctx) {
     await loadArrayBuffer(ab, file.name);
   }
 
-  async function loadArrayBuffer(ab, name) {
+  // anchors rides through to the deferred analysis run: RESTORE passes the saved
+  // bpm/bar-one pins so the beatmap comes back as it was, not re-guessed.
+  async function loadArrayBuffer(ab, name, anchors = null) {
     status(COPY.decoding, true);
+    // Keep the encoded bytes for persistence and RESTORE: decodeAudioData detaches
+    // its argument in some engines, so the copy must happen before decode.
+    const sourceBytes = ab.slice(0);
     try {
       await engine.load(ab, name);
     } catch (e) {
@@ -41,6 +46,7 @@ export function initSourceController(ctx) {
       r.sampleRate = engine.sampleRate;
       r.renderedBuffer = null;
       r.analysis = null;
+      r.sourceBytes = sourceBytes;
       // One pyramid, shared by every view that draws this source.
       r.peaks = buildPeakPyramid(r.mono);
     });
@@ -68,7 +74,7 @@ export function initSourceController(ctx) {
       $('specNote').textContent = 'Spectrogram fault — see console.';
     }).finally(() => {
       // Analysis waits for the spectrogram: both are CPU-heavy, sequential is kinder.
-      if (gen === R.generation) runAnalysis();
+      if (gen === R.generation) runAnalysis(anchors);
     });
   }
 
@@ -96,7 +102,10 @@ export function initSourceController(ctx) {
           if (analysisBusy) status(COPY.mapping + ' · ' + Math.round(msg.pct) + '%', true);
         } else if (msg.type === 'done') {
           analysisBusy = false;
-          R.analysis = { ...msg.analysis, anchors: analysisRun.anchors };
+          // Through the store so autosave sees it: anchors live in the snapshot.
+          store.update('analysis', (p, r) => {
+            r.analysis = { ...msg.analysis, anchors: analysisRun.anchors };
+          });
           ctx.api.analysisDone(R.analysis);
           status(COPY.loaded);
         } else if (msg.type === 'error') {

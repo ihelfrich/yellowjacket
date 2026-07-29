@@ -20,6 +20,7 @@ import { initSourceController } from './app/source-controller.js';
 import { initMachineController } from './machine/controller.js';
 import { RepairPanel } from './app/repair-panel.js';
 import { initRepairController } from './app/repair-controller.js';
+import { initPersistController } from './app/persist-controller.js';
 
 const COPY = {
   idle: 'IDLE',
@@ -110,6 +111,7 @@ initBenchController(ctx);
 initMachineController(ctx);
 initRepairController(ctx);
 initSourceController(ctx);
+initPersistController(ctx); // last: restore needs every api registered above
 
 // ---------- tabs ----------
 for (const btn of document.querySelectorAll('.yj-tab-btn')) {

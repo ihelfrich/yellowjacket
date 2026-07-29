@@ -73,7 +73,10 @@ export function createProject(chainDefaults) {
 }
 
 export function registerAsset(project, meta) {
-  const id = 'a' + (++assetCounter);
+  // Restored projects carry ids this counter never minted; skip past them or a
+  // new asset would collide with a restored one (two PCMs, one file on save).
+  let id = 'a' + (++assetCounter);
+  while (project.assets[id]) id = 'a' + (++assetCounter);
   project.assets[id] = { id, ...meta };
   return id;
 }
@@ -92,6 +95,7 @@ export class ProjectStore extends EventTarget {
       generation: 0,         // bumped per loaded source; stale async jobs check and bail
       repairs: [],           // spectral repair stack, see CONTRACT-BRUSH.md
       original: null,        // {buffer, mono} captured before the first repair
+      sourceBytes: null,     // encoded source as loaded, for persistence + restore
     };
     this.revision = 0;
     this.dirty = false;

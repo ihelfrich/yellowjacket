@@ -238,8 +238,23 @@ export function initRepairController(ctx) {
     if (spec.setRepairs) spec.setRepairs([], null);
   }
 
+  // RESUME hands back repairs with saved 'rpN' ids while repairSeq restarts at
+  // zero; sync the counter and relight the panel/overlays in one place. addRepair
+  // mints id 'rp'+repairSeq BEFORE labelFor increments, so id N means the counter
+  // must resume at N+1 or the next repair collides with a restored one.
+  function repairsRestored() {
+    for (const r of R.repairs) {
+      const m = /^rp(\d+)$/.exec(r.id || '');
+      if (m) repairSeq = Math.max(repairSeq, Number(m[1]) + 1);
+    }
+    if (repairPanel) repairPanel.setRepairs(R.repairs);
+    if (spec.setRepairs) spec.setRepairs(R.repairs, null);
+  }
+
   ctx.api.repairReset = resetForSource;
   ctx.api.addRepair = addRepair;
+  ctx.api.repairRebuild = rebuild;
+  ctx.api.repairsRestored = repairsRestored;
 }
 
 function mixdown(buffer) {

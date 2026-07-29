@@ -28,6 +28,16 @@ function nextId() {
   return 'c' + clipCounter;
 }
 
+// After a RESUME the counter restarts at zero while restored clips keep their
+// saved ids; advance past them so a new clip cannot collide (clipdelete filters
+// by id and would silently drop both).
+export function advanceClipCounter(clips) {
+  for (const clip of clips || []) {
+    const m = /^c(\d+)$/.exec(clip && clip.id ? clip.id : '');
+    if (m) clipCounter = Math.max(clipCounter, Number(m[1]));
+  }
+}
+
 export function makeClip(start, end, tag, label) {
   const a = Math.min(start, end);
   const b = Math.max(start, end);

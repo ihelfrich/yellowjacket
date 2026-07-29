@@ -331,6 +331,39 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-canvas-slice { flex: 1; min-height: 260px; touch-action: none; }
 .yj-canvas-slice:focus-visible { outline: 1px solid var(--yj-yellow); outline-offset: -1px; }
 
+/* spectrogram layering: GPU image beneath, overlays on the 2D canvas above */
+.yj-specwrap { position: relative; flex: 1; min-height: 220px; display: flex; background: var(--yj-well); border: 1px solid var(--yj-line); }
+/* The overlay canvas must not paint a CSS background: it would hide the GPU
+   image below it. The well color moves to the wrapper; in the 2D fallback the
+   composite fills the bitmap opaquely anyway. */
+.yj-specwrap .yj-canvas-spec { position: relative; z-index: 1; flex: 1; min-height: 0; background: transparent; border: 0; }
+.yj-canvas-gpu {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  background: var(--yj-well);
+  border: 1px solid var(--yj-line);
+}
+
+/* resume panel in the drop zone */
+.yj-resume {
+  border-top: 1px solid var(--yj-line);
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+}
+.yj-resume-info {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--yj-yellow);
+}
+
 /* ---------- machine substates ---------- */
 .yj-substate { display: flex; gap: 2px; flex-shrink: 0; }
 .yj-substate-btn {

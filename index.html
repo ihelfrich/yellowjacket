@@ -134,7 +134,10 @@
           <canvas id="waveMain" class="yj-canvas yj-canvas-wave"></canvas>
         </div>
         <div class="yj-panel" data-label="SIGNAL / SPECTROGRAM">
-          <canvas id="specMain" class="yj-canvas yj-canvas-spec"></canvas>
+          <div id="specWrap" class="yj-specwrap">
+            <canvas id="specGpu" class="yj-canvas-gpu" hidden></canvas>
+            <canvas id="specMain" class="yj-canvas yj-canvas-spec"></canvas>
+          </div>
           <div class="yj-canvas-note" id="specNote">Spectrogram computes when audio loads.</div>
         </div>
       </div>
@@ -237,6 +240,13 @@
     <div class="yj-urlrow">
       <input type="url" id="urlInput" class="yj-urlinput" placeholder="or paste a URL · direct audio link, podcast enclosure, archive.org" spellcheck="false">
       <button id="btnLoadUrl" class="yj-btn">LOAD URL</button>
+    </div>
+    <div class="yj-resume" id="resumePanel" hidden>
+      <p class="yj-resume-info" id="resumeInfo">LAST SESSION</p>
+      <div class="yj-toolrow">
+        <button id="btnResume" class="yj-btn yj-btn-primary">RESUME</button>
+        <button id="btnDiscard" class="yj-btn" title="Forget the saved session">DISCARD</button>
+      </div>
     </div>
     <div class="yj-riphelp" id="ripHelp" hidden>
       <p id="ripHelpMsg">That host won't hand audio to a web page. Rip it on your machine, then drop the file here:</p>
