@@ -134,6 +134,7 @@ for (const btn of document.querySelectorAll('.yj-tab-btn')) {
     ctx.api.setKeybedEnabled(btn.dataset.tab === 'machine');
     // canvases need a size pass when they become visible
     views.waveMini.render(); views.waveMain.render(); views.spec.render(); views.sliceView.render();
+    if (views.constellation) views.constellation.render();
   });
 }
 

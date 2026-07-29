@@ -4,9 +4,10 @@
 // {id}, 'remove' {id}, 'assign' {id}.
 
 const STYLE = `
-.yj-cliplist { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+.yj-cliplist { display: flex; flex-direction: column; gap: 2px; min-height: 92px; max-height: 260px;
+  overflow-y: auto; overflow-x: hidden; flex-shrink: 0; }
 .yj-cliprow {
-  display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 6px; align-items: center;
+  display: grid; grid-template-columns: 1fr auto auto auto; gap: 5px; align-items: center;
   padding: 4px 6px; background: var(--yj-well); border: 1px solid var(--yj-line);
   font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.04em; cursor: pointer;
 }
@@ -96,7 +97,7 @@ export class ClipListView extends EventTarget {
       const row = document.createElement('div');
       row.className = 'yj-cliprow' + (clip.id === this._selectedId ? ' is-sel' : '');
       row.dataset.id = clip.id;
-      row.title = clip.start.toFixed(3) + 's to ' + clip.end.toFixed(3) + 's';
+      row.title = clip.label + ' · ' + clip.start.toFixed(3) + 's to ' + clip.end.toFixed(3) + 's';
 
       const name = document.createElement('span');
       name.className = 'yj-cliprow-name';
@@ -105,10 +106,6 @@ export class ClipListView extends EventTarget {
       const role = document.createElement('span');
       role.className = 'yj-cliprow-role';
       role.textContent = (clip.tag || '?').toUpperCase().slice(0, 6);
-
-      const at = document.createElement('span');
-      at.className = 'yj-cliprow-num';
-      at.textContent = fmtSec(clip.start);
 
       const len = document.createElement('span');
       len.className = 'yj-cliprow-num';
@@ -130,7 +127,7 @@ export class ClipListView extends EventTarget {
         mk('remove', '×', 'Delete this clip'),
       );
 
-      row.append(name, role, at, len, tools);
+      row.append(name, role, len, tools);
       host.appendChild(row);
     }
   }

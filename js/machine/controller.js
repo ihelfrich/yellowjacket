@@ -370,7 +370,10 @@ export function initMachineController(ctx) {
       for (const b of document.querySelectorAll('.yj-substate-btn')) b.classList.toggle('is-active', b === btn);
       for (const pane of document.querySelectorAll('.yj-mstate')) pane.classList.remove('is-active');
       $('mstate-' + btn.dataset.mstate).classList.add('is-active');
-      if (btn.dataset.mstate === 'slice') sliceView.render();
+      if (btn.dataset.mstate === 'slice') {
+        sliceView.render();
+        if (constellation) constellation.render();
+      }
     });
   }
 

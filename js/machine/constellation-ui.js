@@ -69,9 +69,13 @@ export class ConstellationView {
   _layout() {
     const c = this.canvas;
     const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio > 0) ? devicePixelRatio : 1;
+    // A rect measured while the pane is hidden reads 0, and clamping that to a
+    // minimum leaves a tiny bitmap stretched across the real width later, which
+    // magnifies everything drawn in it. Prefer the layout box, and re-render on
+    // reveal (controller.js calls render() when SLICE becomes visible).
     const rect = c.getBoundingClientRect();
-    const w = Math.max(80, Math.round(rect.width));
-    const h = Math.max(80, Math.round(rect.height || w));
+    const w = Math.max(80, Math.round(rect.width || c.clientWidth || c.offsetWidth || 0));
+    const h = Math.max(80, Math.round(rect.height || c.clientHeight || c.offsetHeight || w));
     if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
       c.width = Math.round(w * dpr);
       c.height = Math.round(h * dpr);
