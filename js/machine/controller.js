@@ -83,7 +83,12 @@ export function initMachineController(ctx) {
     updateClipReadout();
   });
   sliceView.addEventListener('clipdelete', (e) => {
-    store.update('clips', (p) => { p.clips = p.clips.filter((c) => c.id !== e.detail.id); });
+    store.update('clips', (p) => {
+      // Splice in place: replacing the array strands every reference held
+      // elsewhere, which CONTRACT-PERSIST forbids for exactly this reason.
+      const i = p.clips.findIndex((c) => c.id === e.detail.id);
+      if (i >= 0) p.clips.splice(i, 1);
+    });
     sliceView.setClips(P.clips);
     updateClipReadout();
   });

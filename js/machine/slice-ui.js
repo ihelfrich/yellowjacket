@@ -841,8 +841,13 @@ export class SliceView extends EventTarget {
         const next = makeClip(d.a, d.b, old.tag, old.label);
         next.gain = old.gain;
         this._selectedId = next.id;
-        this._emit('clipdelete', { id: old.id });
+        // ADD BEFORE DELETE. The controller calls setClips after every event,
+        // and setClips drops a selection whose id is not in the list. Deleting
+        // first meant the new clip did not exist yet at that moment, so every
+        // resize silently cleared the selection and ASSIGN then refused with
+        // "select a clip in SLICE first" while the user was looking at it.
         this._emit('clipadd', { clip: next });
+        this._emit('clipdelete', { id: old.id });
         this._emit('clipselect', { clip: next });
         this._updateControls();
       }

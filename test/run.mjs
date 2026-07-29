@@ -1142,6 +1142,60 @@ const harvestCases = [
   },
 ];
 
+// ---------- clip lifecycle ----------
+// Models the two rules the real code follows: setClips drops a selection whose
+// id is absent (slice-ui.js), and the controller mutates project.clips in
+// place. A resize is a replace, so ordering decides whether selection lives.
+function clipHarness() {
+  const state = { clips: [], selectedId: null };
+  const setClips = () => {
+    if (state.selectedId != null && !state.clips.some((c) => c.id === state.selectedId)) {
+      state.selectedId = null;
+    }
+  };
+  state.add = (clip) => { state.clips.push(clip); setClips(); };
+  state.del = (id) => {
+    const i = state.clips.findIndex((c) => c.id === id);
+    if (i >= 0) state.clips.splice(i, 1);
+    setClips();
+  };
+  return state;
+}
+
+const clipCases = [
+  function resizeKeepsSelection() {
+    // Dragging a clip edge used to clear the selection, so ASSIGN then refused
+    // with "select a clip in SLICE first" while the user looked right at it.
+    const s = clipHarness();
+    const ref = s.clips;
+    s.add({ id: 'r1', start: 1, end: 2 });
+    s.selectedId = 'r1';
+    s.selectedId = 'r2';
+    s.add({ id: 'r2', start: 1, end: 2.5 });   // add BEFORE delete
+    s.del('r1');
+    assert.deepEqual(s.clips.map((c) => c.id), ['r2'], 'clip replaced');
+    assert.equal(s.selectedId, 'r2', 'selection survives a resize');
+    assert.equal(s.clips, ref, 'clips array identity is stable');
+  },
+  function deleteStillClearsSelection() {
+    const s = clipHarness();
+    s.add({ id: 'a1', start: 0, end: 1 });
+    s.add({ id: 'a2', start: 2, end: 3 });
+    s.selectedId = 'a1';
+    s.del('a1');
+    assert.equal(s.selectedId, null, 'deleting the selected clip clears selection');
+    assert.deepEqual(s.clips.map((c) => c.id), ['a2'], 'the other clip is untouched');
+  },
+  function deletingAnotherClipKeepsSelection() {
+    const s = clipHarness();
+    s.add({ id: 'b1', start: 0, end: 1 });
+    s.add({ id: 'b2', start: 2, end: 3 });
+    s.selectedId = 'b2';
+    s.del('b1');
+    assert.equal(s.selectedId, 'b2', 'deleting a different clip leaves selection alone');
+  },
+];
+
 const crateCases = [
   function indexMathRoundtrips() {
     let index = { maxId: 0, items: [] };
@@ -1363,6 +1417,7 @@ const groups = [
   ['song compiler', songCases],
   ['harvest', harvestCases],
   ['crate index', crateCases],
+  ['clip lifecycle', clipCases],
   ['conform', conformCases],
 ];
 
