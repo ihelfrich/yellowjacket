@@ -46,6 +46,9 @@ const ANALYSIS_HOP = 512;        // contract hop; synthesis hop = round(this * r
 const MAX_SYNTH_HOP = FFT_SIZE / 2;
 const PEAK_REL_FLOOR = 1e-5;     // peaks below this fraction of the frame max are noise
 const NORM_FLOOR = 1e-9;
+// Coverage below this fraction of the layout's steady state is a partially
+// covered edge, not signal: dividing by it manufactures a full-scale burst.
+const NORM_REL_FLOOR = 1e-3;
 const TWO_PI = Math.PI * 2;
 
 // role -> engine. Everything that is not a drum hit is treated as pitched,
@@ -302,7 +305,14 @@ function phaseVocoder(input, ratio, outLen) {
   const fft = new FFT(N);
 
   const headFrames = Math.ceil((N - hs) / hs);
-  const bodyFrames = Math.max(1, Math.ceil((outLen - N) / hs) + 1);
+  // The budget must be symmetric. headFrames are prepended so output sample 0
+  // sits under full overlap-add coverage; without the SAME allowance at the
+  // end, the last hop is covered by one decaying window while the WOLA divisor
+  // still assumes steady state. Measured before this fix: the divisor fell to
+  // 7.2e-9 against a steady state of 1.58, so the residual was multiplied by
+  // 1.4e8 and a -6 dBFS noise buffer ended at +52.6 dBFS (856x input peak) in
+  // its final synthesis hop. 100% of realistic CONFORM fits overshot.
+  const bodyFrames = Math.max(1, Math.ceil((outLen - N) / hs) + 1) + headFrames;
   const total = headFrames + bodyFrames;
   const headPad = Math.ceil((headFrames * hs) / ratio) + 1;
   const tailPad = N + 1;
@@ -419,10 +429,19 @@ function phaseVocoder(input, ratio, outLen) {
   // energy is exact for unmodified frames at any hop, so gain does not depend on
   // the ratio.
   const offset = headFrames * hs;
+  // Steady-state coverage for this layout, sampled where overlap is complete.
+  let normPeak = 0;
+  for (let i = 0; i < outLen; i++) {
+    const d = norm[offset + i];
+    if (d > normPeak) normPeak = d;
+  }
+  const normGuard = Math.max(NORM_FLOOR, normPeak * NORM_REL_FLOOR);
   const out = new Float32Array(outLen);
   for (let i = 0; i < outLen; i++) {
     const d = norm[offset + i];
-    out[i] = d > NORM_FLOOR ? acc[offset + i] / d : 0;
+    // Relative guard: an absolute floor lets a divisor of 7e-9 through while
+    // steady state is ~1.6, which is exactly how the tail spike escaped.
+    out[i] = d > normGuard ? acc[offset + i] / d : 0;
   }
   return out;
 }

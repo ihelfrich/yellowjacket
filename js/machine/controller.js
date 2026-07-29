@@ -230,6 +230,9 @@ export function initMachineController(ctx) {
       m.activeScene = index;
     });
     patternView.setMachine(P.machine);
+    // Send amounts are per track and are baked into the strip graph, so the
+    // strips must be rebuilt from the incoming scene's tracks.
+    if (typeof sequencer.bumpStrips === 'function') sequencer.bumpStrips();
     status('SCENE ' + (index + 1) + (sequencer.running ? ' · RUNNING' : ''));
   });
   patternView.addEventListener('scenecopy', (e) => {

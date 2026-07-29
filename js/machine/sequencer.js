@@ -165,6 +165,9 @@ export class Sequencer extends EventTarget {
     }
     const rack = createSpaceRack(ctx, dest, space, bpm);
     rack.sig = sig;
+    // Existing strips still feed the OLD rack's inputs, so their sends would
+    // play into a graph nothing listens to. Rebuild them against the new one.
+    if (this._rack) this.bumpStrips();
     this._rack = rack;
     return rack;
   }

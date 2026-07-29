@@ -1195,6 +1195,60 @@ const conformCases = [
       }
     }
   },
+  function stretchNeverBlowsUpAmplitude() {
+    // CONTRACT-CONFORM section 1 asked for this bound and the harness never
+    // enforced it, which is how a phase-vocoder tail spike of 856x the input
+    // peak reached production. The overshoot lived entirely in the final
+    // synthesis hop, so the tail is checked separately and harder.
+    const sr = 44100;
+    const n = sr;
+    const rand = mulberry32(0xBADA55);
+    const src = new Float32Array(n);
+    for (let i = 0; i < n; i++) src[i] = 0.5 * (rand() * 2 - 1);
+    let inPeak = 0;
+    for (let i = 0; i < n; i++) inPeak = Math.max(inPeak, Math.abs(src[i]));
+    for (const mode of ['percussive', 'tonal', 'resample']) {
+      for (const ratio of [0.5, 0.95, 1.25, 1.5, 1.85, 2.6]) {
+        const out = stretchSamples(src, ratio, sr, { mode });
+        let peak = 0;
+        let tailPeak = 0;
+        const tailFrom = Math.max(0, out.length - 2048);
+        for (let i = 0; i < out.length; i++) {
+          const a = Math.abs(out[i]);
+          if (a > peak) peak = a;
+          if (i >= tailFrom && a > tailPeak) tailPeak = a;
+          assert.ok(Number.isFinite(out[i]), 'finite ' + mode + ' x' + ratio);
+        }
+        assert.ok(peak <= inPeak * 3,
+          mode + ' x' + ratio + ' peak ' + (peak / inPeak).toFixed(2) + 'x input, want <= 3x');
+        assert.ok(tailPeak <= inPeak * 3,
+          mode + ' x' + ratio + ' TAIL peak ' + (tailPeak / inPeak).toFixed(2) + 'x input, want <= 3x');
+      }
+    }
+  },
+  function fittedSweepStaysBounded() {
+    // The realistic CONFORM path: a harvested slice fitted across tempos.
+    const sr = 44100;
+    const n = Math.round(1.7 * sr);
+    const rand = mulberry32(0x5A5A);
+    const src = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      src[i] = 0.4 * Math.sin(2 * Math.PI * 110 * i / sr) + 0.1 * (rand() * 2 - 1);
+    }
+    let inPeak = 0;
+    for (let i = 0; i < n; i++) inPeak = Math.max(inPeak, Math.abs(src[i]));
+    let worst = 0;
+    for (const bpm of [90, 100, 120, 140]) {
+      for (const steps of [4, 8, 16, 22, 32]) {
+        const fitSec = steps * (60 / bpm / 4);
+        const out = stretchSamples(src, (fitSec * sr) / n, sr, { mode: 'auto', role: 'BASS' });
+        let peak = 0;
+        for (let i = 0; i < out.length; i++) peak = Math.max(peak, Math.abs(out[i]));
+        worst = Math.max(worst, peak / inPeak);
+      }
+    }
+    assert.ok(worst <= 3, 'worst fitted overshoot ' + worst.toFixed(2) + 'x input peak, want <= 3x');
+  },
   function roleChoosesTheEngine() {
     // The point of the slice: HARVEST already knows what the sound is.
     for (const role of ['KICK', 'SNARE', 'HAT']) {

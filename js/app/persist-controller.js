@@ -2,7 +2,7 @@
 // routes every mutation through update(), so autosave is one debounced listener.
 // Nothing auto-loads: a saved session offers itself in the drop zone and waits.
 
-import { serializeProject, applySnapshot, OpfsStore } from './persist.js';
+import { serializeProject, applySnapshot, OpfsStore, FORMAT_VERSION } from './persist.js';
 import { advanceClipCounter } from '../machine/cliprefs.js';
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -19,6 +19,7 @@ export function initPersistController(ctx) {
   let restoring = false;
   let warnedOnce = false;
   let bytesGeneration = -1;
+  let restoreFailed = false;
   const samplesWritten = new Set();
 
   const n = (count, word) => count + ' ' + word + (count === 1 ? '' : 'S');
@@ -108,6 +109,23 @@ export function initPersistController(ctx) {
       const json = await opfs.readJson('project.json');
       const bytes = await opfs.readBytes('source.bin');
       if (!json || !bytes) throw new Error('saved session is incomplete');
+      // VALIDATE BEFORE DESTROYING. loadArrayBuffer resets fileName, words,
+      // clips, machine and assets. If the snapshot is then rejected, the
+      // project is an empty one holding the restored audio, and the autosave
+      // 800 ms later writes that emptiness over the only copy of the session.
+      // A formatVersion bump on deploy is enough to trigger it.
+      if (!json.formatVersion || json.formatVersion !== FORMAT_VERSION) {
+        throw new Error('saved session is version ' + json.formatVersion
+          + ', this bench reads ' + FORMAT_VERSION + '. Nothing was changed.');
+      }
+      // The JSON and the audio are written separately, so a tab closed between
+      // the two writes leaves them describing different files.
+      if (json.sourceBytes && Number.isFinite(json.sourceBytes.size)
+        && json.sourceBytes.size !== bytes.byteLength) {
+        throw new Error('saved audio does not match the saved session ('
+          + bytes.byteLength + ' bytes on disk, ' + json.sourceBytes.size
+          + ' expected). Nothing was changed.');
+      }
       const genBefore = R.generation;
       // Saved anchors go along for the ride so the deferred analysis run
       // reproduces the beatmap instead of re-guessing it.
@@ -155,13 +173,17 @@ export function initPersistController(ctx) {
       const parts = ['RESTORED · ' + String(json.fileName).toUpperCase()];
       if (R.repairs.length) parts.push(n(R.repairs.length, 'REPAIR'));
       status(parts.join(' · '));
+      restoreFailed = false;
     } catch (e) {
+      restoreFailed = true;
       statusFault('RESTORE FAULT · ' + (e.message || e));
     } finally {
       restoring = false;
       btn.disabled = false;
       btn.classList.remove('is-working');
-      scheduleSave();
+      // Only resume autosaving if the restore actually succeeded: saving after
+      // a failure overwrites the saved session with whatever half-state exists.
+      if (!restoreFailed) scheduleSave();
     }
   }
 
