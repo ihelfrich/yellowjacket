@@ -1,6 +1,10 @@
 // Yellowjacket — frequency-domain view. STFT runs in a worker; the result is
 // painted ONCE into a full-resolution offscreen image (cols wide, bins tall,
 // rows log-frequency remapped), so setView/setPlayhead cost one drawImage.
+// When WebGPU is available and #specGpu exists, the image stage moves to
+// render/spectrogram-gpu.js and this canvas keeps only the overlays.
+
+import { GpuSpectrogram, viewToColumns } from './render/spectrogram-gpu.js';
 
 const DRAG_PX = 4;                 // click vs drag threshold, CSS px
 const F_MIN = 20;                  // bottom of the log axis, Hz
@@ -107,6 +111,31 @@ export class SpectrogramView extends EventTarget {
     this._repairs = [];       // Repair[] from setRepairs, drawn each composite
     this._hoverId = null;
 
+    this._gpu = null;         // GpuSpectrogram while the GPU image path is live
+    this._gpuCanvas = null;
+    this._gpuLost = false;    // demoted once: never re-attempt this session
+    this._gpuRaf = 0;
+    this._gpuPrevTs = 0;
+    this._phosOn = false;
+    this._phosTimer = 0;
+
+    const gpuCanvas = (typeof document !== 'undefined') ? document.getElementById('specGpu') : null;
+    if (gpuCanvas) {
+      GpuSpectrogram.create(gpuCanvas).then((gpu) => {
+        if (!gpu) return;                 // no WebGPU: today's 2D path, untouched
+        if (this._gpuLost) {
+          gpu.destroy();
+          return;
+        }
+        this._gpu = gpu;
+        this._gpuCanvas = gpuCanvas;
+        gpu.onLost(() => this._demoteGpu());
+        if (!this._pushGpuData()) return; // demotes itself on upload failure
+        this._imgSig = '';                // drop the 2D image; overlays go transparent
+        this.render();
+      });
+    }
+
     canvas.style.cursor = 'crosshair';
     canvas.addEventListener('pointerdown', (e) => this._onDown(e));
     canvas.addEventListener('pointermove', (e) => this._onMove(e));
@@ -144,8 +173,11 @@ export class SpectrogramView extends EventTarget {
     // Repair rebuilds recompute over the SAME timeline: selection and overlays stay
     // valid. A different duration means a new source; old data coords are meaningless.
     if (this.duration !== prevDuration) this._region = null;
+    this._stopPhosphor();
+    this._syncGpuVis();       // data is gone until the worker returns
 
     if (!this.duration) {
+      this._pushGpuData();
       this.render();
       return;
     }
@@ -170,6 +202,7 @@ export class SpectrogramView extends EventTarget {
         this._minDb = msg.minDb;
         this._maxDb = msg.maxDb;
         finish();
+        this._pushGpuData();
         this.render();
         resolve();
       };
@@ -192,7 +225,9 @@ export class SpectrogramView extends EventTarget {
 
   setPlayhead(t) {
     if (!isFinite(t)) return;
+    const prev = this._playhead;
     this._playhead = t;
+    if (this._gpu && this.ready) this._trackPhosphor(t - prev);
     this._composite();        // one drawImage of the visible window; no repaint
   }
 
@@ -200,6 +235,7 @@ export class SpectrogramView extends EventTarget {
     const v = this._clampView(startSec, endSec);
     if (v.start === this._view.start && v.end === this._view.end) return;
     this._view = v;
+    this._pushGpuViewport();  // the one view object drives 2D, overlays, and GPU
     this._composite();
   }
 
@@ -268,6 +304,7 @@ export class SpectrogramView extends EventTarget {
     this._c = this._colors();
     this._ensureImage(this._c);
     this._composite();
+    if (this._gpu) this._requestGpuFrame();  // GPU resyncs its canvas size in render()
   }
 
   // ---------- sizing / DPR ----------
@@ -345,12 +382,24 @@ export class SpectrogramView extends EventTarget {
   _ensureImage(c) {
     if (!this.ready) return;
     const sig = [c.lutBg, c.lutAmber, c.lutYellow, c.lutHot, this._cols, this._bins, this._sampleRate].join('|');
+    if (this._gpu) {
+      if (sig === this._imgSig) return;
+      this._paintImage(c);    // GPU live: shrinks the offscreen to a 1x1 transparency
+      this._gpuPushColormap(c);
+      this._imgSig = sig;
+      return;
+    }
     if (sig === this._imgSig && this._img.width === this._cols && this._img.height === this._bins) return;
     this._paintImage(c);
     this._imgSig = sig;
   }
 
   _paintImage(c) {
+    if (this._gpu) {
+      this._img.width = 1;    // resizing clears: the 2D image stage is a no-op
+      this._img.height = 1;
+      return;
+    }
     const cols = this._cols, bins = this._bins;
     this._img.width = cols;
     this._img.height = bins;
@@ -394,17 +443,24 @@ export class SpectrogramView extends EventTarget {
     if (!g || !this._w || !this._h) return;
     const w = this._w, h = this._h, dpr = this._dpr;
     const c = this._c || this._colors();
+    const gpuLive = !!(this._gpu && this.ready);
     g.setTransform(1, 0, 0, 1, 0, 0);
-    g.fillStyle = c.well;
-    g.fillRect(0, 0, w, h);
+    if (gpuLive) {
+      g.clearRect(0, 0, w, h);  // the image lives on #specGpu underneath
+    } else {
+      g.fillStyle = c.well;
+      g.fillRect(0, 0, w, h);
+    }
 
     const v = this._view;
     const span = v.end - v.start;
     if (!this.ready || !(this.duration > 0) || !(span > 0)) return;
 
-    const sx0 = (v.start / this.duration) * this._cols;
-    const sw = Math.max((span / this.duration) * this._cols, 1e-6);
-    g.drawImage(this._img, sx0, 0, sw, this._bins, 0, 0, w, h);
+    if (!gpuLive) {
+      const sx0 = (v.start / this.duration) * this._cols;
+      const sw = Math.max((span / this.duration) * this._cols, 1e-6);
+      g.drawImage(this._img, sx0, 0, sw, this._bins, 0, 0, w, h);
+    }
 
     this._drawRepairs(g, w, h, dpr, c);
     this._drawRuler(g, w, h, dpr, c);
@@ -532,6 +588,122 @@ export class SpectrogramView extends EventTarget {
     g.textBaseline = 'middle';
     g.fillText(label, cx + pad, cy + ch / 2);
     g.textBaseline = 'bottom';    // restore the ruler's baseline convention
+  }
+
+  // ---------- GPU image path (render/spectrogram-gpu.js) ----------
+  // The 2D pipeline stays authoritative for overlays and interaction; only the
+  // image stage moves. One view object feeds both, so the GPU uniforms derive
+  // from the same _view/_freqScale the overlay projection uses.
+
+  _pushGpuData() {
+    const gpu = this._gpu;
+    if (!gpu) return true;
+    if (!this.ready) {
+      gpu.setData(null, 0, 0, 0, 0);
+      this._syncGpuVis();
+      this._requestGpuFrame();
+      return true;
+    }
+    if (!gpu.setData(this._mags, this._cols, this._bins, this._minDb, this._maxDb)) {
+      this._demoteGpu();
+      return false;
+    }
+    this._syncGpuVis();
+    this._pushGpuViewport();
+    return true;
+  }
+
+  _pushGpuViewport() {
+    const gpu = this._gpu;
+    if (!gpu || !this.ready || !(this.duration > 0)) return;
+    const fs = this._freqScale();
+    if (!fs) return;
+    const { colStart, colEnd } = viewToColumns(this._view.start, this._view.end, this.duration, this._cols);
+    gpu.setViewport(colStart, colEnd, Math.log(fs.fMin), Math.log(fs.fMax), fs.fMax);
+    this._requestGpuFrame();
+  }
+
+  _gpuPushColormap(c) {
+    const gpu = this._gpu;
+    if (!gpu) return;
+    gpu.setColormap(this._gpuColormapStops(c));
+    this._requestGpuFrame();
+  }
+
+  _gpuColormapStops(c) {
+    // the SAME stops and CSS-resolved colors _buildLut bakes, so the paths match
+    const fb = parseColor(BONE, [244, 241, 227]);
+    return LUT_STOPS.map(([pos, key]) => {
+      const rgb = parseColor(c[key], fb);
+      return { t: pos, r: rgb[0], g: rgb[1], b: rgb[2] };
+    });
+  }
+
+  _syncGpuVis() {
+    const el = this._gpuCanvas;
+    if (!el) return;
+    const show = !!(this._gpu && this.ready);
+    el.hidden = !show;
+    el.style.display = show ? 'block' : 'none';
+  }
+
+  _requestGpuFrame() {
+    if (!this._gpu || this._gpuRaf) return;
+    this._gpuRaf = requestAnimationFrame((ts) => {
+      this._gpuRaf = 0;
+      const gpu = this._gpu;
+      if (!gpu) return;
+      const dt = this._gpuPrevTs ? Math.min(Math.max(ts - this._gpuPrevTs, 1), 100) : 16.7;
+      this._gpuPrevTs = ts;
+      gpu.render(dt);
+      if (this._phosOn) this._requestGpuFrame();  // decay animates while playing
+    });
+  }
+
+  _trackPhosphor(dT) {
+    if (dT > 0 && dT <= 0.5) {        // contiguous forward motion: playback ticks
+      if (!this._phosOn) {
+        this._phosOn = true;
+        this._gpu.setPhosphor(true);
+        this._requestGpuFrame();
+      }
+      if (this._phosTimer) clearTimeout(this._phosTimer);
+      this._phosTimer = setTimeout(() => {
+        this._phosTimer = 0;
+        this._stopPhosphor();         // ticks stopped: transport paused or ended
+      }, 250);
+    } else if (dT !== 0) {
+      this._stopPhosphor();           // jump = seek: clear the trails
+    }
+  }
+
+  _stopPhosphor() {
+    if (this._phosTimer) {
+      clearTimeout(this._phosTimer);
+      this._phosTimer = 0;
+    }
+    if (!this._phosOn) return;
+    this._phosOn = false;
+    if (this._gpu) {
+      this._gpu.setPhosphor(false);
+      this._requestGpuFrame();
+    }
+  }
+
+  _demoteGpu() {
+    const gpu = this._gpu;
+    this._gpuLost = true;
+    if (!gpu) return;
+    this._gpu = null;
+    this._stopPhosphor();
+    if (this._gpuRaf) {
+      cancelAnimationFrame(this._gpuRaf);
+      this._gpuRaf = 0;
+    }
+    this._syncGpuVis();
+    gpu.destroy();
+    this._imgSig = '';                // force the 2D image repaint
+    this.render();
   }
 
   // ---------- view math ----------

@@ -62,6 +62,12 @@ stack returns the untouched original. Repairs are honest about their limits: the
 one-off blemishes from otherwise-clean audio, and they do not pretend to lift noise out
 from underneath speech.
 
+On browsers with WebGPU the spectrogram image renders on the GPU. The full STFT matrix
+sits in video memory, so zooming never re-rasterizes, and during playback the sweep
+leaves a short phosphor trail that fades the way a storage scope fades, half a second to
+black. The image math mirrors the 2D renderer down to the color lookup table, and the
+bench drops back to that renderer the moment a GPU device is lost.
+
 The **RACK** stacks the repair chain in signal order: high-pass, de-hum (mains fundamental
 plus harmonics), spectral denoise, de-esser, four-band EQ, gate, compressor, lookahead
 limiter, and loudness normalization to a LUFS target (-16 for podcasts is the default).
@@ -85,6 +91,16 @@ playback and offline render come from one event compiler, so FREEZE prints exact
 you heard: the loop becomes the new bench source while the machine keeps its pattern,
 and you can slice the freeze and go around again. Parameter locks, step components, and
 punch-in effects are next; the plan lives in docs/VISION.md.
+
+## The bench remembers
+
+Close the tab mid-session and nothing is lost. Yellowjacket autosaves the working state
+to the browser's origin-private file system about a second after every change: the
+source audio as loaded, the transcript, clips, the rack, every scene and step in the
+machine, the repair stack, and the tempo pins. Reopening the page offers the last
+session by name, with RESUME and DISCARD buttons; nothing loads until you choose. The
+saved files never leave the machine, which is the same promise the rest of the tool
+makes.
 
 ## Models
 
