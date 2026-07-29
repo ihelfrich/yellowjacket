@@ -203,6 +203,7 @@
     <div class="yj-substate" role="tablist">
       <button class="yj-substate-btn is-active" data-mstate="slice" role="tab">SLICE</button>
       <button class="yj-substate-btn" data-mstate="pattern" role="tab">PATTERN</button>
+      <button class="yj-substate-btn" data-mstate="wire" role="tab">WIRE</button>
     </div>
     <div id="mstate-slice" class="yj-mstate is-active">
     <div class="yj-cols">
@@ -219,12 +220,47 @@
             <span class="yj-led-text" id="beatmapState">NOT ANALYZED</span>
           </div>
         </div>
+        <div class="yj-panel" data-label="PATCH">
+          <button id="btnPatch" class="yj-btn yj-btn-block" disabled>PRINT DRUM KIT · .AIF</button>
+          <p class="yj-canvas-note" id="patchNote">Carve up to 24 clips, then print a kit the OP-Z and OP-1 read natively. Drop it into a content-mode slot folder.</p>
+        </div>
       </aside>
     </div>
     </div>
     <div id="mstate-pattern" class="yj-mstate">
       <div class="yj-panel yj-grow" data-label="MACHINE / PATTERN">
         <div id="patternHost" class="yj-pattern-host"></div>
+      </div>
+    </div>
+    <div id="mstate-wire" class="yj-mstate">
+      <div class="yj-panel yj-grow" data-label="MACHINE / WIRE">
+        <div id="wireUnsupported" class="yj-wire-copy" hidden>
+          <p>This browser has no Web MIDI. Chrome, Edge, and Android Chrome can drive hardware from this page; Safari and everything on iOS cannot. The PATCH exporter in SLICE works everywhere.</p>
+        </div>
+        <div id="wireConnect" class="yj-wire-copy">
+          <p>Wire the bench to hardware over USB MIDI. Pads fire the eight tracks with velocity, CLOCK OUT keeps a groovebox in step, and LEARN maps any knob or key to mutes, scenes, and fill.</p>
+          <button id="btnMidiConnect" class="yj-btn yj-btn-primary">CONNECT MIDI</button>
+        </div>
+        <div id="wireDeck" hidden>
+          <div class="yj-toolrow yj-wire-row">
+            <span class="yj-wire-label">IN</span>
+            <select id="wireIn" class="yj-select yj-wire-sel" aria-label="MIDI input port"></select>
+            <span class="yj-wire-label">OUT</span>
+            <select id="wireOut" class="yj-select yj-wire-sel" aria-label="MIDI output port"></select>
+            <span class="yj-led" id="ledWire"></span>
+          </div>
+          <div class="yj-toolrow yj-wire-row">
+            <button id="btnClockOut" class="yj-btn">CLOCK OUT · OFF</button>
+            <div class="yj-well yj-wire-well" id="roClockIn">CLOCK IN · SILENT</div>
+            <button id="btnAdoptBpm" class="yj-btn" disabled title="Set the machine tempo to the incoming clock">ADOPT</button>
+          </div>
+          <div class="yj-toolrow yj-wire-row">
+            <div class="yj-well yj-wire-well" id="roNoteBase">NOTES 53-60 &rarr; TRACKS 1-8</div>
+            <button id="btnLearnBase" class="yj-btn" title="Press the lowest pad on your controller">LEARN BASE</button>
+          </div>
+          <div class="yj-wire-map" id="wireMap"></div>
+        </div>
+        <p class="yj-canvas-note">Works with the teenage engineering OP-Z over USB. Not a teenage engineering product; not affiliated.</p>
       </div>
     </div>
   </section>

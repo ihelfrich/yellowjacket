@@ -141,6 +141,7 @@ export function initPersistController(ctx) {
       views.patternView.setMachine(P.machine);
       ctx.api.rebuildRack();
       ctx.api.repairsRestored();
+      if (ctx.api.wireRestored) ctx.api.wireRestored();
       if (R.repairs.length) await ctx.api.repairRebuild();
 
       $('resumePanel').hidden = true;

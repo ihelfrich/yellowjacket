@@ -60,6 +60,16 @@ export function createMachine() {
   return m;
 }
 
+export function createWire() {
+  return {
+    inId: null,            // chosen MIDI port ids; rebind on hotplug, see CONTRACT-WIRE.md
+    outId: null,
+    clockOut: false,
+    noteBase: 53,          // lowest note fires track 1; LEARN overwrites, never hardcode device maps
+    mappings: {},          // action key ('mute1'..'mute8','scene1'..'scene8','fill') -> {kind,ch,num}
+  };
+}
+
 export function createProject(chainDefaults) {
   return {
     formatVersion: 1,
@@ -69,6 +79,7 @@ export function createProject(chainDefaults) {
     clips: [],
     assets: {},            // id -> {id, kind, label, sampleRate, frames}; pcm lives on runtime refs
     machine: createMachine(),
+    wire: createWire(),
   };
 }
 

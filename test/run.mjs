@@ -15,6 +15,10 @@ import { resample } from '../js/dsp/resample.js';
 import { truePeakDb } from '../js/dsp/truepeak.js';
 import { createProject, registerAsset } from '../js/app/project-store.js';
 import { serializeProject, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
+import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
+import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
+import { parseMidiMessage } from '../js/midi/wire.js';
+import { existsSync } from 'node:fs';
 
 // The buffer-kind DSP modules construct AudioBuffers; node has none.
 if (typeof globalThis.AudioBuffer === 'undefined') {
@@ -667,6 +671,11 @@ function persistFixture() {
   s1.tracks[0].sampleId = idA;   // shared ref: must dedupe to one file
   s1.tracks[0].sample = pcmA;
   p.machine.activeScene = 1;
+  p.wire.inId = 'port-a';
+  p.wire.clockOut = true;
+  p.wire.noteBase = 60;
+  p.wire.mappings.fill = { kind: 'cc', channel: 0, num: 64 };
+  p.wire.mappings.mute3 = { kind: 'note', channel: 9, num: 42 };
   return { p, r, idA, idB };
 }
 
@@ -780,6 +789,143 @@ const persistCases = [
   },
 ];
 
+// ---------- op1 patch (CONTRACT-WIRE) ----------
+
+function sineSegment(frames, freq) {
+  const s = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) s[i] = 0.5 * Math.sin(2 * Math.PI * freq * i / 44100);
+  return { samples: s };
+}
+
+const op1Cases = [
+  function fixedPointGoldens() {
+    // Device rule proved against the OP-1 factory tr808 patch (CONTRACT-WIRE 1).
+    assert.equal(positionOf(463363), 1880318338, 'factory end[23]');
+    assert.equal(positionOf(14174), 57517825, 'factory end[0]');
+    assert.equal(positionOf(14175), 57521883, 'factory start[1]');
+    assert.equal(positionOf(529200), 2147483646, 'full 12 s hits the int32 ceiling');
+    assert.equal(positionOf(0), 0, 'origin');
+    assert.equal(positionOf(-5), 0, 'clamps below');
+    assert.equal(positionOf(1e9), 2147483646, 'clamps above');
+  },
+  function buildParseRoundtrip() {
+    const segs = [sineSegment(4410, 220), sineSegment(8820, 440), sineSegment(13230, 880)];
+    const { bytes, report } = buildDrumPatch({ segments: segs, name: 'harness kit' });
+    assert.equal(report.slices, 3, 'three slices');
+    assert.equal(report.scaled, false, 'under budget');
+    const parsed = parseDrumPatch(bytes);
+    assert.equal(parsed.sampleRate, 44100, 'rate');
+    assert.equal(parsed.channels, 1, 'mono');
+    assert.equal(parsed.bitDepth, 16, '16-bit');
+    assert.equal(parsed.frames, 4410 + 8820 + 13230, 'frames concatenate');
+    const j = parsed.json;
+    assert.equal(j.type, 'drum', 'type');
+    assert.equal(j.drum_version, 1, 'drum_version');
+    assert.equal(j.start.length, 24, '24 starts');
+    assert.equal(j.end.length, 24, '24 ends');
+    assert.equal(j.start[0], 0, 'slice 0 starts at origin');
+    assert.equal(j.end[0], positionOf(4409), 'slice 0 end');
+    assert.equal(j.start[1], positionOf(4410), 'slice 1 start');
+    assert.equal(j.end[2], positionOf(4410 + 8820 + 13230 - 1), 'last real end');
+    for (let s = 3; s < 24; s++) {
+      assert.equal(j.start[s], j.start[2], 'slot ' + s + ' duplicates last start');
+      assert.equal(j.end[s], j.end[2], 'slot ' + s + ' duplicates last end');
+    }
+    assert.equal(j.playmode[0], 8192, 'one-shot');
+    assert.equal(j.volume[0], 8192, 'unity volume');
+  },
+  function byteLayout() {
+    const { bytes } = buildDrumPatch({ segments: [sineSegment(4410, 330)], name: 'x' });
+    const v = new DataView(bytes);
+    const tag = (o) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
+    assert.equal(tag(0), 'FORM', 'FORM');
+    assert.equal(v.getUint32(4), bytes.byteLength - 8, 'FORM size');
+    assert.equal(tag(8), 'AIFF', 'AIFF form type');
+    assert.equal(tag(12), 'COMM', 'COMM first');
+    assert.equal(v.getUint32(16), 18, 'COMM size 18');
+    assert.equal(v.getInt16(20), 1, 'mono');
+    assert.equal(v.getInt16(26), 16, '16-bit');
+    // 80-bit extended 44100: 40 0E AC 44 00...
+    const ext = [0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0];
+    for (let i = 0; i < 10; i++) assert.equal(v.getUint8(28 + i), ext[i], 'extended rate byte ' + i);
+    assert.equal(tag(38), 'APPL', 'APPL after COMM');
+    const applSize = v.getUint32(42);
+    assert.equal(applSize % 2, 0, 'APPL size even');
+    assert.equal(tag(46), 'op-1', 'op-1 signature');
+    assert.equal(tag(46 + applSize), 'SSND', 'SSND after APPL');
+    assert.equal(v.getUint32(50 + applSize), 8 + 2 * 4410, 'SSND size');
+  },
+  function overBudgetScales() {
+    const long = Math.floor(PATCH_MAX_FRAMES * 0.7);
+    const { report } = buildDrumPatch({ segments: [sineSegment(long, 110), sineSegment(long, 220)], name: 'big' });
+    assert.equal(report.scaled, true, 'reports scaling');
+    assert.ok(report.frames <= PATCH_MAX_FRAMES, 'fits the 12 s budget');
+  },
+  async function factoryPatchParses() {
+    // Real TE factory content: local-only fixture, never committed.
+    if (!existsSync(new URL('../test_factory_drum.aif', import.meta.url))) return;
+    const buf = await readFile(new URL('../test_factory_drum.aif', import.meta.url));
+    const parsed = parseDrumPatch(buf);
+    assert.equal(parsed.frames, 463364, 'factory frames');
+    assert.equal(parsed.json.name, 'tr808', 'factory name');
+    assert.equal(parsed.json.end[23], 1880318338, 'factory end[23]');
+    assert.equal(parsed.json.end[0], 57517825, 'factory end[0]');
+  },
+];
+
+// ---------- midi clock (CONTRACT-WIRE) ----------
+
+const midiCases = [
+  function parsesChannelVoiceAndRealtime() {
+    assert.deepEqual(parseMidiMessage([0x90, 60, 100]), { type: 'noteon', channel: 0, note: 60, velocity: 100 }, 'noteon ch1');
+    assert.deepEqual(parseMidiMessage([0x9F, 61, 0]), { type: 'noteoff', channel: 15, note: 61, velocity: 0 }, 'vel-0 is noteoff');
+    assert.deepEqual(parseMidiMessage([0x80, 60, 64]), { type: 'noteoff', channel: 0, note: 60, velocity: 64 }, 'noteoff');
+    assert.deepEqual(parseMidiMessage([0xB2, 53, 127]), { type: 'cc', channel: 2, num: 53, value: 127 }, 'cc');
+    assert.deepEqual(parseMidiMessage([0xF8]), { type: 'clocktick' }, 'tick');
+    assert.deepEqual(parseMidiMessage([0xFA]), { type: 'start' }, 'start');
+    assert.deepEqual(parseMidiMessage([0xFC]), { type: 'stop' }, 'stop');
+    assert.equal(parseMidiMessage([0xE0, 0, 64]), null, 'pitch bend ignored');
+    assert.equal(parseMidiMessage([]), null, 'empty ignored');
+  },
+  function planTicksSpacingAndSeams() {
+    const whole = planTicks(0, 1, 120, null);
+    assert.equal(whole.ticks.length, 48, '48 ticks per second at 120');
+    for (let i = 1; i < whole.ticks.length; i++) {
+      close(whole.ticks[i] - whole.ticks[i - 1], 1 / 48, 1e-9, 'tick spacing');
+    }
+    const a = planTicks(0, 0.5, 120, null);
+    const b = planTicks(0.5, 1, 120, a.phase);
+    assert.deepEqual(a.ticks.concat(b.ticks), whole.ticks, 'window seam is exact');
+  },
+  function tempoChangeKeepsPhase() {
+    const a = planTicks(0, 0.5, 120, null);
+    const b = planTicks(0.5, 1, 174, a.phase);
+    const all = a.ticks.concat(b.ticks);
+    for (let i = 1; i < all.length; i++) assert.ok(all[i] > all[i - 1], 'monotonic across tempo change');
+    assert.equal(b.ticks[0], a.phase, 'first new-tempo tick lands on carried phase');
+    close(b.ticks[2] - b.ticks[1], 60 / (174 * 24), 1e-9, 'new spacing after seam');
+  },
+  function timestampConversion() {
+    assert.equal(midiTimestampFor(1.5, 1.2, 5000), 5300, 'audio to DOMHighRes mapping');
+  },
+  function clockInConvergesAndGates() {
+    const ci = new ClockIn();
+    const period = 60000 / (120 * 24);
+    let t = 1000;
+    let seed = 42;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1;
+    for (let i = 0; i < 100; i++) { ci.feed(t); t += period + rand(); }
+    assert.ok(Math.abs(ci.bpm - 120) < 0.5, 'converges near 120: ' + ci.bpm.toFixed(3));
+    assert.equal(ci.stable, true, 'stable after a clean run');
+    const before = ci.bpm;
+    ci.feed(t + 40);   // 40 ms outlier
+    assert.equal(ci.bpm, before, 'outlier leaves the estimate untouched');
+    assert.equal(ci.stable, false, 'outlier breaks stability');
+    ci.reset();
+    assert.equal(ci.bpm, null, 'reset clears');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -788,6 +934,8 @@ const groups = [
   ['LOCK compiler', lockCases],
   ['spectral repair', repairCases],
   ['persist roundtrip', persistCases],
+  ['op1 patch', op1Cases],
+  ['midi clock', midiCases],
 ];
 
 for (const [name, cases] of groups) {

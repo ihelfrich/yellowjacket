@@ -30,6 +30,9 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+/* Class display rules (flex/grid) silently beat the UA's [hidden] sheet;
+   this guard makes the hidden attribute mean what it says, everywhere. */
+[hidden] { display: none !important; }
 
 html, body { height: 100%; }
 
@@ -363,6 +366,27 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   letter-spacing: 0.04em;
   color: var(--yj-yellow);
 }
+
+/* ---------- WIRE: hardware I/O panel ---------- */
+.yj-btn-block { width: 100%; }
+.yj-wire-copy { max-width: 560px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.yj-wire-copy p { font-size: 13px; color: var(--yj-ink-dim); line-height: 1.5; }
+.yj-wire-row { align-items: center; }
+.yj-wire-label { font-family: var(--f-mono); font-size: 10px; color: var(--yj-ink-dim); letter-spacing: 0.08em; }
+.yj-wire-sel { flex: 1; min-width: 120px; }
+.yj-wire-well {
+  font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.04em;
+  padding: 8px 10px; flex: 1; white-space: nowrap; overflow: hidden;
+}
+.yj-wire-map { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 4px; margin-top: 10px; }
+.yj-wire-chip {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.05em;
+  padding: 6px 8px; text-align: left; cursor: pointer;
+  background: var(--yj-well); border: 1px solid var(--yj-line); color: var(--yj-ink-dim);
+}
+.yj-wire-chip .b { color: var(--yj-yellow); display: block; margin-top: 2px; }
+.yj-wire-chip.is-armed { border-color: var(--yj-yellow); color: var(--yj-yellow); animation: yj-blink 0.8s steps(2) infinite; }
+.yj-wire-chip.is-bound { color: var(--yj-ink); }
 
 /* ---------- machine substates ---------- */
 .yj-substate { display: flex; gap: 2px; flex-shrink: 0; }

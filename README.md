@@ -92,6 +92,26 @@ you heard: the loop becomes the new bench source while the machine keeps its pat
 and you can slice the freeze and go around again. Parameter locks, step components, and
 punch-in effects are next; the plan lives in docs/VISION.md.
 
+## Out the wire
+
+The MACHINE bench has a third state: WIRE, the hardware side. Connect a USB MIDI
+device and its pads fire the eight tracks with velocity; LEARN maps any note or
+knob to track mutes, scene switches, and momentary fill; CLOCK OUT makes the
+bench a MIDI clock master, ticks scheduled with driver-level timestamps off the
+same audio clock the sequencer runs on, so a groovebox on the desk locks to the
+loop in the browser. Incoming clock gets an estimator and an ADOPT button rather
+than hard sync: chasing a jittery tick stream sounds worse than snapping to its
+tempo once it settles.
+
+The other half is PATCH, in the SLICE state. Carve up to 24 clips and print a
+drum kit as a single .aif in the OP-1 drum patch format: mono 44.1 kHz, twelve
+seconds, slice points written in the device's own fixed-point scheme (verified
+byte-for-byte against a factory patch). Drop the file onto an OP-Z in content
+mode or an OP-1 disk and the pads play your slices. The whole trip runs in the
+page: rip, beatmap, carve, repair if the source is rough, print, drag to the
+device. Works with the teenage engineering OP-Z and OP-1; this is not a teenage
+engineering product and is not affiliated with them.
+
 ## The bench remembers
 
 Close the tab mid-session and nothing is lost. Yellowjacket autosaves the working state

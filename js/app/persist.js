@@ -118,6 +118,7 @@ export function serializeProject(project, runtime) {
     assets,
     repairs: clone(runtime.repairs || []),
     anchors: anchors ? clone(anchors) : null,
+    wire: project.wire ? clone(project.wire) : null,
   };
   return { json, sampleFiles };
 }
@@ -230,6 +231,23 @@ export function applySnapshot(json, { project, runtime }) {
   runtime.repairs.length = 0;
   if (Array.isArray(json.repairs)) {
     for (const repair of json.repairs) runtime.repairs.push(clone(repair));
+  }
+
+  // WIRE settings merge into the existing object (the controller closes over
+  // it). Saves from before the WIRE slice simply lack the key: defaults stay.
+  if (json.wire && typeof json.wire === 'object' && project.wire) {
+    const w = project.wire;
+    w.inId = typeof json.wire.inId === 'string' ? json.wire.inId : null;
+    w.outId = typeof json.wire.outId === 'string' ? json.wire.outId : null;
+    w.clockOut = json.wire.clockOut === true;
+    if (Number.isFinite(json.wire.noteBase)) w.noteBase = Math.max(0, Math.min(119, json.wire.noteBase | 0));
+    for (const key of Object.keys(w.mappings)) delete w.mappings[key];
+    if (json.wire.mappings && typeof json.wire.mappings === 'object') {
+      for (const key of Object.keys(json.wire.mappings)) {
+        const m = json.wire.mappings[key];
+        if (m && typeof m === 'object') w.mappings[key] = clone(m);
+      }
+    }
   }
 
   const sampleAttachments = [];

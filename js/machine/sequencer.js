@@ -106,7 +106,7 @@ export class Sequencer extends EventTarget {
     if (wasRunning) this._emitState(false);
   }
 
-  trigger(i, when = 0) {
+  trigger(i, when = 0, velocity = 1) {
     const index = trackIndex(i);
     const ctx = this._engine && this._engine.ctx;
     const master = this._engine && this._engine.master;
@@ -114,6 +114,10 @@ export class Sequencer extends EventTarget {
 
     const event = compileTrigger(this._machine, index);
     if (!event) return;
+    // MIDI pads carry velocity; keys always send 1. Linear amplitude scale
+    // per CONTRACT-WIRE.md; zero-velocity hits were already dropped upstream.
+    const v = Number(velocity);
+    if (Number.isFinite(v) && v > 0 && v < 1) event.gain *= v;
     resumeContext(ctx);
     const requested = Number(when);
     const startAt = Number.isFinite(requested) && requested > 0
