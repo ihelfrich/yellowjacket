@@ -2,7 +2,7 @@
 // routes every mutation through update(), so autosave is one debounced listener.
 // Nothing auto-loads: a saved session offers itself in the drop zone and waits.
 
-import { serializeProject, applySnapshot, OpfsStore, FORMAT_VERSION } from './persist.js';
+import { serializeProject, snapshotDoc, applySnapshot, OpfsStore, FORMAT_VERSION } from './persist.js';
 import { advanceClipCounter } from '../machine/cliprefs.js';
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -99,6 +99,63 @@ export function initPersistController(ctx) {
     }
   }
 
+  // Every surface that mirrors the document, relit in one place. RESTORE and
+  // UNDO both land here so they can never drift apart.
+  function relightAll() {
+    if (P.words && P.words.length) ctx.api.wordsRestored();
+    views.sliceView.setClips(P.clips);
+    ctx.api.updateClipReadout();
+    views.patternView.setMachine(P.machine);
+    if (ctx.api.songRefresh) ctx.api.songRefresh();
+    ctx.api.rebuildRack();
+    ctx.api.repairsRestored();
+    if (ctx.api.wireRestored) ctx.api.wireRestored();
+    for (let i = 0; i < P.machine.tracks.length; i++) ctx.sequencer.bumpTrack(i);
+    if (ctx.sequencer.bumpStrips) ctx.sequencer.bumpStrips();
+  }
+  ctx.api.relightAll = relightAll;
+
+  // ---------- undo / redo ----------
+  // applySnapshot deliberately nulls track.sample (PCM normally arrives from
+  // disk afterwards). For undo the audio never left memory, so it is captured
+  // by asset id and re-attached, or an undo would silently empty the kit.
+  store.attachHistory(
+    () => snapshotDoc(P, R),
+    (doc) => {
+      const pcm = new Map();
+      for (const scene of P.machine.scenes) {
+        for (const track of scene.tracks) {
+          if (track.sampleId && track.sample) pcm.set(track.sampleId, track.sample);
+        }
+      }
+      const repairsBefore = JSON.stringify(R.repairs);
+      applySnapshot(doc, { project: P, runtime: R });
+      for (const scene of P.machine.scenes) {
+        for (const track of scene.tracks) {
+          if (track.sampleId && !track.sample && pcm.has(track.sampleId)) {
+            track.sample = pcm.get(track.sampleId);
+          }
+        }
+      }
+      relightAll();
+      // Repairs are parametric: the list came back, the audio has to be rebuilt.
+      if (JSON.stringify(R.repairs) !== repairsBefore && ctx.api.repairRebuild) {
+        ctx.api.repairRebuild();
+      }
+    },
+  );
+
+  function historyStep(dir) {
+    const moved = dir === 'undo' ? store.undo() : store.redo();
+    if (!moved) {
+      status(dir === 'undo' ? 'NOTHING TO UNDO' : 'NOTHING TO REDO');
+      return;
+    }
+    status((dir === 'undo' ? 'UNDO' : 'REDO') + ' · ' + store._past.length + ' STEPS BACK AVAILABLE');
+  }
+  ctx.api.undo = () => historyStep('undo');
+  ctx.api.redo = () => historyStep('redo');
+
   async function restore() {
     if (!opfs) return;
     const btn = $('btnResume');
@@ -159,15 +216,11 @@ export function initPersistController(ctx) {
       for (let i = 0; i < P.machine.tracks.length; i++) ctx.sequencer.bumpTrack(i);
 
       // Light every surface the way live edits would have.
-      if (P.words && P.words.length) ctx.api.wordsRestored();
-      views.sliceView.setClips(P.clips);
-      ctx.api.updateClipReadout();
-      views.patternView.setMachine(P.machine);
-      if (ctx.api.songRefresh) ctx.api.songRefresh();
-      ctx.api.rebuildRack();
-      ctx.api.repairsRestored();
-      if (ctx.api.wireRestored) ctx.api.wireRestored();
+      relightAll();
       if (R.repairs.length) await ctx.api.repairRebuild();
+      // A restored session is a fresh starting point, not something to undo into.
+      store._past.length = 0;
+      store._future.length = 0;
 
       $('resumePanel').hidden = true;
       const parts = ['RESTORED · ' + String(json.fileName).toUpperCase()];

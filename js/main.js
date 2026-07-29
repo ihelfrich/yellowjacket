@@ -144,6 +144,16 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Home') engine.seek(0);
 });
 
+// Undo lives outside the typing guard above: it must work while a control has
+// focus, but never while text is being edited.
+window.addEventListener('keydown', (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.code !== 'KeyZ') return;
+  if (e.target.matches('input[type="text"], input[type="url"], textarea, [contenteditable]')) return;
+  e.preventDefault();
+  if (e.shiftKey) ctx.api.redo();
+  else ctx.api.undo();
+});
+
 // ---------- boot ----------
 status(COPY.idle);
 ctx.api.statusRight();

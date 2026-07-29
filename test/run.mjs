@@ -16,7 +16,8 @@ import {
 import { resample } from '../js/dsp/resample.js';
 import { truePeakDb } from '../js/dsp/truepeak.js';
 import { createProject, registerAsset } from '../js/app/project-store.js';
-import { serializeProject, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
+import { serializeProject, snapshotDoc, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
+import { ProjectStore } from '../js/app/project-store.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
@@ -36,6 +37,15 @@ if (typeof globalThis.AudioBuffer === 'undefined') {
       this._ch = Array.from({ length: numberOfChannels }, () => new Float32Array(length));
     }
     getChannelData(c) { return this._ch[c]; }
+  };
+}
+// Node 16 has EventTarget but not CustomEvent; the store dispatches one.
+if (typeof globalThis.CustomEvent === 'undefined') {
+  globalThis.CustomEvent = class extends Event {
+    constructor(type, opts = {}) {
+      super(type, opts);
+      this.detail = opts.detail;
+    }
   };
 }
 const { processLimiter } = await import('../js/dsp/limiter.js');
@@ -1404,6 +1414,88 @@ const conformCases = [
   },
 ];
 
+// ---------- undo history ----------
+// Mirrors what persist-controller wires: snapshotDoc to take, applySnapshot to
+// put, with PCM re-attached by asset id because applySnapshot nulls it.
+function undoStore() {
+  const st = new ProjectStore(persistChain());
+  const P = st.project;
+  const R = st.runtime;
+  st.attachHistory(
+    () => snapshotDoc(P, R),
+    (doc) => {
+      const pcm = new Map();
+      for (const scene of P.machine.scenes) {
+        for (const t of scene.tracks) if (t.sampleId && t.sample) pcm.set(t.sampleId, t.sample);
+      }
+      applySnapshot(doc, { project: P, runtime: R });
+      for (const scene of P.machine.scenes) {
+        for (const t of scene.tracks) {
+          if (t.sampleId && !t.sample && pcm.has(t.sampleId)) t.sample = pcm.get(t.sampleId);
+        }
+      }
+    },
+  );
+  return st;
+}
+
+const undoCases = [
+  function undoAndRedoWalkTheDocument() {
+    const st = undoStore();
+    const P = st.project;
+    assert.equal(st.canUndo, false, 'nothing to undo at the start');
+    st.update('clips', (p) => { p.clips.push({ id: 'c1', start: 0, end: 1, gain: 1, tag: 'manual', label: 'A' }); });
+    st.update('clips', (p) => { p.clips.push({ id: 'c2', start: 2, end: 3, gain: 1, tag: 'manual', label: 'B' }); });
+    assert.equal(P.clips.length, 2, 'two clips added');
+    assert.equal(st.undo(), true, 'undo reports it moved');
+    assert.equal(P.clips.length, 1, 'back to one clip');
+    assert.equal(P.clips[0].id, 'c1', 'the right one survived');
+    st.undo();
+    assert.equal(P.clips.length, 0, 'back to none');
+    assert.equal(st.canUndo, false, 'history exhausted');
+    assert.equal(st.redo(), true, 'redo moves forward');
+    assert.equal(P.clips.length, 1, 'redo restores one');
+    st.redo();
+    assert.equal(P.clips.length, 2, 'redo restores both');
+  },
+  function undoKeepsTheKitAudio() {
+    // applySnapshot nulls track.sample by design. If undo did not re-attach the
+    // PCM, undoing any edit would silently empty every loaded track.
+    const st = undoStore();
+    const P = st.project;
+    const pcm = { channels: [Float32Array.from([0.1, -0.2, 0.3])], sampleRate: 44100, label: 'KICK', role: 'KICK' };
+    st.update('assets', (p) => {
+      p.assets.a1 = { id: 'a1', kind: 'sample', label: 'KICK', sampleRate: 44100, frames: 3 };
+      p.machine.tracks[0].sampleId = 'a1';
+      p.machine.tracks[0].sample = pcm;
+    });
+    st.update('pattern', (p) => { p.machine.tracks[0].steps[4] = 1; });
+    assert.equal(P.machine.tracks[0].steps[4], 1, 'step is on');
+    st.undo();
+    assert.equal(P.machine.tracks[0].steps[4], 0, 'step undone');
+    assert.ok(P.machine.tracks[0].sample, 'THE SAMPLE SURVIVED THE UNDO');
+    assert.equal(P.machine.tracks[0].sample.channels[0].length, 3, 'and it is the same audio');
+  },
+  function aNewEditClearsRedo() {
+    const st = undoStore();
+    const P = st.project;
+    st.update('clips', (p) => { p.clips.push({ id: 'c1', start: 0, end: 1, gain: 1, tag: 'm', label: 'A' }); });
+    st.undo();
+    assert.equal(st.canRedo, true, 'redo available after an undo');
+    st.update('clips', (p) => { p.clips.push({ id: 'c9', start: 5, end: 6, gain: 1, tag: 'm', label: 'Z' }); });
+    assert.equal(st.canRedo, false, 'a new edit drops the redo branch');
+    assert.deepEqual(P.clips.map((c) => c.id), ['c9'], 'the new edit stands alone');
+  },
+  function historyIsBounded() {
+    const st = undoStore();
+    st.historyLimit = 5;
+    for (let i = 0; i < 20; i++) {
+      st.update('clips', (p) => { p.clips.push({ id: 'c' + i, start: i, end: i + 0.5, gain: 1, tag: 'm', label: 'x' }); });
+    }
+    assert.ok(st._past.length <= 5, 'history respects its limit: ' + st._past.length);
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -1418,6 +1510,7 @@ const groups = [
   ['harvest', harvestCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],
+  ['undo history', undoCases],
   ['conform', conformCases],
 ];
 

@@ -142,10 +142,52 @@ export class ProjectStore extends EventTarget {
     };
     this.revision = 0;
     this.dirty = false;
+    // Undo history: every mutation already funnels through update(), so one
+    // snapshot per call covers the whole app. Documents only, never PCM.
+    this._past = [];
+    this._future = [];
+    this._snapshot = null;   // injected by the controller (needs persist.js)
+    this._applying = false;
+    this.historyLimit = 60;
+  }
+
+  // The controller supplies take() and put() so the store stays free of any
+  // dependency on the persistence layer.
+  attachHistory(take, put) {
+    this._snapshot = { take, put };
+  }
+
+  get canUndo() { return this._past.length > 0; }
+  get canRedo() { return this._future.length > 0; }
+
+  undo() { return this._step(this._past, this._future); }
+  redo() { return this._step(this._future, this._past); }
+
+  _step(from, to) {
+    if (!this._snapshot || !from.length) return false;
+    const now = this._snapshot.take();
+    const doc = from.pop();
+    this._applying = true;
+    try {
+      this._snapshot.put(doc);
+      to.push(now);
+    } finally {
+      this._applying = false;
+    }
+    this.revision++;
+    this.dispatchEvent(new CustomEvent('change', { detail: { kind: 'history', revision: this.revision } }));
+    return true;
   }
 
   // Every mutation goes through here so autosave (later) can observe all of them.
   update(kind, fn) {
+    // Snapshot BEFORE the mutation, so undo lands on the prior state. Skipped
+    // while an undo is itself being applied, and for pure-transport churn.
+    if (this._snapshot && !this._applying && kind !== 'history') {
+      this._past.push(this._snapshot.take());
+      if (this._past.length > this.historyLimit) this._past.shift();
+      this._future.length = 0;
+    }
     fn(this.project, this.runtime);
     this.revision++;
     this.dirty = true;

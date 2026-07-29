@@ -81,7 +81,14 @@ function serializeScene(scene) {
   };
 }
 
-export function serializeProject(project, runtime) {
+// Undo snapshots need the document only. Copying every referenced PCM buffer
+// on each of the 29 mutation sites would cost megabytes per keystroke, so
+// skipPcm builds the same JSON without touching sample audio.
+export function snapshotDoc(project, runtime) {
+  return serializeProject(project, runtime, true).json;
+}
+
+export function serializeProject(project, runtime, skipPcm = false) {
   const machine = project.machine;
   const assets = {};
   for (const id of Object.keys(project.assets || {})) assets[id] = clone(project.assets[id]);
@@ -96,7 +103,7 @@ export function serializeProject(project, runtime) {
       if (!id || seen.has(id)) continue;
       if (!track.sample || !Array.isArray(track.sample.channels)) continue;
       seen.add(id);
-      sampleFiles.push({ id, bytes: sampleBytes(track.sample) });
+      if (!skipPcm) sampleFiles.push({ id, bytes: sampleBytes(track.sample) });
       if (assets[id]) assets[id].channelCount = track.sample.channels.length;
     }
   }
