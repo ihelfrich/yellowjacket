@@ -69,10 +69,16 @@ export function initPersistController(ctx) {
     saving = true;
     try {
       const { json, sampleFiles } = serializeProject(P, R);
-      // Heavy files first, once each; the JSON every time (it is small).
-      if (R.sourceBytes && bytesGeneration !== R.generation) {
-        await opfs.writeBytes('source.bin', R.sourceBytes);
-        bytesGeneration = R.generation;
+      // Capture the generation and the bytes BEFORE awaiting. Stamping
+      // R.generation after the await marks a generation as saved whose audio
+      // was never written: load a second file while a 74 MB source.bin write
+      // is in flight and the next save skips the write entirely, leaving the
+      // first file's audio on disk under the second file's project state.
+      const gen = R.generation;
+      const bytes = R.sourceBytes;
+      if (bytes && bytesGeneration !== gen) {
+        await opfs.writeBytes('source.bin', bytes);
+        bytesGeneration = gen;
         samplesWritten.clear();
       }
       for (const file of sampleFiles) {

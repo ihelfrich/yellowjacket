@@ -101,6 +101,17 @@ Persist: fitSteps with the voice, sendVerb/sendDelay with the track, plus
 `machine.space {verbSec, verbDecay, verbMix, delayDivision, delayFeedback,
 delayMix}` merged tolerantly like song and wire. formatVersion stays 2.
 
+## 4b. The master stage, and what it costs
+
+Offline renders pass through the TRUTH 1 true-peak limiter at -0.3 dBTP. The
+live graph has no such stage, so this is a real and deliberate exception to
+the live-equals-offline guarantee: when a mix would exceed the ceiling, the
+WAV is gain-reduced and the live output is not. An adversarial review flagged
+this as a determinism break, and it is one. The alternative is exporting
+clipped audio from a bench that measures true peak to 0.1 dB, which is worse.
+The guarantee to state accurately is: the same compiled event stream produces
+the same audio up to the master stage. Do not claim bit-identity for renders.
+
 ## 5. Acceptance
 
 Node: the stretch tests above; delayTimeFor at 120 bpm gives 0.5 for '1/4'
