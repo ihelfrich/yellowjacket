@@ -19,6 +19,7 @@ import { ConstellationView } from './machine/constellation-ui.js';
 import { VoiceView } from './machine/voice-ui.js';
 import { CrateView } from './machine/crate-ui.js';
 import { Keybed } from './machine/keybed.js';
+import { PipelineView, deriveStages } from './app/pipeline-ui.js';
 import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
 import { initSourceController } from './app/source-controller.js';
@@ -109,6 +110,7 @@ const views = {
   voiceView: new VoiceView($('voiceHost')),
   crateView: new CrateView($('crateHost')),
   repairPanel: new RepairPanel($('repairHost')),
+  pipeline: new PipelineView($('pipelineHost')),
 };
 const auditioner = new ClipAuditioner(engine);
 
@@ -126,17 +128,34 @@ initSourceController(ctx);
 initPersistController(ctx); // last: restore needs every api registered above
 
 // ---------- tabs ----------
-for (const btn of document.querySelectorAll('.yj-tab-btn')) {
-  btn.addEventListener('click', () => {
-    for (const b of document.querySelectorAll('.yj-tab-btn')) b.classList.toggle('is-active', b === btn);
-    for (const pane of document.querySelectorAll('.yj-tabpane')) pane.classList.remove('is-active');
-    $('tab-' + btn.dataset.tab).classList.add('is-active');
-    ctx.api.setKeybedEnabled(btn.dataset.tab === 'machine');
-    // canvases need a size pass when they become visible
-    views.waveMini.render(); views.waveMain.render(); views.spec.render(); views.sliceView.render();
-    if (views.constellation) views.constellation.render();
-  });
+function showTab(name) {
+  for (const b of document.querySelectorAll('.yj-tab-btn')) {
+    b.classList.toggle('is-active', b.dataset.tab === name);
+  }
+  for (const pane of document.querySelectorAll('.yj-tabpane')) pane.classList.remove('is-active');
+  const pane = $('tab-' + name);
+  if (pane) pane.classList.add('is-active');
+  ctx.api.setKeybedEnabled(name === 'machine');
+  // canvases need a size pass when they become visible
+  views.waveMini.render(); views.waveMain.render(); views.spec.render(); views.sliceView.render();
+  if (views.constellation) views.constellation.render();
 }
+ctx.api.showTab = showTab;
+
+for (const btn of document.querySelectorAll('.yj-tab-btn')) {
+  btn.addEventListener('click', () => showTab(btn.dataset.tab));
+}
+
+// The pipeline strip navigates by asking for a tab and, inside MACHINE, a
+// substate; it clicks the real buttons so their own handlers still run.
+views.pipeline.addEventListener('jump', (e) => {
+  const { tab, mstate } = e.detail.target || {};
+  if (tab) showTab(tab);
+  if (mstate) {
+    const b = document.querySelector('.yj-substate-btn[data-mstate="' + mstate + '"]');
+    if (b) b.click();
+  }
+});
 
 // ---------- keys ----------
 window.addEventListener('keydown', (e) => {
@@ -156,6 +175,13 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey) ctx.api.redo();
   else ctx.api.undo();
 });
+
+// ---------- pipeline strip: recomputed from the document on every change ----------
+function refreshPipeline() {
+  views.pipeline.setStages(deriveStages(store.project, store.runtime));
+}
+store.addEventListener('change', refreshPipeline);
+refreshPipeline();
 
 // ---------- boot ----------
 status(COPY.idle);

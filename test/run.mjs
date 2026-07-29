@@ -18,6 +18,7 @@ import { truePeakDb } from '../js/dsp/truepeak.js';
 import { createProject, registerAsset } from '../js/app/project-store.js';
 import { serializeProject, snapshotDoc, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
 import { ProjectStore } from '../js/app/project-store.js';
+import { deriveStages } from '../js/app/pipeline-ui.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
@@ -1207,6 +1208,52 @@ const clipCases = [
   },
 ];
 
+const pipelineCases = [
+  function anEmptyProjectHasNothingDone() {
+    const st = new ProjectStore(persistChain());
+    const stages = deriveStages(st.project, st.runtime);
+    assert.deepEqual(stages.map((s) => s.key),
+      ['source', 'slice', 'kit', 'pattern', 'song', 'out'], 'the flow in order');
+    for (const s of stages) {
+      assert.equal(s.done, false, s.key + ' is not done in an empty project');
+      assert.ok(s.note && s.note.length, s.key + ' still says what to do');
+      assert.ok(s.target && s.target.tab, s.key + ' knows where to jump');
+    }
+  },
+  function stagesLightFromTheDocumentAndCountWhatIsThere() {
+    const st = new ProjectStore(persistChain());
+    const P = st.project;
+    P.clips.push({ id: 'c1', start: 0, end: 1, gain: 1, tag: 'kick', label: 'K' });
+    P.clips.push({ id: 'c2', start: 2, end: 3, gain: 1, tag: 'hat', label: 'H' });
+    P.machine.tracks[0].sample = { channels: [new Float32Array(8)], sampleRate: 44100 };
+    P.machine.tracks[0].steps[0] = 1;
+    P.machine.tracks[0].steps[4] = 1;
+    P.machine.song.chain.push({ scene: 0, reps: 4 });
+    const by = {};
+    for (const s of deriveStages(P, st.runtime)) by[s.key] = s;
+    assert.equal(by.source.done, false, 'no audio means no source, whatever else exists');
+    assert.equal(by.slice.done, true, 'clips light SLICE');
+    assert.equal(by.slice.note, '2 CLIPS', 'and it counts them');
+    assert.equal(by.kit.done, true, 'a loaded track lights KIT');
+    assert.equal(by.kit.note, '1 OF 8 TRACKS', 'and says how far along');
+    assert.equal(by.pattern.done, true, 'steps light PATTERN');
+    assert.ok(/^2 STEPS/.test(by.pattern.note), 'plural is right: ' + by.pattern.note);
+    assert.equal(by.song.note, '1 SECTION', 'singular is right too');
+  },
+  function stepsBeyondTrackLengthDoNotCount() {
+    // A track only plays its first len steps, so the strip must not count
+    // leftovers from a longer pattern the user shortened.
+    const st = new ProjectStore(persistChain());
+    const t = st.project.machine.tracks[0];
+    t.len = 4;
+    t.steps[0] = 1;
+    t.steps[9] = 1;   // outside len: silent, so it is not a programmed step
+    const by = {};
+    for (const s of deriveStages(st.project, st.runtime)) by[s.key] = s;
+    assert.ok(/^1 STEP /.test(by.pattern.note), 'counts only audible steps: ' + by.pattern.note);
+  },
+];
+
 const constellationCases = [
   function standardizeHandlesMixedScalesAndConstants() {
     // Features span dB in the tens, ratios in [0,1] and Hz in the thousands, so
@@ -1565,6 +1612,7 @@ const groups = [
   ['midi clock', midiCases],
   ['song compiler', songCases],
   ['harvest', harvestCases],
+  ['pipeline', pipelineCases],
   ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],
