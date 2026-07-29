@@ -14,6 +14,7 @@ import { ClipAuditioner } from './machine/cliprefs.js';
 import { Sequencer } from './machine/sequencer.js';
 import { PatternView } from './machine/pattern-ui.js';
 import { SongView } from './machine/song-ui.js';
+import { ClipListView } from './machine/cliplist-ui.js';
 import { VoiceView } from './machine/voice-ui.js';
 import { CrateView } from './machine/crate-ui.js';
 import { Keybed } from './machine/keybed.js';
@@ -102,6 +103,7 @@ const views = {
   sliceView: new SliceView($('sliceMain'), $('beatmapControls')),
   patternView: new PatternView($('patternHost')),
   songView: new SongView($('songHost')),
+  clipList: new ClipListView($('clipListHost')),
   voiceView: new VoiceView($('voiceHost')),
   crateView: new CrateView($('crateHost')),
   repairPanel: new RepairPanel($('repairHost')),

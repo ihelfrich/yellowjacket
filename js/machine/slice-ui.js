@@ -140,6 +140,15 @@ export class SliceView extends EventTarget {
     else this.render();
   }
 
+  // Public selection setter so the clip list can drive the canvas (and so
+  // ASSIGN, which reads selectedClip, agrees with what the list highlights).
+  selectClip(id) {
+    this._selectedId = id != null && this._clips.some((c) => c.id === id) ? id : null;
+    this._updateControls();
+    this._composite();
+    return this.selectedClip;
+  }
+
   get selectedClip() {
     return this._clips.find((c) => c.id === this._selectedId) || null;
   }

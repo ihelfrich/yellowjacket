@@ -40,7 +40,7 @@ export function initSourceController(ctx) {
       r.generation++;
       p.fileName = name;
       p.words = null;
-      p.clips = [];
+      p.clips.length = 0;   // in place: references are held elsewhere
       r.buffer = engine.buffer;
       r.mono = engine.mono;
       r.sampleRate = engine.sampleRate;

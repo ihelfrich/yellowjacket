@@ -12,7 +12,7 @@ const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
-  const { sliceView, patternView, songView, voiceView, crateView } = views;
+  const { sliceView, patternView, songView, voiceView, crateView, clipList } = views;
   const P = store.project;
   const R = store.runtime;
 
@@ -37,6 +37,12 @@ export function initMachineController(ctx) {
     const led = $('ledBeatmap');
     led.className = 'yj-led' + (mode === 'on' ? ' is-on' : mode === 'busy' ? ' is-busy' : mode === 'fault' ? ' is-fault' : '');
     $('beatmapState').textContent = text;
+  }
+
+  function refreshClips() {
+    sliceView.setClips(P.clips);
+    if (clipList) clipList.setClips(P.clips, sliceView.selectedClip ? sliceView.selectedClip.id : null);
+    updateClipReadout();
   }
 
   function updateClipReadout() {
@@ -79,8 +85,7 @@ export function initMachineController(ctx) {
   // ---------- slice view wiring ----------
   sliceView.addEventListener('clipadd', (e) => {
     store.update('clips', (p) => { p.clips.push(e.detail.clip); });
-    sliceView.setClips(P.clips);
-    updateClipReadout();
+    refreshClips();
   });
   sliceView.addEventListener('clipdelete', (e) => {
     store.update('clips', (p) => {
@@ -89,8 +94,7 @@ export function initMachineController(ctx) {
       const i = p.clips.findIndex((c) => c.id === e.detail.id);
       if (i >= 0) p.clips.splice(i, 1);
     });
-    sliceView.setClips(P.clips);
-    updateClipReadout();
+    refreshClips();
   });
   sliceView.addEventListener('audition', (e) => auditioner.play(e.detail.clip));
   sliceView.addEventListener('anchorchange', (e) => {
@@ -117,7 +121,34 @@ export function initMachineController(ctx) {
   });
   sliceView.addEventListener('clipselect', (e) => {
     patternView.setClipHint(e.detail.clip ? (e.detail.clip.label || e.detail.clip.tag) : null);
+    if (clipList) clipList.setSelected(e.detail.clip ? e.detail.clip.id : null);
   });
+
+  // ---------- clip list: the readable half of SLICE ----------
+  if (clipList) {
+    clipList.addEventListener('select', (e) => {
+      const clip = sliceView.selectClip(e.detail.id);
+      clipList.setSelected(clip ? clip.id : null);
+      patternView.setClipHint(clip ? (clip.label || clip.tag) : null);
+    });
+    clipList.addEventListener('audition', (e) => {
+      const clip = P.clips.find((c) => c.id === e.detail.id);
+      if (clip) auditioner.play(clip);
+    });
+    clipList.addEventListener('remove', (e) => {
+      sliceView.dispatchEvent(new CustomEvent('clipdelete', { detail: { id: e.detail.id } }));
+    });
+    clipList.addEventListener('assign', (e) => {
+      // Select it first so ASSIGN reads the clip the row belongs to, then drop
+      // it on the first free track (or the last one if the kit is full).
+      sliceView.selectClip(e.detail.id);
+      clipList.setSelected(e.detail.id);
+      const tracks = P.machine.tracks;
+      let slot = tracks.findIndex((t) => !t.sample);
+      if (slot < 0) slot = tracks.length - 1;
+      patternView.dispatchEvent(new CustomEvent('assign', { detail: { track: slot } }));
+    });
+  }
 
   // ---------- pattern wiring ----------
   patternView.addEventListener('togglestep', (e) => {
@@ -329,8 +360,7 @@ export function initMachineController(ctx) {
   function resetForSource() {
     sliceView.setSource(R.mono, R.sampleRate, R.peaks);
     sliceView.setWords(null);
-    sliceView.setClips(P.clips);
-    updateClipReadout();
+    refreshClips();
     setBeatmapLed('off', COPY.notAnalyzed);
     $('sliceNote').textContent = COPY.computingSpec;
   }
@@ -489,8 +519,7 @@ export function initMachineController(ctx) {
           });
         }
       });
-      sliceView.setClips(P.clips);
-      updateClipReadout();
+      refreshClips();
       const roles = {};
       for (const pick of picks) roles[pick.role] = (roles[pick.role] || 0) + 1;
       const spread = picks[picks.length - 1].t0 - picks[0].t0;
@@ -608,7 +637,7 @@ export function initMachineController(ctx) {
   }
 
   ctx.api.machineReset = resetForSource;
-  ctx.api.updateClipReadout = updateClipReadout;
+  ctx.api.updateClipReadout = refreshClips;
   ctx.api.songRefresh = refreshSong;
   ctx.api.crateRefresh = refreshCrate;
   ctx.api.setKeybedEnabled = (b) => { keybed.enabled = b; };
