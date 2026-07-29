@@ -35,7 +35,8 @@ const STYLE = `
 
 export class VoiceView extends EventTarget {
   // Contract events: 'voiceedit' {track, patch} (patch holds only the changed
-  // field), 'trig' {track}, 'close' {}.
+  // field), 'trig' {track}, 'crate' {track} (CONTRACT-HARVEST.md section 3),
+  // 'close' {}.
   constructor(host) {
     super();
     this.host = host;
@@ -79,6 +80,16 @@ export class VoiceView extends EventTarget {
       }
     });
 
+    const crate = document.createElement('button');
+    crate.type = 'button';
+    crate.className = 'yj-btn';
+    crate.textContent = 'CRATE +';
+    crate.title = 'Save this instrument to the crate: it outlives the session and the song it came from';
+    crate.disabled = true;
+    crate.addEventListener('click', () => {
+      if (this._track >= 0 && this._t && this._t.sample) this._emit('crate', { track: this._track });
+    });
+
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'yj-btn';
@@ -86,7 +97,7 @@ export class VoiceView extends EventTarget {
     close.title = 'Close the voice drawer';
     close.addEventListener('click', () => this._emit('close', {}));
 
-    actions.append(trig, close);
+    actions.append(trig, crate, close);
     head.append(tag, name, actions);
     host.appendChild(head);
 
@@ -157,9 +168,37 @@ export class VoiceView extends EventTarget {
     rev.addEventListener('click', () => this._patch('reverse', !this._voice().reverse));
     group('REV', rev);
 
+    // COLOR (CONTRACT-HARVEST 2): the controls that stop a rework sounding
+    // like its source. Each OFF value skips its node entirely.
+    const lpf = range(200, 20000, 100, 20000, 'Lowpass cutoff, Hz; 20k is off');
+    const lpfVal = val();
+    lpf.addEventListener('input', () => this._patch('lpf', Math.round(Number(lpf.value))));
+    group('LPF', lpf, lpfVal);
+
+    const res = range(5, 80, 1, 7, 'Lowpass resonance');
+    const resVal = val();
+    res.addEventListener('input', () => this._patch('res', Number(res.value) / 10));
+    group('RES', res, resVal);
+
+    const hpf = range(20, 2000, 10, 20, 'Highpass cutoff, Hz; 20 is off');
+    const hpfVal = val();
+    hpf.addEventListener('input', () => this._patch('hpf', Math.round(Number(hpf.value))));
+    group('HPF', hpf, hpfVal);
+
+    const drive = range(0, 24, 1, 0, 'Saturation, dB; 0 is off');
+    const driveVal = val();
+    drive.addEventListener('input', () => this._patch('drive', Math.round(Number(drive.value))));
+    group('DRIVE', drive, driveVal);
+
+    this._lpf = lpf; this._lpfVal = lpfVal;
+    this._res = res; this._resVal = resVal;
+    this._hpf = hpf; this._hpfVal = hpfVal;
+    this._drive = drive; this._driveVal = driveVal;
+
     host.appendChild(controls);
     this._name = name;
     this._trig = trig;
+    this._crate = crate;
     this._close = close;
     this._pitchVal = pitchVal;
     this._att = att;
@@ -214,6 +253,7 @@ export class VoiceView extends EventTarget {
     this._name.textContent = (this._track >= 0 ? 'T' + (this._track + 1) : 'T—') + ' · ' + label;
     this._name.classList.toggle('is-empty', !has);
     this._trig.disabled = !has;
+    this._crate.disabled = !has;
     const v = this._voice();
     this._pitchVal.textContent = (v.pitch > 0 ? '+' : '') + v.pitch + ' ST';
     this._att.value = String(v.attack);
@@ -221,6 +261,18 @@ export class VoiceView extends EventTarget {
     this._rel.value = String(v.release);
     this._relVal.textContent = v.release + ' ms';
     this._rev.classList.toggle('is-on', v.reverse);
+    const lpf = v.lpf == null ? 20000 : v.lpf;
+    this._lpf.value = String(lpf);
+    this._lpfVal.textContent = lpf >= 18000 ? 'OFF' : (lpf >= 1000 ? (lpf / 1000).toFixed(1) + 'k' : lpf + ' Hz');
+    const res = v.res == null ? 0.7 : v.res;
+    this._res.value = String(Math.round(res * 10));
+    this._resVal.textContent = res.toFixed(1);
+    const hpf = v.hpf == null ? 20 : v.hpf;
+    this._hpf.value = String(hpf);
+    this._hpfVal.textContent = hpf <= 25 ? 'OFF' : hpf + ' Hz';
+    const drive = v.drive == null ? 0 : v.drive;
+    this._drive.value = String(drive);
+    this._driveVal.textContent = drive === 0 ? 'OFF' : '+' + drive + ' dB';
   }
 
   // ---------- trim handles ----------

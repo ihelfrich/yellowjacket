@@ -6,12 +6,13 @@ import { wordsToClip } from './cliprefs.js';
 import { registerAsset } from '../app/project-store.js';
 import { encodeWav, download } from '../export.js';
 import { patternLoopSteps, normalizeVoice } from './compile.js';
+import { CrateStore } from '../app/crate.js';
 
 const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
-  const { sliceView, patternView, songView, voiceView } = views;
+  const { sliceView, patternView, songView, voiceView, crateView } = views;
   const P = store.project;
   const R = store.runtime;
 
@@ -410,8 +411,171 @@ export function initMachineController(ctx) {
   });
   refreshSong();
 
+  // ---------- HARVEST: mine the whole track for a labeled kit ----------
+  let harvestWorker = null;
+
+  function runHarvest() {
+    if (!R.mono || !R.analysis || !R.analysis.onsets) {
+      statusFault('HARVEST · analyze the track first. The beatmap finds the onsets it mines.');
+      return;
+    }
+    const btn = $('btnHarvest');
+    btn.disabled = true;
+    btn.classList.add('is-working');
+    status('HARVESTING…', true);
+    if (!harvestWorker) {
+      harvestWorker = new Worker(new URL('../../workers/harvest-worker.js', import.meta.url), { type: 'module' });
+    }
+    const gen = R.generation;
+    harvestWorker.onmessage = (e) => {
+      btn.disabled = false;
+      btn.classList.remove('is-working');
+      const msg = e.data || {};
+      if (gen !== R.generation) return;
+      if (msg.type === 'error') {
+        statusFault('HARVEST FAULT · ' + msg.message);
+        return;
+      }
+      const picks = msg.picks || [];
+      if (!picks.length) {
+        statusFault('HARVEST · nothing worth keeping. The track may be too quiet or too dense.');
+        return;
+      }
+      store.update('clips', (p) => {
+        p.clips.length = 0;
+        for (let i = 0; i < picks.length; i++) {
+          const pick = picks[i];
+          p.clips.push({
+            id: 'h' + (i + 1),
+            start: pick.t0,
+            end: pick.t1,
+            gain: 1,
+            tag: pick.role.toLowerCase(),
+            label: pick.label,
+          });
+        }
+      });
+      sliceView.setClips(P.clips);
+      updateClipReadout();
+      const roles = {};
+      for (const pick of picks) roles[pick.role] = (roles[pick.role] || 0) + 1;
+      const spread = picks[picks.length - 1].t0 - picks[0].t0;
+      status('HARVEST · ' + picks.length + ' SLICES ACROSS ' + spread.toFixed(0) + 'S · '
+        + Object.keys(roles).map((r) => r + ' ' + roles[r]).join(' '));
+    };
+    harvestWorker.onerror = () => {
+      btn.disabled = false;
+      btn.classList.remove('is-working');
+      statusFault('HARVEST FAULT · worker error');
+    };
+    const mono = R.mono.slice();
+    harvestWorker.postMessage(
+      { type: 'harvest', mono, sampleRate: R.sampleRate, onsets: Array.from(R.analysis.onsets) },
+      [mono.buffer],
+    );
+  }
+
+  $('btnHarvest').addEventListener('click', runHarvest);
+  store.addEventListener('change', () => {
+    $('btnHarvest').disabled = !(R.mono && R.analysis && R.analysis.onsets);
+  });
+
+  // ---------- CRATE: instruments that outlive the session ----------
+  let crate = null;
+
+  async function refreshCrate() {
+    if (!crate) return;
+    try {
+      crateView.setInstruments(await crate.list());
+    } catch (e) {
+      statusFault('CRATE FAULT · ' + (e.message || e));
+    }
+  }
+
+  async function crateTrack(index) {
+    if (!crate) {
+      statusFault('CRATE · this browser has no origin-private storage, so instruments cannot be saved.');
+      return;
+    }
+    const track = P.machine.tracks[index];
+    if (!track || !track.sample) return;
+    const meta = P.assets[track.sampleId];
+    try {
+      crateView.setBusy(true);
+      const name = (meta && meta.label) || ('TRACK ' + (index + 1));
+      await crate.put({
+        name,
+        role: (meta && meta.role) || 'VOICE',
+        source: P.fileName || 'unknown source',
+        voice: { ...track.voice },
+        sampleRate: track.sample.sampleRate,
+        pcm: track.sample.channels[0],
+      });
+      await refreshCrate();
+      status('CRATED · ' + name.toUpperCase() + ' · it outlives this session');
+    } catch (e) {
+      statusFault('CRATE FAULT · ' + (e.message || e));
+    } finally {
+      crateView.setBusy(false);
+    }
+  }
+
+  async function loadFromCrate(id) {
+    if (!crate) return;
+    try {
+      crateView.setBusy(true);
+      const { meta, pcm } = await crate.get(id);
+      if (!pcm) throw new Error('instrument audio is missing');
+      const tracks = P.machine.tracks;
+      let slot = tracks.findIndex((t) => !t.sample);
+      if (slot < 0) slot = tracks.length - 1;
+      store.update('assets', (p) => {
+        const assetId = registerAsset(p, {
+          kind: 'sample',
+          label: meta.name,
+          sampleRate: meta.sampleRate,
+          frames: pcm.length,
+          role: meta.role,
+        });
+        const track = p.machine.tracks[slot];
+        track.sampleId = assetId;
+        track.sample = { channels: [pcm], sampleRate: meta.sampleRate, label: meta.name };
+        if (meta.voice) Object.assign(track.voice, meta.voice);
+      });
+      sequencer.bumpTrack(slot);
+      patternView.setMachine(P.machine);
+      status('LOADED · ' + meta.name.toUpperCase() + ' → TRACK ' + (slot + 1)
+        + ' · FROM ' + String(meta.source).toUpperCase());
+    } catch (e) {
+      statusFault('CRATE FAULT · ' + (e.message || e));
+    } finally {
+      crateView.setBusy(false);
+    }
+  }
+
+  if (crateView) {
+    crateView.addEventListener('load', (e) => loadFromCrate(e.detail.id));
+    crateView.addEventListener('refresh', refreshCrate);
+    crateView.addEventListener('delete', async (e) => {
+      if (!crate) return;
+      try {
+        await crate.remove(e.detail.id);
+        await refreshCrate();
+        status('CRATE · INSTRUMENT REMOVED');
+      } catch (err) {
+        statusFault('CRATE FAULT · ' + (err.message || err));
+      }
+    });
+    voiceView.addEventListener('crate', (e) => crateTrack(e.detail.track));
+    CrateStore.open().then((store2) => {
+      crate = store2;
+      refreshCrate();
+    });
+  }
+
   ctx.api.machineReset = resetForSource;
   ctx.api.updateClipReadout = updateClipReadout;
   ctx.api.songRefresh = refreshSong;
+  ctx.api.crateRefresh = refreshCrate;
   ctx.api.setKeybedEnabled = (b) => { keybed.enabled = b; };
 }

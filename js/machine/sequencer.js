@@ -27,6 +27,29 @@ const CHOKE_SEC = 0.003;
 const DUCK_DIP_TC = 0.0017;
 const DUCK_HOLD_SEC = 0.065;
 const DUCK_RELEASE_TC = 0.06;
+// COLOR (CONTRACT-HARVEST 2): highpass Butterworth Q. THE Q TRAP (TRUTH 1):
+// WebAudio lowpass/highpass BiquadFilterNode Q is IN dB, not a linear Q
+// factor. Butterworth is 20*log10(1/sqrt(2)) = -3.0103 dB, NOT 0.7071.
+const HPF_BUTTERWORTH_Q_DB = -3.0103;
+const DRIVE_CURVE_POINTS = 2048;
+const driveCurves = new Map();
+
+// Tanh drive curve, k = 10^(driveDb/20), normalized by 1/tanh(k) so a
+// unity-peak input stays unity (CONTRACT-HARVEST 2). Cached per driveDb;
+// exported so the harness can pin the unity property without Web Audio.
+export function driveCurve(driveDb) {
+  let curve = driveCurves.get(driveDb);
+  if (curve) return curve;
+  const k = Math.pow(10, driveDb / 20);
+  const norm = 1 / Math.tanh(k);
+  curve = new Float32Array(DRIVE_CURVE_POINTS);
+  for (let i = 0; i < DRIVE_CURVE_POINTS; i++) {
+    const x = (i / (DRIVE_CURVE_POINTS - 1)) * 2 - 1;
+    curve[i] = Math.tanh(k * x) * norm;
+  }
+  driveCurves.set(driveDb, curve);
+  return curve;
+}
 
 export class Sequencer extends EventTarget {
   constructor(engine) {
@@ -469,6 +492,7 @@ export class Sequencer extends EventTarget {
       try { voice.src.disconnect(); } catch (e) { /* already disconnected */ }
       try { voice.gainNode.disconnect(); } catch (e) { /* already disconnected */ }
       try { voice.panNode.disconnect(); } catch (e) { /* already disconnected */ }
+      disconnectColor(voice);
     }
     this._voices.clear();
     this._lastTrackVoice = [];
@@ -533,7 +557,39 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   const src = ctx.createBufferSource();
   src.buffer = buffer;
   src.playbackRate.value = event.rate || 1;
-  src.connect(gainNode);
+
+  // COLOR chain (CONTRACT-HARVEST 2): src -> drive -> highpass -> lowpass ->
+  // gain -> pan. Every OFF stage creates NO node, so a neutral event keeps
+  // today's exact graph: src -> gain -> pan.
+  let tail = src;
+  const colorNodes = [];
+  if (event.driveDb != null) {
+    const shaper = ctx.createWaveShaper();
+    shaper.curve = driveCurve(event.driveDb);
+    tail.connect(shaper);
+    tail = shaper;
+    colorNodes.push(shaper);
+  }
+  if (event.hpfHz != null) {
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = event.hpfHz;
+    hp.Q.value = HPF_BUTTERWORTH_Q_DB;   // dB, THE Q TRAP (TRUTH 1)
+    tail.connect(hp);
+    tail = hp;
+    colorNodes.push(hp);
+  }
+  if (event.lpfHz != null) {
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = event.lpfHz;
+    // Resonance maps through the same dB-domain Q (TRUTH 1): 20*log10(res).
+    lp.Q.value = 20 * Math.log10(event.resQ > 0 ? event.resQ : 0.7);
+    tail.connect(lp);
+    tail = lp;
+    colorNodes.push(lp);
+  }
+  tail.connect(gainNode);
 
   // Choke: a mono track fades its previous voice out as the new one lands.
   const tracks = scheduler.machine && scheduler.machine.tracks;
@@ -550,6 +606,7 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   }
 
   const voice = { src, gainNode, panNode };
+  if (colorNodes.length) voice.colorNodes = colorNodes;
   if (scheduler.voices) {
     scheduler.voices.add(voice);
     src.onended = () => {
@@ -558,6 +615,7 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
       try { src.disconnect(); } catch (e) { /* fine */ }
       try { gainNode.disconnect(); } catch (e) { /* fine */ }
       try { panNode.disconnect(); } catch (e) { /* fine */ }
+      disconnectColor(voice);
       if (scheduler.lastTrackVoice[event.track] === voice) {
         scheduler.lastTrackVoice[event.track] = null;
       }
@@ -576,6 +634,13 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
     if (stopAt != null) src.stop(stopAt);
   } catch (e) {
     if (scheduler.voices) scheduler.voices.delete(voice);
+  }
+}
+
+function disconnectColor(voice) {
+  if (!voice.colorNodes) return;
+  for (const node of voice.colorNodes) {
+    try { node.disconnect(); } catch (e) { /* already disconnected */ }
   }
 }
 

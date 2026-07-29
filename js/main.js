@@ -15,6 +15,7 @@ import { Sequencer } from './machine/sequencer.js';
 import { PatternView } from './machine/pattern-ui.js';
 import { SongView } from './machine/song-ui.js';
 import { VoiceView } from './machine/voice-ui.js';
+import { CrateView } from './machine/crate-ui.js';
 import { Keybed } from './machine/keybed.js';
 import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
@@ -102,6 +103,7 @@ const views = {
   patternView: new PatternView($('patternHost')),
   songView: new SongView($('songHost')),
   voiceView: new VoiceView($('voiceHost')),
+  crateView: new CrateView($('crateHost')),
   repairPanel: new RepairPanel($('repairHost')),
 };
 const auditioner = new ClipAuditioner(engine);

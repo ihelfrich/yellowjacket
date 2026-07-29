@@ -20,6 +20,8 @@ import { serializeProject, applySnapshot, FORMAT_VERSION } from '../js/app/persi
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
+import { harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS } from '../js/analysis/harvest.js';
+import { nextId, addMeta, removeMeta, listFromIndex } from '../js/app/crate.js';
 import { existsSync } from 'node:fs';
 
 // The buffer-kind DSP modules construct AudioBuffers; node has none.
@@ -683,6 +685,10 @@ function persistFixture() {
   s0.tracks[0].voice.pitch = -12;
   s0.tracks[0].voice.release = 240;
   s0.tracks[0].voice.reverse = true;
+  s0.tracks[0].voice.lpf = 800;
+  s0.tracks[0].voice.res = 2.5;
+  s0.tracks[0].voice.hpf = 60;
+  s0.tracks[0].voice.drive = 9;
   p.machine.song.chain.push({ scene: 0, reps: 2 }, { scene: 1, reps: 4 });
   p.machine.song.loop = false;
   return { p, r, idA, idB };
@@ -1021,6 +1027,145 @@ const songCases = [
   },
 ];
 
+// ---------- harvest + crate (CONTRACT-HARVEST) ----------
+
+// Seeded noise: an LCG once produced real lattice periodicity that the beat
+// tracker correctly detected, so fixtures use mulberry32 everywhere.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function harvestScene() {
+  const sr = 44100;
+  const dur = 12;
+  const x = new Float32Array(sr * dur);
+  const rand = mulberry32(0x5eed);
+  const mix = (at, samples) => {
+    const o = Math.round(at * sr);
+    for (let i = 0; i < samples.length && o + i < x.length; i++) x[o + i] += samples[i];
+  };
+  const kick = () => {
+    const n = Math.round(0.16 * sr);
+    const s = new Float32Array(n);
+    for (let i = 0; i < n; i++) s[i] = Math.sin(2 * Math.PI * 60 * i / sr) * Math.exp(-i / (0.035 * sr));
+    return s;
+  };
+  const hat = () => {
+    const n = Math.round(0.03 * sr);
+    const s = new Float32Array(n);
+    let hp = 0;
+    for (let i = 0; i < n; i++) {
+      const w = rand() * 2 - 1;
+      hp = 0.85 * (hp + w);
+      s[i] = hp * 0.5 * Math.exp(-i / (0.006 * sr));
+    }
+    return s;
+  };
+  const pad = (freq, secs) => {
+    const n = Math.round(secs * sr);
+    const s = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const env = Math.min(1, i / (0.15 * sr)) * Math.min(1, (n - i) / (0.2 * sr));
+      s[i] = 0.4 * env * (Math.sin(2 * Math.PI * freq * i / sr) + 0.3 * Math.sin(4 * Math.PI * freq * i / sr));
+    }
+    return s;
+  };
+  const onsets = [];
+  for (let bar = 0; bar < 4; bar++) {
+    const t = bar * 1.0;
+    mix(t, kick()); onsets.push(t);
+    mix(t + 0.5, hat()); onsets.push(t + 0.5);
+  }
+  // A held pad in a long gap: no flux peak, so only the seed sweep can find it.
+  mix(5.0, pad(220, 2.2));
+  mix(8.0, pad(110, 2.5));
+  return { mono: x, sampleRate: sr, onsets };
+}
+
+const harvestCases = [
+  function findsAndClassifiesPlants() {
+    const { mono, sampleRate, onsets } = harvestScene();
+    const { picks } = harvest(mono, sampleRate, onsets);
+    assert.ok(picks.length > 0, 'harvest returns picks');
+    assert.ok(picks.length <= HARVEST_MAX_PICKS, 'never exceeds 24 picks');
+    for (let i = 1; i < picks.length; i++) {
+      assert.ok(picks[i].t0 >= picks[i - 1].t0, 'picks are timeline-ordered');
+    }
+    const roles = new Set(picks.map((p) => p.role));
+    assert.ok(roles.size >= 2, 'more than one role is represented: ' + Array.from(roles).join(','));
+    for (const pick of picks) {
+      assert.ok(pick.t1 > pick.t0, 'span is well-formed');
+      assert.ok(/^[A-Z]+ \d+$/.test(pick.label), 'label is role-numbered: ' + pick.label);
+    }
+  },
+  function quotasAndSpread() {
+    const { mono, sampleRate, onsets } = harvestScene();
+    const { picks } = harvest(mono, sampleRate, onsets);
+    const perRole = {};
+    for (const p of picks) perRole[p.role] = (perRole[p.role] || 0) + 1;
+    for (const role of Object.keys(perRole)) {
+      assert.ok(perRole[role] <= ROLE_QUOTAS[role] || picks.length < HARVEST_MAX_PICKS,
+        role + ' respects quota ' + ROLE_QUOTAS[role]);
+    }
+    // Material spread across the file, not clustered in the first bars.
+    const span = picks[picks.length - 1].t0 - picks[0].t0;
+    assert.ok(span > 3, 'picks spread across the track: ' + span.toFixed(2) + 's');
+  },
+  function seedSweepFindsSustainedMaterial() {
+    // The pads sit in gaps with no onsets; only the seed sweep reaches them.
+    const { mono, sampleRate, onsets } = harvestScene();
+    const { picks } = harvest(mono, sampleRate, onsets);
+    const late = picks.filter((p) => p.t0 >= 5 && p.t0 <= 10.5);
+    assert.ok(late.length > 0, 'sustained pad region yields picks');
+  },
+  function degenerateInputs() {
+    assert.deepEqual(harvest(null, 44100, [0]), { picks: [], candidates: [] }, 'null mono');
+    assert.deepEqual(harvest(new Float32Array(64), 0, [0]), { picks: [], candidates: [] }, 'zero rate');
+  },
+  function deterministic() {
+    const { mono, sampleRate, onsets } = harvestScene();
+    assert.deepEqual(harvest(mono, sampleRate, onsets).picks, harvest(mono, sampleRate, onsets).picks,
+      'same input, same picks');
+  },
+];
+
+const crateCases = [
+  function indexMathRoundtrips() {
+    let index = { maxId: 0, items: [] };
+    const id1 = nextId(index);
+    index = addMeta(index, { id: id1, name: 'KICK', role: 'KICK', source: 'a.wav', sampleRate: 44100, seconds: 0.3 });
+    const id2 = nextId(index);
+    index = addMeta(index, { id: id2, name: 'VOX', role: 'VOX', source: 'b.wav', sampleRate: 48000, seconds: 1.1 });
+    assert.notEqual(id1, id2, 'ids are unique');
+    assert.equal(index.items.length, 2, 'both metas present');
+    const listed = listFromIndex(index);
+    assert.equal(listed.length, 2, 'list returns both');
+    index = removeMeta(index, id1);
+    assert.equal(index.items.length, 1, 'removal drops one');
+    assert.equal(index.items[0].id, id2, 'the right one survives');
+    // Ids never recycle after a removal: a stale <id>.f32 must not be reused.
+    const id3 = nextId(index);
+    assert.notEqual(id3, id1, 'ids do not recycle');
+    assert.notEqual(id3, id2, 'ids stay unique after removal');
+  },
+  function crossSourceInstrumentsCoexist() {
+    let index = { maxId: 0, items: [] };
+    for (const src of ['deadmau5.wav', 'fred-again.wav', 'deadmau5.wav']) {
+      const id = nextId(index);
+      index = addMeta(index, { id, name: 'INST', role: 'TONE', source: src, sampleRate: 44100, seconds: 0.5 });
+    }
+    const sources = new Set(listFromIndex(index).map((m) => m.source));
+    assert.equal(sources.size, 2, 'instruments from two different songs live side by side');
+    assert.equal(listFromIndex(index).length, 3, 'all three kept');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -1032,6 +1177,8 @@ const groups = [
   ['op1 patch', op1Cases],
   ['midi clock', midiCases],
   ['song compiler', songCases],
+  ['harvest', harvestCases],
+  ['crate index', crateCases],
 ];
 
 for (const [name, cases] of groups) {

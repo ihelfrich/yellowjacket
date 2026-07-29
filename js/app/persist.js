@@ -138,6 +138,10 @@ function applyTrack(track, saved) {
     if (Number.isFinite(sv.attack)) v.attack = Math.max(1, Math.min(500, sv.attack));
     if (Number.isFinite(sv.release)) v.release = Math.max(2, Math.min(2000, sv.release));
     if (typeof sv.reverse === 'boolean') v.reverse = sv.reverse;
+    if (Number.isFinite(sv.lpf)) v.lpf = Math.max(200, Math.min(20000, sv.lpf));
+    if (Number.isFinite(sv.res)) v.res = Math.max(0.5, Math.min(8, sv.res));
+    if (Number.isFinite(sv.hpf)) v.hpf = Math.max(20, Math.min(2000, sv.hpf));
+    if (Number.isFinite(sv.drive)) v.drive = Math.max(0, Math.min(24, sv.drive));
   }
   track.steps.fill(0);
   if (Array.isArray(saved.steps)) {

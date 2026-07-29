@@ -93,9 +93,27 @@ playback and offline render come from one event compiler, so FREEZE prints exact
 you heard: the loop becomes the new bench source while the machine keeps its pattern,
 and you can slice the freeze and go around again.
 
+HARVEST mines a whole track for its best material instead of making you hunt
+for it. It classifies every candidate slice by role (kick, snare, hat, bass,
+tone, vocal, effect, crash) from its attack, its band balance, and how
+harmonic and sustained it is, then fills a 24-slot kit under per-role quotas
+with a diversity rule that spreads the picks across the song. Sustained
+material gets its own sweep, because a held pad or a riser never produces the
+onset spike a drum does. On a seven-minute record it returns twenty-four
+labeled slices drawn from eighty-nine percent of the runtime.
+
 Every track's sample is an editable VOICE: trim its start and end on a
 waveform, pitch it up to two octaves either way, shape attack and release,
-play it reversed. A pitched-down vocal tail becomes a bass; the first tenth
+play it reversed, then colour it with a resonant lowpass, a highpass, and
+tanh saturation. That colour section is what separates a rework from a
+bootleg: a vocal chop pitched down five semitones through a 700 Hz filter
+with the resonance up is not the record it came from.
+
+CRATE is a sample library that outlives the session. Save any voice you have
+built (its audio and every setting) and it stays in the browser's own
+storage, independent of the project. Discard the session, load a different
+song, come back a week later: the instrument is still there. Build a kit from
+four different records and play them together. A pitched-down vocal tail becomes a bass; the first tenth
 of a kick becomes a hat. Step locks stack on top, so a voice pitched -12 with
 a +7 lock on step eleven plays -5 there, deterministically, every pass.
 

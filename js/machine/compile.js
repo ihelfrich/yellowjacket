@@ -10,6 +10,14 @@ const MAX_LOOP_STEPS = 256;
 const VOICE_MIN_SPAN = 0.005;
 const VOICE_DEFAULT_ATTACK_MS = 3;
 const VOICE_DEFAULT_RELEASE_MS = 8;
+// COLOR defaults and OFF thresholds (CONTRACT-HARVEST 2): lpf >= 18000 Hz,
+// hpf <= 25 Hz, and drive 0 dB are OFF; neutral voices stay bit-identical.
+const VOICE_DEFAULT_LPF_HZ = 20000;
+const VOICE_DEFAULT_RES = 0.7;
+const VOICE_DEFAULT_HPF_HZ = 20;
+const VOICE_DEFAULT_DRIVE_DB = 0;
+const LPF_OFF_HZ = 18000;
+const HPF_OFF_HZ = 25;
 
 // Fills defaults when the voice object or any field is missing, with the
 // CONTRACT-SONG 1 clamps. Old saves and untouched tracks normalize to the
@@ -29,6 +37,10 @@ export function normalizeVoice(voice) {
     attack: clamp(finiteOr(v.attack, VOICE_DEFAULT_ATTACK_MS), 1, 500),
     release: clamp(finiteOr(v.release, VOICE_DEFAULT_RELEASE_MS), 2, 2000),
     reverse: !!v.reverse,
+    lpf: clamp(finiteOr(v.lpf, VOICE_DEFAULT_LPF_HZ), 200, 20000),
+    res: clamp(finiteOr(v.res, VOICE_DEFAULT_RES), 0.5, 8),
+    hpf: clamp(finiteOr(v.hpf, VOICE_DEFAULT_HPF_HZ), 20, 2000),
+    drive: clamp(finiteOr(v.drive, VOICE_DEFAULT_DRIVE_DB), 0, 24),
   };
 }
 
@@ -115,6 +127,11 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
       } : null,
       attackSec: voice.attack !== VOICE_DEFAULT_ATTACK_MS ? voice.attack / 1000 : null,
       releaseSec: voice.release !== VOICE_DEFAULT_RELEASE_MS ? voice.release / 1000 : null,
+      // COLOR (CONTRACT-HARVEST 2): resQ rides only when the lowpass rides.
+      lpfHz: voice.lpf < LPF_OFF_HZ ? voice.lpf : null,
+      resQ: voice.lpf < LPF_OFF_HZ ? voice.res : null,
+      hpfHz: voice.hpf > HPF_OFF_HZ ? voice.hpf : null,
+      driveDb: voice.drive > 0 ? voice.drive : null,
     });
   }
   // Duck routing: source track index -> [{ track, depthDb }]
@@ -198,6 +215,12 @@ export function compileWindow(machine, fromSec, toSec, opts = {}) {
         }
         if (p.attackSec !== null) event.attackSec = p.attackSec;
         if (p.releaseSec !== null) event.releaseSec = p.releaseSec;
+        if (p.lpfHz !== null) {
+          event.lpfHz = p.lpfHz;
+          event.resQ = p.resQ;
+        }
+        if (p.hpfHz !== null) event.hpfHz = p.hpfHz;
+        if (p.driveDb !== null) event.driveDb = p.driveDb;
         events.push(event);
         const targets = duckTargets.get(p.track);
         if (targets && gain > 0) {

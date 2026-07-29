@@ -12,6 +12,10 @@ export function createVoice() {
     attack: 3,             // ms
     release: 8,            // ms
     reverse: false,
+    lpf: 20000,            // Hz; >= 18000 = off (CONTRACT-HARVEST color)
+    res: 0.7,              // lowpass resonance 0.5..8
+    hpf: 20,               // Hz; <= 25 = off
+    drive: 0,              // dB 0..24; 0 = off
   };
 }
 
