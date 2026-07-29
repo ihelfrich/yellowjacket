@@ -1,5 +1,7 @@
 # Yellowjacket
 
+By [Ian Helfrich](https://ianhelfrich.com).
+
 An audio bench that runs entirely in your browser. Drop in a recording and Yellowjacket
 transcribes it on your own hardware, lets you cut the audio by deleting words from the
 transcript, shows the signal as waveform and spectrogram, measures loudness the way
@@ -174,4 +176,14 @@ git clone https://github.com/ihelfrich/yellowjacket && cd yellowjacket && python
 Then open `http://localhost:8080`. A server is required (module workers don't run from
 `file://`), but any static server works.
 
-MIT license. Built by [Ian Helfrich](https://ianhelfrich.com).
+## License
+
+Copyright (c) 2026 Ian Helfrich. Yellowjacket is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE.md): use it, study it, and
+modify it freely for any noncommercial purpose. Commercial use of any kind
+(including in paid products, paid services, or revenue-generating work)
+requires a separate license from the author. Write to ianthelfrich@gmail.com.
+
+The bundled Archivo and IBM Plex Mono fonts remain under their own SIL Open
+Font License. Whisper models load from their upstream sources under their own
+licenses. Built by [Ian Helfrich](https://ianhelfrich.com).

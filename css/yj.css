@@ -388,6 +388,14 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-wire-chip.is-armed { border-color: var(--yj-yellow); color: var(--yj-yellow); animation: yj-blink 0.8s steps(2) infinite; }
 .yj-wire-chip.is-bound { color: var(--yj-ink); }
 
+/* ---------- credit line ---------- */
+.yj-credit {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.05em;
+  color: var(--yj-ink-dim); text-align: center; padding: 10px 16px 14px;
+}
+.yj-credit a { color: var(--yj-amber-dim); text-decoration: none; }
+.yj-credit a:hover { color: var(--yj-yellow); }
+
 /* ---------- machine substates ---------- */
 .yj-substate { display: flex; gap: 2px; flex-shrink: 0; }
 .yj-substate-btn {
