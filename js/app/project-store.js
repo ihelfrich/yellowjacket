@@ -83,13 +83,15 @@ export class ProjectStore extends EventTarget {
     super();
     this.project = createProject(chainDefaults);
     this.runtime = {
-      buffer: null,          // decoded source AudioBuffer
+      buffer: null,          // decoded source AudioBuffer (edited when repairs active)
       mono: null,            // Float32Array mixdown
       sampleRate: 0,
       renderedBuffer: null,  // last bench render
       analysis: null,        // beatmap (derived cache)
       peaks: null,           // shared PeakPyramid (derived cache)
       generation: 0,         // bumped per loaded source; stale async jobs check and bail
+      repairs: [],           // spectral repair stack, see CONTRACT-BRUSH.md
+      original: null,        // {buffer, mono} captured before the first repair
     };
     this.revision = 0;
     this.dirty = false;

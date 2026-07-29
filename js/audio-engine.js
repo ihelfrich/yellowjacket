@@ -41,6 +41,16 @@ export class Engine extends EventTarget {
     this.dispatchEvent(new CustomEvent('loaded', { detail: {} }));
   }
 
+  // Swap the playable audio without a decode. Only for length-identical
+  // replacements (spectral repair): position, cuts, and alt semantics all hold.
+  adoptBuffer(audioBuffer, mono = null) {
+    if (!audioBuffer) return;
+    const wasPlaying = this.playing;
+    if (wasPlaying) this.pause();
+    this._buffer = audioBuffer;
+    this._mono = mono || mixdownMono(audioBuffer);
+  }
+
   get buffer() { return this._buffer; }
   get mono() { return this._mono; }
   get sampleRate() { return this._buffer ? this._buffer.sampleRate : 0; }

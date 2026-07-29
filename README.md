@@ -52,6 +52,16 @@ measurement rail runs the ITU-R BS.1770-5 loudness stack: gated integrated LUFS,
 and momentary maxima, sample peak, an estimated true peak, RMS, crest factor, DC offset,
 and a clipped-sample count that turns red when it should.
 
+The spectrogram is also an editing surface. Drag a rectangle around a cough, a beep, or a
+hum band and REPAIR pulls that region toward what the surrounding audio predicts, with
+feathered edges so there is no hole where the sound used to be. Alt-drag grabs a
+transient top to bottom; Shift-drag grabs a tone band, and a harmonics button stacks the
+same repair at 2x, 3x, 4x for mains hum. Every repair is an entry in a stack with its own
+bypass toggle, so you can audition exactly what changed and take any of it back; an empty
+stack returns the untouched original. Repairs are honest about their limits: they remove
+one-off blemishes from otherwise-clean audio, and they do not pretend to lift noise out
+from underneath speech.
+
 The **RACK** stacks the repair chain in signal order: high-pass, de-hum (mains fundamental
 plus harmonics), spectral denoise, de-esser, four-band EQ, gate, compressor, lookahead
 limiter, and loudness normalization to a LUFS target (-16 for podcasts is the default).

@@ -546,12 +546,90 @@ const lockCases = [
   },
 ];
 
+const { repairChannel } = await import('../workers/repair-worker.js');
+import { FFT as RepairFFT, hann as repairHann } from '../js/fft.js';
+
+function repairFixture() {
+  const sr = 48000;
+  const n = sr * 3;
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = 0.3 * Math.sin(2 * Math.PI * 440 * i / sr);
+  let phase = 0;
+  for (let i = sr; i < Math.floor(1.2 * sr); i++) {
+    const t = (i - sr) / sr;
+    phase += 2 * Math.PI * (2000 + 30000 * t) / sr;
+    x[i] += 0.4 * Math.sin(phase);
+  }
+  return x;
+}
+
+function binDb(x, frame, bin) {
+  const N = 4096;
+  const fft = new RepairFFT(N);
+  const win = repairHann(N);
+  const re = new Float32Array(N);
+  const im = new Float32Array(N);
+  for (let i = 0; i < N; i++) { re[i] = x[frame * 1024 + i] * win[i]; im[i] = 0; }
+  fft.forward(re, im);
+  return 20 * Math.log10(Math.hypot(re[bin], im[bin]) + 1e-12);
+}
+
+const REPAIR_REGION = { t0: 0.98, t1: 1.22, f0: 1800, f1: 8500, strength: 1 };
+
+const repairCases = [
+  function chirpRemovalAndTonePreservation() {
+    const orig = repairFixture();
+    const x = orig.slice();
+    repairChannel(x, 48000, REPAIR_REGION);
+    // frame 48 centers ~1.066 s; the chirp passes ~4 kHz there (bin 340)
+    const dropDb = binDb(orig, 48, 340) - binDb(x, 48, 340);
+    assert.ok(dropDb >= 20, 'chirp bin attenuation ' + dropDb.toFixed(1) + ' dB, want >= 20');
+    // 440 Hz tone (bin ~37.5 -> probe 38) must survive inside the region
+    const toneDelta = Math.abs(binDb(orig, 48, 38) - binDb(x, 48, 38));
+    assert.ok(toneDelta < 0.5, '440 Hz tone moved ' + toneDelta.toFixed(2) + ' dB');
+  },
+  function strengthScalesInLogDomain() {
+    const orig = repairFixture();
+    const full = orig.slice();
+    const half = orig.slice();
+    repairChannel(full, 48000, REPAIR_REGION);
+    repairChannel(half, 48000, { ...REPAIR_REGION, strength: 0.5 });
+    const o = binDb(orig, 48, 340);
+    const f = binDb(full, 48, 340);
+    const h = binDb(half, 48, 340);
+    const midpoint = (o + f) / 2;
+    assert.ok(Math.abs(h - midpoint) < 3, 'strength 0.5 lands at the dB midpoint: ' + h.toFixed(1) + ' vs ' + midpoint.toFixed(1));
+  },
+  function editLocalityAndLength() {
+    const orig = repairFixture();
+    const x = orig.slice();
+    repairChannel(x, 48000, REPAIR_REGION);
+    assert.equal(x.length, orig.length, 'length preserved');
+    let firstDiff = -1;
+    let lastDiff = -1;
+    for (let i = 0; i < x.length; i++) {
+      if (x[i] !== orig[i]) { if (firstDiff < 0) firstDiff = i; lastDiff = i; }
+    }
+    // region +- (time feather 4 frames * 1024 + window/2 + crossfade): stay within 150 ms
+    assert.ok(firstDiff / 48000 > REPAIR_REGION.t0 - 0.15, 'edit starts near region: ' + (firstDiff / 48000).toFixed(3));
+    assert.ok(lastDiff / 48000 < REPAIR_REGION.t1 + 0.15, 'edit ends near region: ' + (lastDiff / 48000).toFixed(3));
+  },
+  function repairDeterministic() {
+    const a = repairFixture();
+    const b = repairFixture();
+    repairChannel(a, 48000, REPAIR_REGION);
+    repairChannel(b, 48000, REPAIR_REGION);
+    assert.deepEqual(a, b, 'two repairs bit-identical');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
   ['pattern compiler', patternCases],
   ['TRUTH 1 DSP', truthCases],
   ['LOCK compiler', lockCases],
+  ['spectral repair', repairCases],
 ];
 
 for (const [name, cases] of groups) {

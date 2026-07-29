@@ -18,6 +18,8 @@ import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
 import { initSourceController } from './app/source-controller.js';
 import { initMachineController } from './machine/controller.js';
+import { RepairPanel } from './app/repair-panel.js';
+import { initRepairController } from './app/repair-controller.js';
 
 const COPY = {
   idle: 'IDLE',
@@ -38,7 +40,7 @@ const COPY = {
   measuring: 'MEASURING…',
   measured: 'MEASURED',
   computingSpec: 'Computing spectrogram…',
-  specReady: 'Click to seek. Zoom rides the waveform above.',
+  specReady: 'Drag selects a region. ALT grabs a transient, SHIFT a tone. Click seeks. Zoom rides the waveform above.',
   noCuts: 'NO CUTS',
   fetching: 'FETCHING URL',
   mapping: 'MAPPING BEATS',
@@ -94,6 +96,7 @@ const views = {
   transcript: new TranscriptView($('transcriptHost')),
   sliceView: new SliceView($('sliceMain'), $('beatmapControls')),
   patternView: new PatternView($('patternHost')),
+  repairPanel: new RepairPanel($('repairHost')),
 };
 const auditioner = new ClipAuditioner(engine);
 
@@ -105,6 +108,7 @@ const ctx = {
 
 initBenchController(ctx);
 initMachineController(ctx);
+initRepairController(ctx);
 initSourceController(ctx);
 
 // ---------- tabs ----------

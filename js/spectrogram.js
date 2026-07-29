@@ -5,6 +5,10 @@
 const DRAG_PX = 4;                 // click vs drag threshold, CSS px
 const F_MIN = 20;                  // bottom of the log axis, Hz
 const LUT_SIZE = 256;
+const CHIP_PX = 9;                 // selection readout chip font size, CSS px
+const HATCH_COLOR = 'rgba(255,212,0,.20)';  // repair hazard hatch, dimmer than waveform cuts
+const HATCH_PITCH = 8;             // perpendicular pitch between hatch lines, CSS px
+const TONE_MIN_RATIO = 1.02;       // flat TONE drags widen to this ratio so the band is real
 const BONE = '#F4F1E3';            // hottest stop past --yj-hot; no CSS var exists for it
 const RULER_FREQS = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
 // colormap stops as fractions of the dB range, colors resolved from CSS at paint time
@@ -26,6 +30,14 @@ function packRgb(r, g, b) {
   return LITTLE_ENDIAN
     ? ((0xff << 24) | (b << 16) | (g << 8) | r) >>> 0
     : ((r << 24) | (g << 16) | (b << 8) | 0xff) >>> 0;
+}
+
+function fmtFreq(f) {
+  if (f >= 999.5) {
+    const k = f / 1000;
+    return (k >= 9.95 ? Math.round(k) : Math.round(k * 10) / 10) + 'k';
+  }
+  return String(Math.round(f));
 }
 
 function parseColor(str, fallback) {
@@ -56,6 +68,11 @@ function parseColor(str, fallback) {
 
 export class SpectrogramView extends EventTarget {
   // events: 'seek' {t}
+  //         'regionselect' {t0,t1,f0,f1} | null — live during drag, null on click-clear.
+  //         Seconds and Hz in ORIGINAL-timeline data coords; f clamped 20..Nyquist.
+  // Gestures: drag = free rectangle; Alt-drag = TRANSIENT (full band, dragged time
+  // span); Shift-drag = TONE (dragged time span, exactly the dragged frequency band).
+  // Plain click seeks; a completed drag suppresses exactly that one seek.
   constructor(canvas) {
     super();
     this.canvas = canvas;
@@ -85,9 +102,14 @@ export class SpectrogramView extends EventTarget {
     this._gen = 0;            // compute generation; stale worker messages are dropped
     this._settle = null;      // resolver of the in-flight compute promise
 
-    this._down = null;        // { id, x, t }
+    this._drag = null;        // { id, x0, y0, t0, f0, mode: 'arm'|'select' }
+    this._region = null;      // selection {t0,t1,f0,f1}, data coords, survives zoom/pan
+    this._repairs = [];       // Repair[] from setRepairs, drawn each composite
+    this._hoverId = null;
 
+    canvas.style.cursor = 'crosshair';
     canvas.addEventListener('pointerdown', (e) => this._onDown(e));
+    canvas.addEventListener('pointermove', (e) => this._onMove(e));
     canvas.addEventListener('pointerup', (e) => this._onUp(e));
     canvas.addEventListener('pointercancel', (e) => this._onCancel(e));
 
@@ -115,9 +137,13 @@ export class SpectrogramView extends EventTarget {
     this._bins = 0;
     this._imgSig = '';
     this._sampleRate = sampleRate || 0;
+    const prevDuration = this.duration;
     this.duration = mono && mono.length && sampleRate ? mono.length / sampleRate : 0;
     this._view = { start: 0, end: this.duration };
     this._playhead = 0;
+    // Repair rebuilds recompute over the SAME timeline: selection and overlays stay
+    // valid. A different duration means a new source; old data coords are meaningless.
+    if (this.duration !== prevDuration) this._region = null;
 
     if (!this.duration) {
       this.render();
@@ -181,6 +207,57 @@ export class SpectrogramView extends EventTarget {
     return { start: this._view.start, end: this._view.end };
   }
 
+  setRegion(region) {
+    // external set (e.g. cleared after APPLY); does not emit 'regionselect'
+    this._region = this._normRegion(region);
+    this._composite();
+  }
+
+  get region() {
+    const r = this._region;
+    return r ? { t0: r.t0, t1: r.t1, f0: r.f0, f1: r.f1 } : null;
+  }
+
+  setRepairs(repairs, hoverId = null) {
+    this._repairs = Array.isArray(repairs) ? repairs : [];
+    this._hoverId = hoverId;
+    this._composite();        // overlays ride the blit path; never a full repaint
+  }
+
+  // ---------- coordinate mapping (CSS px <-> data coords) ----------
+  // The one mapping: X is linear time across the current view window; Y is
+  // log-frequency, top = Nyquist, bottom = fMin (20 Hz at sane rates), exactly
+  // as the offscreen image rows and the ruler are laid out.
+
+  timeAtX(x) {
+    const rect = this.canvas.getBoundingClientRect();
+    const v = this._view;
+    if (!rect.width) return v.start;
+    return v.start + (x / rect.width) * (v.end - v.start);
+  }
+
+  xAtTime(t) {
+    const rect = this.canvas.getBoundingClientRect();
+    const v = this._view;
+    const span = v.end - v.start;
+    if (!(span > 0)) return 0;
+    return ((t - v.start) / span) * rect.width;
+  }
+
+  freqAtY(y) {
+    const fs = this._freqScale();
+    const rect = this.canvas.getBoundingClientRect();
+    if (!fs || !rect.height) return 0;
+    return fs.fMax * Math.exp(-fs.logRatio * (y / rect.height));
+  }
+
+  yAtFreq(f) {
+    const fs = this._freqScale();
+    const rect = this.canvas.getBoundingClientRect();
+    if (!fs || !rect.height || !(f > 0)) return 0;
+    return (Math.log(fs.fMax / f) / fs.logRatio) * rect.height;
+  }
+
   get ready() {
     return !!(this._mags && this._cols > 0 && this._bins > 1);
   }
@@ -230,6 +307,11 @@ export class SpectrogramView extends EventTarget {
       well: v('--yj-well', '#070604'),
       line: v('--yj-line', '#262418'),
       playhead: v('--yj-yellow', '#FFD400'),
+      yellowHi: v('--yj-yellow-hi', '#FFE45C'),
+      amber: v('--yj-amber', '#C79A00'),
+      amberDim: v('--yj-amber-dim', '#6E5A10'),
+      sel: v('--yj-select-fill', '') || v('--yj-select', 'rgba(255,212,0,0.14)'),
+      cut: v('--yj-cut-fill', '') || v('--yj-cut', 'rgba(255,92,69,0.10)'),
       inkDim: v('--yj-ink-dim', '#94906F'),
       mono: v('--f-mono', '"IBM Plex Mono", ui-monospace, monospace'),
       lutBg: v('--yj-bg', '#0B0A07'),
@@ -279,9 +361,7 @@ export class SpectrogramView extends EventTarget {
     const minDb = this._minDb;
     const span = (this._maxDb - this._minDb) || 1;
     const scale = (LUT_SIZE - 1) / span;
-    const fMax = this._sampleRate / 2;
-    const fMin = Math.min(F_MIN, fMax / 2);   // keep the log axis sane at absurd rates
-    const logRatio = Math.log(fMax / fMin);
+    const { fMax, logRatio } = this._freqScale();
     const binHz = this._sampleRate / (bins * 2);
 
     for (let r = 0; r < bins; r++) {
@@ -326,7 +406,9 @@ export class SpectrogramView extends EventTarget {
     const sw = Math.max((span / this.duration) * this._cols, 1e-6);
     g.drawImage(this._img, sx0, 0, sw, this._bins, 0, 0, w, h);
 
+    this._drawRepairs(g, w, h, dpr, c);
     this._drawRuler(g, w, h, dpr, c);
+    this._drawSelection(g, w, h, dpr, c);
 
     if (this._playhead >= v.start && this._playhead <= v.end) {
       g.fillStyle = c.playhead;
@@ -335,22 +417,121 @@ export class SpectrogramView extends EventTarget {
   }
 
   _drawRuler(g, w, h, dpr, c) {
-    const fMax = this._sampleRate / 2;
-    const fMin = Math.min(F_MIN, fMax / 2);
-    if (!(fMax > fMin)) return;
-    const logRatio = Math.log(fMax / fMin);
+    const fs = this._freqScale();
+    if (!fs || !(fs.fMax > fs.fMin)) return;
     g.font = Math.round(9 * dpr) + 'px ' + c.mono;
     g.textAlign = 'left';
     g.textBaseline = 'bottom';
     for (const f of RULER_FREQS) {
-      if (f <= fMin || f >= fMax) continue;
-      const y = Math.round((Math.log(fMax / f) / logRatio) * h);
+      if (f <= fs.fMin || f >= fs.fMax) continue;
+      const y = Math.round(this._devY(f, h, fs));
       if (y < 10 * dpr || y > h - 2 * dpr) continue;
       g.fillStyle = c.line;
       g.fillRect(0, y, w, 1);
       g.fillStyle = c.inkDim;
       g.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), 4 * dpr, y - 2 * dpr);
     }
+  }
+
+  // ---------- repair + selection overlays (drawn every composite, data coords) ----------
+
+  _devX(t, w) {
+    const v = this._view;
+    return ((t - v.start) / (v.end - v.start)) * w;
+  }
+
+  _devY(f, h, fs) {
+    return (Math.log(fs.fMax / Math.max(f, 1e-6)) / fs.logRatio) * h;
+  }
+
+  _projectRect(r, w, h, fs) {
+    const v = this._view;
+    if (r.t1 <= v.start || r.t0 >= v.end) return null;
+    const x0 = Math.max(0, this._devX(r.t0, w));
+    const x1 = Math.min(w, this._devX(r.t1, w));
+    const y0 = Math.max(0, this._devY(Math.min(r.f1, fs.fMax), h, fs));
+    const y1 = Math.min(h, this._devY(Math.max(r.f0, fs.fMin), h, fs));
+    if (!(x1 > x0) || !(y1 > y0)) return null;
+    return { x0, y0, rw: x1 - x0, rh: y1 - y0 };
+  }
+
+  _drawRepairs(g, w, h, dpr, c) {
+    if (!this._repairs.length) return;
+    const fs = this._freqScale();
+    if (!fs || !(this._view.end > this._view.start)) return;
+    const lw = Math.max(1, dpr);
+    for (const r of this._repairs) {
+      if (!r || !isFinite(r.t0) || !isFinite(r.t1) || !isFinite(r.f0) || !isFinite(r.f1)) continue;
+      const p = this._projectRect(r, w, h, fs);
+      if (!p) continue;
+      if (r.enabled) {
+        g.fillStyle = c.cut;
+        g.fillRect(p.x0, p.y0, p.rw, p.rh);
+        g.save();
+        g.beginPath();
+        g.rect(p.x0, p.y0, p.rw, p.rh);
+        g.clip();
+        g.strokeStyle = HATCH_COLOR;
+        g.lineWidth = lw;
+        g.beginPath();
+        const stepX = HATCH_PITCH * dpr * Math.SQRT2;  // 8px pitch perpendicular to the lines
+        for (let x = p.x0 - p.rh; x < p.x0 + p.rw; x += stepX) {
+          g.moveTo(x, p.y0 + p.rh);
+          g.lineTo(x + p.rh, p.y0);
+        }
+        g.stroke();
+        g.restore();
+        g.strokeStyle = c.amber;
+      } else {
+        g.strokeStyle = c.amberDim;   // bypassed: border only, dim
+      }
+      g.lineWidth = lw;
+      g.strokeRect(p.x0 + lw / 2, p.y0 + lw / 2, Math.max(p.rw - lw, 1), Math.max(p.rh - lw, 1));
+      if (this._hoverId != null && r.id === this._hoverId) {
+        g.strokeStyle = c.yellowHi;
+        g.lineWidth = lw * 2;
+        g.strokeRect(p.x0 + lw, p.y0 + lw, Math.max(p.rw - lw * 2, 1), Math.max(p.rh - lw * 2, 1));
+      }
+    }
+  }
+
+  _drawSelection(g, w, h, dpr, c) {
+    const r = this._region;
+    if (!r) return;
+    const fs = this._freqScale();
+    if (!fs || !(this._view.end > this._view.start)) return;
+    const p = this._projectRect(r, w, h, fs);
+    if (!p) return;
+    g.fillStyle = c.sel;
+    g.fillRect(p.x0, p.y0, p.rw, p.rh);
+    const lw = Math.max(1, dpr);
+    g.strokeStyle = c.playhead;
+    g.lineWidth = lw;
+    g.strokeRect(p.x0 + lw / 2, p.y0 + lw / 2, Math.max(p.rw - lw, 1), Math.max(p.rh - lw, 1));
+    this._drawChip(g, w, h, dpr, c, r, p);
+  }
+
+  _drawChip(g, w, h, dpr, c, r, p) {
+    const dt = r.t1 - r.t0;
+    const label = (dt < 10 ? dt.toFixed(2) : dt.toFixed(1)) + 's · '
+      + fmtFreq(r.f0) + '-' + fmtFreq(r.f1) + ' Hz';
+    g.font = Math.round(CHIP_PX * dpr) + 'px ' + c.mono;
+    const pad = 3 * dpr;
+    const cw = Math.ceil(g.measureText(label).width + pad * 2);
+    const ch = Math.round((CHIP_PX + 5) * dpr);
+    const cx = Math.round(Math.min(Math.max(0, p.x0), Math.max(0, w - cw)));
+    let cy = Math.round(p.y0 - ch - 2 * dpr);      // above the top-left corner,
+    if (cy < 0) cy = Math.round(Math.min(h - ch, p.y0 + 2 * dpr));  // or tucked inside
+    g.fillStyle = c.well;
+    g.fillRect(cx, cy, cw, ch);
+    g.strokeStyle = c.line;
+    g.lineWidth = 1;
+    g.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+    g.fillStyle = c.playhead;
+    g.textAlign = 'left';
+    g.textBaseline = 'middle';
+    g.fillText(label, cx + pad, cy + ch / 2);
+    g.textBaseline = 'bottom';    // restore the ruler's baseline convention
   }
 
   // ---------- view math ----------
@@ -370,36 +551,113 @@ export class SpectrogramView extends EventTarget {
     return { start, end: start + span };
   }
 
+  _freqScale() {
+    const fMax = this._sampleRate / 2;
+    if (!(fMax > 0)) return null;
+    const fMin = Math.min(F_MIN, fMax / 2);   // keep the log axis sane at absurd rates
+    return { fMax, fMin, logRatio: Math.log(fMax / fMin) };
+  }
+
   _timeAtClientX(clientX) {
     const rect = this.canvas.getBoundingClientRect();
-    const f = rect.width ? (clientX - rect.left) / rect.width : 0;
-    const v = this._view;
-    return v.start + Math.min(1, Math.max(0, f)) * (v.end - v.start);
+    const x = Math.min(rect.width, Math.max(0, clientX - rect.left));
+    return this.timeAtX(x);
+  }
+
+  _freqAtClientY(clientY) {
+    const fs = this._freqScale();
+    if (!fs) return 0;
+    const rect = this.canvas.getBoundingClientRect();
+    const y = Math.min(rect.height, Math.max(0, clientY - rect.top));
+    return Math.min(fs.fMax, Math.max(fs.fMin, this.freqAtY(y)));
+  }
+
+  _normRegion(r) {
+    if (!r || !isFinite(r.t0) || !isFinite(r.t1) || !isFinite(r.f0) || !isFinite(r.f1)) return null;
+    const t0 = Math.min(r.t0, r.t1), t1 = Math.max(r.t0, r.t1);
+    const f0 = Math.min(r.f0, r.f1), f1 = Math.max(r.f0, r.f1);
+    return t1 > t0 && f1 > f0 ? { t0, t1, f0, f1 } : null;
   }
 
   // ---------- interaction ----------
+  // Anchors are stored in DATA coords at pointerdown, so a view change mid-drag
+  // (waveform-driven zoom) cannot shear the selection. Modifiers are read live
+  // from each move: Alt = TRANSIENT, else Shift = TONE, else free rectangle.
 
   _onDown(e) {
     if (e.button !== 0 || !this.duration || !this._w) return;
     e.preventDefault();
     this.canvas.setPointerCapture(e.pointerId);
-    this._down = { id: e.pointerId, x: e.clientX, t: this._timeAtClientX(e.clientX) };
+    this._drag = {
+      id: e.pointerId,
+      x0: e.clientX,
+      y0: e.clientY,
+      t0: this._timeAtClientX(e.clientX),
+      f0: this._freqAtClientY(e.clientY),
+      mode: 'arm',
+    };
+  }
+
+  _onMove(e) {
+    const d = this._drag;
+    if (!d || e.pointerId !== d.id) return;
+    if (d.mode === 'arm'
+        && Math.abs(e.clientX - d.x0) < DRAG_PX
+        && Math.abs(e.clientY - d.y0) < DRAG_PX) return;
+    d.mode = 'select';
+    this._region = this._dragRegion(d, e);
+    this._emitRegion(this._region);
+    this._composite();
   }
 
   _onUp(e) {
-    const d = this._down;
+    const d = this._drag;
     if (!d || e.pointerId !== d.id) return;
-    this._down = null;
+    this._drag = null;
     if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
-    if (Math.abs(e.clientX - d.x) >= DRAG_PX) return;   // a drag, not a seek click
-    const t = Math.min(Math.max(d.t, 0), this.duration);
-    this.dispatchEvent(new CustomEvent('seek', { detail: { t } }));
+    if (d.mode === 'select') return;    // completed drag: selection stands, exactly this seek suppressed
+    if (this._region) {                 // plain click clears any selection
+      this._region = null;
+      this._emitRegion(null);
+      this._composite();
+    }
+    const t = Math.min(Math.max(d.t0, 0), this.duration);
+    this.dispatchEvent(new CustomEvent('seek', { detail: { t } }));   // and still seeks
   }
 
   _onCancel(e) {
-    const d = this._down;
+    const d = this._drag;
     if (!d || e.pointerId !== d.id) return;
-    this._down = null;
+    this._drag = null;
     if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+  }
+
+  _dragRegion(d, e) {
+    const fs = this._freqScale();
+    if (!fs) return null;
+    const tB = this._timeAtClientX(e.clientX);
+    const t0 = Math.min(d.t0, tB), t1 = Math.max(d.t0, tB);
+    if (!(t1 > t0)) return null;                   // zero time span never selects
+    if (e.altKey) {
+      return { t0, t1, f0: fs.fMin, f1: fs.fMax }; // TRANSIENT: full band
+    }
+    const fB = this._freqAtClientY(e.clientY);
+    let f0 = Math.min(d.f0, fB), f1 = Math.max(d.f0, fB);
+    if (e.shiftKey) {
+      // TONE: exactly the dragged band. A perfectly flat drag widens ±2% in log-f
+      // so the emitted region is a real rectangle, not a zero-height line.
+      if (!(f1 > f0)) {
+        f0 = Math.max(fs.fMin, f0 / TONE_MIN_RATIO);
+        f1 = Math.min(fs.fMax, f1 * TONE_MIN_RATIO);
+      }
+      return { t0, t1, f0, f1 };
+    }
+    return f1 > f0 ? { t0, t1, f0, f1 } : null;    // free rectangle needs both extents
+  }
+
+  _emitRegion(r) {
+    this.dispatchEvent(new CustomEvent('regionselect', {
+      detail: r ? { t0: r.t0, t1: r.t1, f0: r.f0, f1: r.f1 } : null,
+    }));
   }
 }

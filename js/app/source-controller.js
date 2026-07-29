@@ -54,6 +54,7 @@ export function initSourceController(ctx) {
 
     ctx.api.benchReset();
     ctx.api.machineReset();
+    if (ctx.api.repairReset) ctx.api.repairReset();
 
     status(COPY.loaded);
     ctx.api.statusRight();
