@@ -18,6 +18,8 @@ import { ClipListView } from './machine/cliplist-ui.js';
 import { ConstellationView } from './machine/constellation-ui.js';
 import { VoiceView } from './machine/voice-ui.js';
 import { CrateView } from './machine/crate-ui.js';
+import { SynthView } from './machine/synth-ui.js';
+import { SYNTH_PRESETS } from './machine/synth.js';
 import { Keybed } from './machine/keybed.js';
 import { PipelineView, deriveStages } from './app/pipeline-ui.js';
 import { ProjectStore } from './app/project-store.js';
@@ -109,6 +111,7 @@ const views = {
   constellation: new ConstellationView($('constellationMain')),
   voiceView: new VoiceView($('voiceHost')),
   crateView: new CrateView($('crateHost')),
+  synthView: new SynthView($('synthHost'), SYNTH_PRESETS),
   repairPanel: new RepairPanel($('repairHost')),
   pipeline: new PipelineView($('pipelineHost')),
 };

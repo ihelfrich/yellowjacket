@@ -19,6 +19,7 @@ import { createProject, registerAsset } from '../js/app/project-store.js';
 import { serializeProject, snapshotDoc, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
 import { ProjectStore } from '../js/app/project-store.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
+import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
@@ -1600,6 +1601,68 @@ const undoCases = [
   },
 ];
 
+// ---------- formula synthesis ----------
+
+const synthCases = [
+  function everyPresetRendersUsableAudio() {
+    for (const p of SYNTH_PRESETS) {
+      const x = renderFormula(p.formula, { sampleRate: 44100, seconds: p.seconds });
+      assert.equal(x.length, Math.round(p.seconds * 44100), p.name + ' length');
+      let peak = 0;
+      for (let i = 0; i < x.length; i++) {
+        assert.ok(Number.isFinite(x[i]), p.name + ' sample ' + i + ' is finite');
+        peak = Math.max(peak, Math.abs(x[i]));
+      }
+      assert.ok(peak > 0.3 && peak <= 1, p.name + ' normalizes into range: peak ' + peak.toFixed(3));
+      // Magnitude, not identity: the fade can yield -0 on a negative sample.
+      assert.ok(Math.abs(x[0]) < 1e-9, p.name + ' starts at zero (no click)');
+      assert.ok(Math.abs(x[x.length - 1]) < 1e-9, p.name + ' ends at zero (no click)');
+    }
+  },
+  function theLanguageRejectsAnythingItDoesNotDefine() {
+    // The formula is persisted and shared, so it must never be able to reach
+    // page script. eval/new Function would; a parser with a fixed table cannot.
+    const hostile = ['constructor', 'this', 'window', 'globalThis', 'process.exit(1)',
+      'eval("1")', '(()=>1)()', '__proto__', 'require("fs")', 'fetch("/")'];
+    for (const src of hostile) {
+      assert.throws(() => compileFormula(src), /unknown|unexpected|bad number|expected/,
+        'rejected: ' + src);
+    }
+  },
+  function mathsIsActuallyCorrect() {
+    // 8 kHz is the module's floor; anything lower is clamped up to it.
+    const sr = 8000;
+    const x = renderFormula('sin(tau*1*t)', { sampleRate: sr, seconds: 1, normalize: false });
+    close(x[sr / 4], 1, 1e-6, 'sin peaks at t=0.25');
+    close(x[(3 * sr) / 4], -1, 1e-6, 'and troughs at t=0.75');
+    const e = renderFormula('env(t,0.5)', { sampleRate: sr, seconds: 1, normalize: false });
+    close(e[sr / 2], Math.exp(-1), 1e-6, 'env is exp(-t/tau): one tau in');
+    // Precedence and associativity, where a hand-rolled parser usually breaks.
+    const prec = compileFormula('2+3*4');
+    assert.equal(prec(0, 0, () => 0), 14, 'times binds tighter than plus');
+    const rightAssoc = compileFormula('2^3^2');
+    assert.equal(rightAssoc(0, 0, () => 0), 512, 'power is right associative');
+    const unary = compileFormula('-2^2');
+    assert.equal(unary(0, 0, () => 0), -4, 'unary minus applies after the power');
+    const divZero = compileFormula('1/0');
+    assert.equal(divZero(0, 0, () => 0), 0, 'divide by zero yields 0, never Infinity');
+  },
+  function renderIsDeterministicEvenWithNoise() {
+    // Live playback and the offline render must agree, so noise must be seeded.
+    const a = renderFormula('noise()*env(t,0.1)', { seconds: 0.2 });
+    const b = renderFormula('noise()*env(t,0.1)', { seconds: 0.2 });
+    assert.deepEqual(a, b, 'two renders of the same formula are identical');
+  },
+  function badInputFailsLoudlyAndSafely() {
+    for (const src of ['', '1+', '(1', 'sin()', 'sin(1,2)', 'nope(1)', '1 2']) {
+      assert.throws(() => compileFormula(src), Error, 'rejects: "' + src + '"');
+    }
+    // A formula that evaluates to nonsense still yields silence, not NaN audio.
+    const x = renderFormula('log(0-1)', { seconds: 0.05 });
+    for (let i = 0; i < x.length; i++) assert.ok(Number.isFinite(x[i]), 'no NaN reaches the buffer');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -1613,6 +1676,7 @@ const groups = [
   ['song compiler', songCases],
   ['harvest', harvestCases],
   ['pipeline', pipelineCases],
+  ['synth', synthCases],
   ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],

@@ -7,12 +7,13 @@ import { registerAsset } from '../app/project-store.js';
 import { encodeWav, download } from '../export.js';
 import { patternLoopSteps, normalizeVoice } from './compile.js';
 import { CrateStore } from '../app/crate.js';
+import { renderFormula } from './synth.js';
 
 const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
-  const { sliceView, patternView, songView, voiceView, crateView, clipList, constellation } = views;
+  const { sliceView, patternView, songView, voiceView, crateView, clipList, constellation, synthView } = views;
   const P = store.project;
   const R = store.runtime;
 
@@ -659,6 +660,101 @@ export function initMachineController(ctx) {
       crate = store2;
       refreshCrate();
     });
+  }
+
+  // ---------- SYNTH: a sound written as maths ----------
+  if (synthView) {
+    let synthPcm = null;
+
+    function drawSynthPlot(pcm) {
+      const c = synthView.plotCanvas;
+      if (!c || !c.getContext) return;
+      const rect = c.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;   // hidden pane measures zero
+      const dpr = Math.min(2, devicePixelRatio || 1);
+      c.width = Math.round(rect.width * dpr);
+      c.height = Math.round(rect.height * dpr);
+      const g = c.getContext('2d');
+      g.clearRect(0, 0, c.width, c.height);
+      if (!pcm || !pcm.length) return;
+      const mid = c.height / 2;
+      g.strokeStyle = getComputedStyle(c).getPropertyValue('--yj-yellow').trim() || '#FFD400';
+      g.lineWidth = 1;
+      g.beginPath();
+      const cols = c.width;
+      const per = Math.max(1, Math.floor(pcm.length / cols));
+      for (let x = 0; x < cols; x++) {
+        let lo = 1;
+        let hi = -1;
+        const from = x * per;
+        for (let i = from; i < from + per && i < pcm.length; i++) {
+          if (pcm[i] < lo) lo = pcm[i];
+          if (pcm[i] > hi) hi = pcm[i];
+        }
+        g.moveTo(x + 0.5, mid - hi * mid * 0.92);
+        g.lineTo(x + 0.5, mid - lo * mid * 0.92);
+      }
+      g.stroke();
+    }
+
+    function buildSynth(detail) {
+      const rate = R.sampleRate || 44100;
+      try {
+        const pcm = renderFormula(detail.formula, { sampleRate: rate, seconds: detail.seconds });
+        synthPcm = pcm;
+        synthView.setStatus(true, Math.round(pcm.length / rate * 1000) + ' ms · ' + rate + ' Hz');
+        drawSynthPlot(pcm);
+        return pcm;
+      } catch (err) {
+        synthPcm = null;
+        synthView.setStatus(false, String(err.message || err));
+        drawSynthPlot(null);
+        return null;
+      }
+    }
+
+    synthView.addEventListener('formula', (e) => buildSynth(e.detail));
+    synthView.addEventListener('preview', (e) => {
+      const pcm = buildSynth(e.detail) || synthPcm;
+      if (!pcm || !engine.ctx) {
+        if (!engine.ctx) statusFault('Press play once first: the audio engine wakes on a gesture.');
+        return;
+      }
+      const rate = R.sampleRate || 44100;
+      const buf = engine.ctx.createBuffer(1, pcm.length, rate);
+      buf.getChannelData(0).set(pcm);
+      const src = engine.ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(engine.master);
+      src.start();
+    });
+    synthView.addEventListener('make', (e) => {
+      const pcm = buildSynth(e.detail);
+      if (!pcm) return;
+      const rate = R.sampleRate || 44100;
+      const tracks = P.machine.tracks;
+      let slot = tracks.findIndex((t) => !t.sample);
+      if (slot < 0) slot = tracks.length - 1;
+      store.update('assets', (p) => {
+        const id = registerAsset(p, {
+          kind: 'synth', label: e.detail.name, sampleRate: rate,
+          frames: pcm.length, role: e.detail.role, formula: e.detail.formula,
+        });
+        const track = p.machine.tracks[slot];
+        track.sampleId = id;
+        // The formula rides on the sample so a synth voice can be re-rendered
+        // or read back later; the sequencer only ever sees PCM.
+        track.sample = {
+          channels: [pcm], sampleRate: rate, label: e.detail.name,
+          role: e.detail.role, formula: e.detail.formula,
+        };
+      });
+      sequencer.bumpTrack(slot);
+      patternView.setMachine(P.machine);
+      status('SYNTH · ' + e.detail.name + ' → TRACK ' + (slot + 1) + ' · ' + e.detail.formula.slice(0, 40));
+    });
+
+    ctx.api.synthRedraw = () => { if (synthPcm) drawSynthPlot(synthPcm); };
   }
 
   ctx.api.machineReset = resetForSource;
