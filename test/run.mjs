@@ -1546,6 +1546,18 @@ function undoStore() {
 }
 
 const undoCases = [
+  function clearHistoryIsPublicAndWorks() {
+    // Production used to reach into store._past directly while these accessors
+    // were tested and unused; both sides now go through the same interface.
+    const st = undoStore();
+    st.update('clips', (p) => { p.clips.push({ id: 'c1', start: 0, end: 1, tag: 'm', label: 'A' }); });
+    assert.equal(st.canUndo, true, 'a step exists');
+    assert.equal(st.undoDepth, 1, 'depth reports it');
+    st.clearHistory();
+    assert.equal(st.canUndo, false, 'cleared');
+    assert.equal(st.canRedo, false, 'redo cleared too');
+    assert.equal(st.undoDepth, 0, 'depth is zero');
+  },
   function undoAndRedoWalkTheDocument() {
     const st = undoStore();
     const P = st.project;
@@ -1598,7 +1610,7 @@ const undoCases = [
     for (let i = 0; i < 20; i++) {
       st.update('clips', (p) => { p.clips.push({ id: 'c' + i, start: i, end: i + 0.5, tag: 'm', label: 'x' }); });
     }
-    assert.ok(st._past.length <= 5, 'history respects its limit: ' + st._past.length);
+    assert.ok(st.undoDepth <= 5, 'history respects its limit: ' + st.undoDepth);
   },
 ];
 

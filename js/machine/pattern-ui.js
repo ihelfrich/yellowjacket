@@ -172,6 +172,13 @@ export class PatternView extends EventTarget {
     return this._page;
   }
 
+  // FILL is momentary and can be held from the QWERTY keybed or a mapped MIDI
+  // control, not only from this button. Without this the sequencer filled
+  // while the button stayed dark, so the surface lied about what was playing.
+  setFill(on) {
+    if (this._fillBtn) this._fillBtn.classList.toggle('is-active', !!on);
+  }
+
   setClipHint(label) {
     const h = this._bar.hint;
     h.textContent = label || 'NO CLIP SELECTED';
@@ -303,6 +310,7 @@ export class PatternView extends EventTarget {
     key.className = 'yj-key-hint';
     key.textContent = 'F';
     fill.append(label, key);
+    this._fillBtn = fill;
 
     let held = false;
     const set = (on) => {

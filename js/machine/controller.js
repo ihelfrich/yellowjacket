@@ -34,7 +34,7 @@ export function initMachineController(ctx) {
     (i) => fireTrack(i),
     (on) => {
       sequencer.fill = on;
-      if (typeof patternView.setFill === 'function') patternView.setFill(on);
+      patternView.setFill(on);
     }
   );
   keybed.enabled = false;
@@ -44,8 +44,9 @@ export function initMachineController(ctx) {
   }
 
   function setBeatmapLed(mode, text) {
-    const led = $('ledBeatmap');
-    led.className = 'yj-led' + (mode === 'on' ? ' is-on' : mode === 'busy' ? ' is-busy' : mode === 'fault' ? ' is-fault' : '');
+    // One LED mapping for the whole bench: this used to hand-copy main.js's
+    // setLed body, so a new state or a renamed class updated some LEDs only.
+    setLed('ledBeatmap', mode);
     $('beatmapState').textContent = text;
   }
 
@@ -371,7 +372,10 @@ export function initMachineController(ctx) {
     sliceView.setClips(P.clips);
     updateClipReadout();
     document.querySelector('.yj-tab-btn[data-tab="machine"]').click();
-    if (typeof sliceView.flashClip === 'function') sliceView.flashClip(clip.id);
+    // Select it, which is real machinery, rather than the flashClip() that was
+    // guarded for and never existed on SliceView.
+    sliceView.selectClip(clip.id);
+    if (clipList) clipList.setSelected(clip.id);
   });
 
   // ---------- substate switcher ----------

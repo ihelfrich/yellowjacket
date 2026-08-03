@@ -104,7 +104,9 @@ export function createWire() {
 
 export function createProject(chainDefaults) {
   return {
-    formatVersion: 1,
+    // No formatVersion here on purpose: the serialized format is stamped by
+    // persist.js (FORMAT_VERSION, currently 2). A second version field on the
+    // live object read 1 forever and invited a maintainer to bump the wrong one.
     fileName: null,
     words: null,
     chain: chainDefaults,
@@ -140,8 +142,7 @@ export class ProjectStore extends EventTarget {
       original: null,        // {buffer, mono} captured before the first repair
       sourceBytes: null,     // encoded source as loaded, for persistence + restore
     };
-    this.revision = 0;
-    this.dirty = false;
+    this.revision = 0;   // bumped per mutation; rides in the change event
     // Undo history: every mutation already funnels through update(), so one
     // snapshot per call covers the whole app. Documents only, never PCM.
     this._past = [];
@@ -159,6 +160,14 @@ export class ProjectStore extends EventTarget {
 
   get canUndo() { return this._past.length > 0; }
   get canRedo() { return this._future.length > 0; }
+  get undoDepth() { return this._past.length; }
+
+  // A restored or freshly loaded session is a starting point, not something to
+  // undo into. Public so callers stop reaching into the private arrays.
+  clearHistory() {
+    this._past.length = 0;
+    this._future.length = 0;
+  }
 
   undo() { return this._step(this._past, this._future); }
   redo() { return this._step(this._future, this._past); }
@@ -190,7 +199,6 @@ export class ProjectStore extends EventTarget {
     }
     fn(this.project, this.runtime);
     this.revision++;
-    this.dirty = true;
     this.dispatchEvent(new CustomEvent('change', { detail: { kind, revision: this.revision } }));
   }
 }

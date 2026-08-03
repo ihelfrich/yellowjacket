@@ -102,16 +102,34 @@ export function initPersistController(ctx) {
   // Every surface that mirrors the document, relit in one place. RESTORE and
   // UNDO both land here so they can never drift apart.
   function relightAll() {
-    if (P.words && P.words.length) ctx.api.wordsRestored();
-    views.sliceView.setClips(P.clips);
-    ctx.api.updateClipReadout();
-    views.patternView.setMachine(P.machine);
-    if (ctx.api.songRefresh) ctx.api.songRefresh();
-    ctx.api.rebuildRack();
-    ctx.api.repairsRestored();
-    if (ctx.api.wireRestored) ctx.api.wireRestored();
-    for (let i = 0; i < P.machine.tracks.length; i++) ctx.sequencer.bumpTrack(i);
-    if (ctx.sequencer.bumpStrips) ctx.sequencer.bumpStrips();
+    // Isolated per surface. This runs inside the undo transaction, after the
+    // history entry has already been popped, so a throw from any one view
+    // would consume that step without applying it: the user presses undo, the
+    // state does not move, and the step is gone. A dark panel is recoverable;
+    // a silently eaten undo is not.
+    const steps = [
+      ['words', () => { if (P.words && P.words.length) ctx.api.wordsRestored(); }],
+      ['clips', () => { views.sliceView.setClips(P.clips); ctx.api.updateClipReadout(); }],
+      ['pattern', () => views.patternView.setMachine(P.machine)],
+      ['song', () => ctx.api.songRefresh()],
+      ['rack', () => ctx.api.rebuildRack()],
+      ['repairs', () => ctx.api.repairsRestored()],
+      ['wire', () => ctx.api.wireRestored()],
+      ['buffers', () => {
+        for (let i = 0; i < P.machine.tracks.length; i++) ctx.sequencer.bumpTrack(i);
+        if (ctx.sequencer.bumpStrips) ctx.sequencer.bumpStrips();
+      }],
+    ];
+    const broken = [];
+    for (const [name, run] of steps) {
+      try {
+        run();
+      } catch (err) {
+        broken.push(name);
+        (window.__yjErrors = window.__yjErrors || []).push({ relight: name, error: err });
+      }
+    }
+    if (broken.length) statusFault('REFRESH FAULT · ' + broken.join(', ') + ' did not repaint');
   }
   ctx.api.relightAll = relightAll;
 
@@ -151,7 +169,9 @@ export function initPersistController(ctx) {
       status(dir === 'undo' ? 'NOTHING TO UNDO' : 'NOTHING TO REDO');
       return;
     }
-    status((dir === 'undo' ? 'UNDO' : 'REDO') + ' · ' + store._past.length + ' STEPS BACK AVAILABLE');
+    // Through the public accessor, not store._past: two interfaces to one
+    // piece of state meant the tested one was the one nobody ran.
+    status((dir === 'undo' ? 'UNDO' : 'REDO') + ' · ' + store.undoDepth + ' STEPS BACK AVAILABLE');
   }
   ctx.api.undo = () => historyStep('undo');
   ctx.api.redo = () => historyStep('redo');
@@ -219,8 +239,7 @@ export function initPersistController(ctx) {
       relightAll();
       if (R.repairs.length) await ctx.api.repairRebuild();
       // A restored session is a fresh starting point, not something to undo into.
-      store._past.length = 0;
-      store._future.length = 0;
+      store.clearHistory();   // a restored session is a starting point, not a step
 
       $('resumePanel').hidden = true;
       const parts = ['RESTORED · ' + String(json.fileName).toUpperCase()];

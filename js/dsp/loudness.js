@@ -51,7 +51,9 @@ export function kWeightingCoeffs(sampleRate) {
   return { b1, a1, b2, a2 };
 }
 
-export function applyBiquad(input, coeffs) {
+// Unexported: nothing imports this, and it takes a {b, a} shape that
+// kWeightingCoeffs in this same file does not emit.
+function applyBiquad(input, coeffs) {
   const { b, a } = coeffs;
   if (!b || !a || b.length !== 3 || a.length !== 3) {
     throw new TypeError('Biquad coefficients must contain three b and a values');

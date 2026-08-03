@@ -1,6 +1,7 @@
 // Yellowjacket — composition root. Constructs the store, engine, views, and
-// instruments, then hands wiring to three controllers. State lives in the store;
-// controllers own their flows; this file only assembles and boots.
+// instruments, then hands wiring to the six controllers listed in CONTROLLERS
+// below. State lives in the store; controllers own their flows; this file only
+// assembles and boots.
 
 import { Engine } from './audio-engine.js';
 import { WaveformView } from './waveform.js';
@@ -152,19 +153,21 @@ for (const [name, init] of CONTROLLERS) {
   }
 }
 
-// Any api a dead controller never registered would throw on first use, which
-// would turn one broken surface into a broken app. A no-op stub keeps the
-// blast radius at the surface that actually failed.
-const API_SURFACE = [
-  'statusRight', 'togglePlay', 'setKeybedEnabled', 'benchReset', 'machineReset',
-  'repairReset', 'runAnalysis', 'analysisStarted', 'analysisDone', 'analysisFault',
-  'updateClipReadout', 'rebuildRack', 'wordsRestored', 'repairsRestored',
-  'repairRebuild', 'songRefresh', 'crateRefresh', 'wireRestored', 'relightAll',
-  'undo', 'redo', 'loadArrayBuffer', 'openFile', 'showTab', 'fireTrack',
-  'synthRedraw', 'addRepair',
-];
-for (const name of API_SURFACE) {
-  if (typeof ctx.api[name] !== 'function') ctx.api[name] = () => {};
+// Any api a dead controller never registered would throw on first use, turning
+// one broken surface into a broken app. A hand-maintained list of names drifts
+// the moment a controller adds one (the first version of this already missed
+// getLiftRange, the single member whose RETURN VALUE is consumed), so missing
+// members are answered dynamically instead. Reads of a live member are
+// untouched; only absent ones resolve to a no-op.
+if (failed.length && typeof Proxy === 'function') {
+  const real = ctx.api;
+  ctx.api = new Proxy(real, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      if (typeof prop !== 'string') return undefined;
+      return () => undefined;
+    },
+  });
 }
 
 // ---------- tabs ----------

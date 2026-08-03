@@ -79,7 +79,8 @@ export function snapToBeat(t, beats, toleranceSec = 0.08) {
   return bestDist <= toleranceSec ? best : t;
 }
 
-export function clipsOverlap(a, b) {
+// Unexported: no importer. Kept because the slice UI may want it again.
+function clipsOverlap(a, b) {
   return a.start < b.end && b.start < a.end;
 }
 

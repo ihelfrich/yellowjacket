@@ -198,7 +198,9 @@ function applyScene(scene, saved) {
 // Mutates project/runtime IN PLACE: controllers hold references to the project,
 // the machine, the scenes/tracks arrays, chain entries, clips, and repairs, so
 // none of those objects are ever replaced, only their contents. Unknown
-// top-level keys are ignored. Returns the RestorePlan for the orchestrator.
+// top-level keys are ignored. Returns a RestorePlan (CONTRACT-PERSIST 3);
+// note that both call sites currently discard it and re-derive what they need,
+// so it is documentation and a test surface rather than a live dependency.
 export function applySnapshot(json, { project, runtime }) {
   if (!json || typeof json !== 'object' || json.formatVersion !== FORMAT_VERSION) {
     throw new FormatVersionError(json && typeof json === 'object' ? json.formatVersion : json);
