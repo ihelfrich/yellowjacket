@@ -11,14 +11,15 @@ const START_DELAY = 0.005;   // s, scheduling headroom so automation lands clean
 let clipCounter = 0;
 
 // Equal-power crossfade shape: sin/cos quarter-cycle, in^2 + out^2 = 1.
-const FADE_IN_UNIT = buildCurve(1, false);
-const FADE_OUT_UNIT = buildCurve(1, true);
+// Built once at unity: auditions play at unity, so there is no second shape.
+const FADE_IN_UNIT = buildCurve(false);
+const FADE_OUT_UNIT = buildCurve(true);
 
-function buildCurve(peak, out) {
+function buildCurve(out) {
   const c = new Float32Array(CURVE_N);
   for (let i = 0; i < CURVE_N; i++) {
     const x = (i / (CURVE_N - 1)) * (Math.PI / 2);
-    c[i] = peak * (out ? Math.cos(x) : Math.sin(x));
+    c[i] = out ? Math.cos(x) : Math.sin(x);
   }
   return c;
 }
@@ -41,7 +42,7 @@ export function advanceClipCounter(clips) {
 export function makeClip(start, end, tag, label) {
   const a = Math.min(start, end);
   const b = Math.max(start, end);
-  return { id: nextId(), start: a, end: b, gain: 1, tag, label };
+  return { id: nextId(), start: a, end: b, tag, label };
 }
 
 export function wordsToClip(words, i0, i1) {
@@ -108,7 +109,8 @@ export class ClipAuditioner {
 
     const outDur = span / r;   // output-time length; automation runs in output time
     const fade = Math.min(FADE, Math.max(outDur / 2 - 0.0002, 0));
-    const peak = Number.isFinite(clip.gain) && clip.gain >= 0 ? clip.gain : 1;
+    // Audition plays a clip at unity. Per-instrument level lives on the
+    // track (gainDb); a ClipRef is a span, not a mix setting.
 
     const src = ctx.createBufferSource();
     src.buffer = buffer;
@@ -126,12 +128,10 @@ export class ClipAuditioner {
     const t0 = ctx.currentTime + START_DELAY;
     if (fade > 0) {
       fadeGain.gain.value = 0;
-      const inCurve = peak === 1 ? FADE_IN_UNIT : buildCurve(peak, false);
-      const outCurve = peak === 1 ? FADE_OUT_UNIT : buildCurve(peak, true);
-      fadeGain.gain.setValueCurveAtTime(inCurve, t0, fade);
-      fadeGain.gain.setValueCurveAtTime(outCurve, t0 + outDur - fade, fade);
+      fadeGain.gain.setValueCurveAtTime(FADE_IN_UNIT, t0, fade);
+      fadeGain.gain.setValueCurveAtTime(FADE_OUT_UNIT, t0 + outDur - fade, fade);
     } else {
-      fadeGain.gain.value = peak;
+      fadeGain.gain.value = 1;
     }
 
     const voice = { src, fadeGain, stopGain };

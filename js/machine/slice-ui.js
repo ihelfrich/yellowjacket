@@ -848,7 +848,6 @@ export class SliceView extends EventTarget {
       if (changed && d.b - d.a >= MIN_CLIP) {
         // spans are immutable: a resize is delete + add of a new ClipRef
         const next = makeClip(d.a, d.b, old.tag, old.label);
-        next.gain = old.gain;
         this._selectedId = next.id;
         // ADD BEFORE DELETE. The controller calls setClips after every event,
         // and setClips drops a selection whose id is not in the list. Deleting

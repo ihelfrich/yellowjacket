@@ -17,7 +17,7 @@ import { resample } from '../js/dsp/resample.js';
 import { truePeakDb } from '../js/dsp/truepeak.js';
 import { createProject, registerAsset } from '../js/app/project-store.js';
 import { serializeProject, snapshotDoc, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
-import { ProjectStore } from '../js/app/project-store.js';
+import { ProjectStore, createSpace } from '../js/app/project-store.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
 import { fitModal, synthModal } from '../js/analysis/modal.js';
@@ -668,7 +668,7 @@ function persistFixture() {
     { text: 'hello', start: 0.1, end: 0.4, deleted: false, filler: false },
     { text: 'um', start: 0.6, end: 0.7, deleted: true, filler: true },
   ];
-  p.clips.push({ id: 'c1', start: 0.1, end: 1.1, gain: 1, tag: 'word', label: 'hello' });
+  p.clips.push({ id: 'c1', start: 0.1, end: 1.1, tag: 'word', label: 'hello' });
   p.chain[1].on = true;
   p.chain[1].params.lowGain = 3;
   r.repairs.push({ id: 'rp1', t0: 1.0, t1: 1.2, f0: 2000, f1: 8000, strength: 1, enabled: true, label: 'R1' });
@@ -964,7 +964,7 @@ const midiCases = [
 
 // ---------- song compiler (CONTRACT-SONG) ----------
 
-const { planEnvelope, createFittedBuffer } = await import('../js/machine/sequencer.js');
+const { planEnvelope, createFittedBuffer, Sequencer } = await import('../js/machine/sequencer.js');
 
 function songMachine() {
   const mkTrack = (steps, extras = {}) => ({
@@ -1225,8 +1225,8 @@ const pipelineCases = [
   function stagesLightFromTheDocumentAndCountWhatIsThere() {
     const st = new ProjectStore(persistChain());
     const P = st.project;
-    P.clips.push({ id: 'c1', start: 0, end: 1, gain: 1, tag: 'kick', label: 'K' });
-    P.clips.push({ id: 'c2', start: 2, end: 3, gain: 1, tag: 'hat', label: 'H' });
+    P.clips.push({ id: 'c1', start: 0, end: 1, tag: 'kick', label: 'K' });
+    P.clips.push({ id: 'c2', start: 2, end: 3, tag: 'hat', label: 'H' });
     P.machine.tracks[0].sample = { channels: [new Float32Array(8)], sampleRate: 44100 };
     P.machine.tracks[0].steps[0] = 1;
     P.machine.tracks[0].steps[4] = 1;
@@ -1550,8 +1550,8 @@ const undoCases = [
     const st = undoStore();
     const P = st.project;
     assert.equal(st.canUndo, false, 'nothing to undo at the start');
-    st.update('clips', (p) => { p.clips.push({ id: 'c1', start: 0, end: 1, gain: 1, tag: 'manual', label: 'A' }); });
-    st.update('clips', (p) => { p.clips.push({ id: 'c2', start: 2, end: 3, gain: 1, tag: 'manual', label: 'B' }); });
+    st.update('clips', (p) => { p.clips.push({ id: 'c1', start: 0, end: 1, tag: 'manual', label: 'A' }); });
+    st.update('clips', (p) => { p.clips.push({ id: 'c2', start: 2, end: 3, tag: 'manual', label: 'B' }); });
     assert.equal(P.clips.length, 2, 'two clips added');
     assert.equal(st.undo(), true, 'undo reports it moved');
     assert.equal(P.clips.length, 1, 'back to one clip');
@@ -1585,10 +1585,10 @@ const undoCases = [
   function aNewEditClearsRedo() {
     const st = undoStore();
     const P = st.project;
-    st.update('clips', (p) => { p.clips.push({ id: 'c1', start: 0, end: 1, gain: 1, tag: 'm', label: 'A' }); });
+    st.update('clips', (p) => { p.clips.push({ id: 'c1', start: 0, end: 1, tag: 'm', label: 'A' }); });
     st.undo();
     assert.equal(st.canRedo, true, 'redo available after an undo');
-    st.update('clips', (p) => { p.clips.push({ id: 'c9', start: 5, end: 6, gain: 1, tag: 'm', label: 'Z' }); });
+    st.update('clips', (p) => { p.clips.push({ id: 'c9', start: 5, end: 6, tag: 'm', label: 'Z' }); });
     assert.equal(st.canRedo, false, 'a new edit drops the redo branch');
     assert.deepEqual(P.clips.map((c) => c.id), ['c9'], 'the new edit stands alone');
   },
@@ -1596,7 +1596,7 @@ const undoCases = [
     const st = undoStore();
     st.historyLimit = 5;
     for (let i = 0; i < 20; i++) {
-      st.update('clips', (p) => { p.clips.push({ id: 'c' + i, start: i, end: i + 0.5, gain: 1, tag: 'm', label: 'x' }); });
+      st.update('clips', (p) => { p.clips.push({ id: 'c' + i, start: i, end: i + 0.5, tag: 'm', label: 'x' }); });
     }
     assert.ok(st._past.length <= 5, 'history respects its limit: ' + st._past.length);
   },
@@ -1757,6 +1757,101 @@ const modalCases = [
   },
 ];
 
+// ---------- offline render paths ----------
+// The harness never touched renderWav/renderSongWav, which is exactly how two
+// out-of-scope references shipped: FREEZE and song export threw ReferenceError
+// on any project with a sidechain duck, and only at the moment of printing.
+// These drive both paths through a stub OfflineAudioContext.
+
+function renderStubCtx() {
+  const nodes = () => ({
+    connect() {}, disconnect() {},
+    gain: { value: 1, setValueAtTime() {}, linearRampToValueAtTime() {},
+      setTargetAtTime() {}, cancelScheduledValues() {}, setValueCurveAtTime() {} },
+    pan: { value: 0 },
+    playbackRate: { value: 1 },
+    frequency: { value: 0 }, Q: { value: 0 },
+    start() {}, stop() {}, curve: null, type: '', buffer: null, normalize: true,
+    delayTime: { value: 0 },
+  });
+  return {
+    sampleRate: 44100,
+    currentTime: 0,
+    destination: nodes(),
+    createGain: nodes, createStereoPanner: nodes, createBufferSource: nodes,
+    createBiquadFilter: nodes, createWaveShaper: nodes, createConvolver: nodes,
+    createDelay: nodes, createIIRFilter: nodes,
+    createBuffer: (ch, len, rate) => new AudioBuffer({ numberOfChannels: ch, length: len, sampleRate: rate }),
+    startRendering: async () => new AudioBuffer({ numberOfChannels: 2, length: 4410, sampleRate: 44100 }),
+  };
+}
+
+function duckedMachine() {
+  const pcm = new Float32Array(4410);
+  for (let i = 0; i < pcm.length; i++) pcm[i] = Math.sin(2 * Math.PI * 220 * i / 44100);
+  const mk = (steps, extra = {}) => ({
+    sample: { channels: [pcm], sampleRate: 44100, label: 'S' },
+    steps: Uint8Array.from(steps), stepData: {}, len: 16,
+    gainDb: 0, pan: 0, mute: false, solo: false,
+    duckSource: -1, duckDb: 12, choke: false, sendVerb: 0, sendDelay: 0,
+    voice: normalizeVoice(null), ...extra,
+  });
+  const scene = (i, tracks) => ({ id: 's' + i, name: 'S', bpm: 120, swing: 50, seed: 99 * (i + 1), tracks });
+  // Track 1 is ducked BY track 0: this is the routing that broke both renders.
+  const scenes = [
+    scene(0, [mk([1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      mk([0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], { duckSource: 0, duckDb: 9 })]),
+    scene(1, [mk([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      mk([0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], { duckSource: 0, duckDb: 6 })]),
+  ];
+  const m = { activeScene: 0, scenes, song: { chain: [], loop: true }, space: createSpace() };
+  Object.defineProperties(m, {
+    tracks: { get() { return this.scenes[this.activeScene].tracks; } },
+    bpm: { get() { return this.scenes[this.activeScene].bpm; }, set(v) { this.scenes[this.activeScene].bpm = v; } },
+    swing: { get() { return this.scenes[this.activeScene].swing; } },
+  });
+  return m;
+}
+
+function stubSequencer(machine) {
+  const prevOffline = globalThis.OfflineAudioContext;
+  globalThis.OfflineAudioContext = function () { return renderStubCtx(); };
+  const seq = new Sequencer({ ctx: null, master: null });
+  seq.setMachine(machine);
+  return { seq, restore: () => { globalThis.OfflineAudioContext = prevOffline; } };
+}
+
+const renderCases = [
+  async function patternFreezeSurvivesADuckRouting() {
+    const m = duckedMachine();
+    const { seq, restore } = stubSequencer(m);
+    try {
+      const bytes = await seq.renderWav(2);
+      assert.ok(bytes, 'FREEZE produced output with a duck configured');
+    } finally { restore(); }
+  },
+  async function songRenderSurvivesADuckRoutingAcrossScenes() {
+    const m = duckedMachine();
+    m.song.chain.push({ scene: 0, reps: 1 }, { scene: 1, reps: 1 });
+    const { seq, restore } = stubSequencer(m);
+    try {
+      const out = await seq.renderSongWav(24);
+      assert.ok(out && out.bytes, 'song render produced output');
+      assert.ok(out.totalSec > 0, 'song has a duration: ' + out.totalSec);
+    } finally { restore(); }
+  },
+  async function rendersStillWorkWithNoDucksAtAll() {
+    const m = duckedMachine();
+    for (const scene of m.scenes) for (const t of scene.tracks) t.duckSource = -1;
+    const { seq, restore } = stubSequencer(m);
+    try {
+      assert.ok(await seq.renderWav(1), 'FREEZE without ducks');
+      m.song.chain.push({ scene: 0, reps: 1 });
+      assert.ok((await seq.renderSongWav(24)).bytes, 'song render without ducks');
+    } finally { restore(); }
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -1772,6 +1867,7 @@ const groups = [
   ['pipeline', pipelineCases],
   ['synth', synthCases],
   ['modal', modalCases],
+  ['offline render', renderCases],
   ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],

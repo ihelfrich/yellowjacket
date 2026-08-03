@@ -546,7 +546,6 @@ export function initMachineController(ctx) {
             id: 'h' + (i + 1),
             start: pick.t0,
             end: pick.t1,
-            gain: 1,
             tag: pick.role.toLowerCase(),
             label: pick.label,
             score: pick.score,

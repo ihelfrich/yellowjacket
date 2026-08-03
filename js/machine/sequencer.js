@@ -289,8 +289,11 @@ export class Sequencer extends EventTarget {
       scheduleEvent(scheduler, event, event.tSec);
     }
     for (const seg of compiled.ducks) {
+      // scheduler.tracks / scheduler.rack, not the song render's locals: those
+      // are a different function's scope and threw ReferenceError here, so any
+      // project with a duck routing could not FREEZE at all.
       applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination,
-        tracks[seg.track], songRack), seg.tSec, seg.depthDb);
+        scheduler.tracks[seg.track], scheduler.rack), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
     return encodeWav(await masterLimit(rendered), 16);
@@ -392,8 +395,15 @@ export class Sequencer extends EventTarget {
       scheduleEvent(schedulers[sec], event, event.tSec);
     }
     for (const seg of compiled.ducks) {
+      // `tracks` only exists inside the per-section map above, so it was out of
+      // scope here and threw. Resolve the section this duck falls in and use
+      // that section's tracks, which is what the duck actually applies to.
+      let di = 0;
+      while (di < compiled.sections.length - 1 && seg.tSec >= compiled.sections[di].endSec) di++;
+      const dScene = scenes[compiled.sections[di].scene];
+      const dTracks = dScene && Array.isArray(dScene.tracks) ? dScene.tracks : [];
       applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination,
-        tracks[seg.track], songRack), seg.tSec, seg.depthDb);
+        dTracks[seg.track], songRack), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
     const mastered = await masterLimit(rendered);

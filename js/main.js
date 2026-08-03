@@ -127,12 +127,45 @@ const ctx = {
   api: {},
 };
 
-initBenchController(ctx);
-initMachineController(ctx);
-initRepairController(ctx);
-initWireController(ctx);
-initSourceController(ctx);
-initPersistController(ctx); // last: restore needs every api registered above
+// Controllers are independent surfaces, so one throwing must not take the
+// others with it. Before this, a single failure in any init left the app
+// half-built and completely silent: no error, no working bench, nothing to
+// tell the user what happened. Now the rest still come up and the status bar
+// names what died.
+const CONTROLLERS = [
+  ['bench', initBenchController],
+  ['machine', initMachineController],
+  ['repair', initRepairController],
+  ['wire', initWireController],
+  ['source', initSourceController],
+  // persist is last on purpose: restore needs every api registered above it.
+  ['persist', initPersistController],
+];
+const failed = [];
+for (const [name, init] of CONTROLLERS) {
+  try {
+    init(ctx);
+  } catch (err) {
+    failed.push(name);
+    // Keep the real error reachable for a bug report rather than swallowing it.
+    (window.__yjErrors = window.__yjErrors || []).push({ controller: name, error: err });
+  }
+}
+
+// Any api a dead controller never registered would throw on first use, which
+// would turn one broken surface into a broken app. A no-op stub keeps the
+// blast radius at the surface that actually failed.
+const API_SURFACE = [
+  'statusRight', 'togglePlay', 'setKeybedEnabled', 'benchReset', 'machineReset',
+  'repairReset', 'runAnalysis', 'analysisStarted', 'analysisDone', 'analysisFault',
+  'updateClipReadout', 'rebuildRack', 'wordsRestored', 'repairsRestored',
+  'repairRebuild', 'songRefresh', 'crateRefresh', 'wireRestored', 'relightAll',
+  'undo', 'redo', 'loadArrayBuffer', 'openFile', 'showTab', 'fireTrack',
+  'synthRedraw', 'addRepair',
+];
+for (const name of API_SURFACE) {
+  if (typeof ctx.api[name] !== 'function') ctx.api[name] = () => {};
+}
 
 // ---------- tabs ----------
 function showTab(name) {
@@ -218,7 +251,12 @@ try {
 } catch (e) { /* storage blocked: skip the overlay rather than break boot */ }
 
 // ---------- boot ----------
-status(COPY.idle);
+if (failed.length) {
+  statusFault('STARTUP FAULT · ' + failed.join(', ').toUpperCase()
+    + ' did not start. The rest of the bench is running. Details in the console: window.__yjErrors');
+} else {
+  status(COPY.idle);
+}
 ctx.api.statusRight();
 
 // Debug handle for the curious (and for bug reports): poke the bench from the console.
