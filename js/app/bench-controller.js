@@ -219,19 +219,32 @@ export function initBenchController(ctx) {
   // Off the main thread: the worker gets copies (transferred), the page stays live.
   let loudnessWorker = null;
   let measureSeq = 0;
+  const measureJobs = new Map();   // job id -> {resolve, reject, onPct}
   function measureViaWorker(buf, onPct) {
     if (!loudnessWorker) {
       loudnessWorker = new Worker(new URL('../../workers/loudness-worker.js', import.meta.url), { type: 'module' });
     }
-    const seq = ++measureSeq;
-    return new Promise((resolve, reject) => {
+    // One handler for the life of the worker, dispatching by job id. Replacing
+    // onmessage per call meant MEASURE during RENDER stole RENDER's reply: the
+    // newest handler resolved with the older job's numbers, and the older
+    // promise, having lost its only handler, never settled. RENDER then stayed
+    // disabled with its progress bar up until the page was reloaded.
+    if (!loudnessWorker.onmessage) {
       loudnessWorker.onmessage = (e) => {
         const msg = e.data || {};
-        if (seq !== measureSeq) return; // superseded by a newer request
-        if (msg.type === 'progress') { if (onPct) onPct(msg.pct); }
-        else if (msg.type === 'done') resolve(msg.result);
-        else if (msg.type === 'error') reject(new Error(msg.message));
+        const job = measureJobs.get(msg.job);
+        if (!job) return;   // a job whose caller has already gone away
+        if (msg.type === 'progress') { if (job.onPct) job.onPct(msg.pct); }
+        else if (msg.type === 'done') { measureJobs.delete(msg.job); job.resolve(msg.result); }
+        else if (msg.type === 'error') {
+          measureJobs.delete(msg.job);
+          job.reject(new Error(msg.message));
+        }
       };
+    }
+    const seq = ++measureSeq;
+    return new Promise((resolve, reject) => {
+      measureJobs.set(seq, { resolve, reject, onPct });
       const channels = [];
       const transfers = [];
       for (let c = 0; c < buf.numberOfChannels; c++) {
@@ -239,7 +252,7 @@ export function initBenchController(ctx) {
         channels.push(copy);
         transfers.push(copy.buffer);
       }
-      loudnessWorker.postMessage({ type: 'measure', channels, sampleRate: buf.sampleRate }, transfers);
+      loudnessWorker.postMessage({ type: 'measure', job: seq, channels, sampleRate: buf.sampleRate }, transfers);
     });
   }
 
@@ -390,6 +403,15 @@ export function initBenchController(ctx) {
 
   // ---------- audio export ----------
   function exportWav(bits) {
+    // renderFresh was written in four places and read in none, so a render that
+    // the UI had already marked STALE was still what got written to disk: cut a
+    // word, export, and the file still has the word. Refusing is the only honest
+    // answer, since falling back to the raw splice would silently drop the whole
+    // rack the render was made with.
+    if (R.renderedBuffer && !renderFresh) {
+      statusFault('RENDER IS STALE · the edit moved after the last render. HIT RENDER, THEN EXPORT.');
+      return;
+    }
     let buf = R.renderedBuffer;
     if (!buf) {
       buf = cuts.length ? spliceCuts(R.buffer, cuts) : R.buffer;

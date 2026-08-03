@@ -14,7 +14,6 @@ export class Engine extends EventTarget {
     this._buffer = null;
     this._mono = null;
     this._alt = null;
-    this._fileName = null;
     this._position = 0;       // seconds on the active buffer's timeline
     this._playing = false;
     this._sources = [];
@@ -28,13 +27,12 @@ export class Engine extends EventTarget {
     this._lastEmit = 0;
   }
 
-  async load(arrayBuffer, fileName) {
+  async load(arrayBuffer) {
     const ctx = this._ensureCtx();
     const buffer = await ctx.decodeAudioData(arrayBuffer);
     this._haltPlayback();
     this._buffer = buffer;
     this._mono = mixdownMono(buffer);
-    this._fileName = fileName;
     this._alt = null;
     this._lastCuts = [];
     this._position = 0;
@@ -73,7 +71,7 @@ export class Engine extends EventTarget {
     const buf = this._activeBuffer();
     if (!buf || buf.duration <= 0) return;
     const ctx = this._ensureCtx();
-    if (ctx.state === 'suspended') ctx.resume();
+    resumeContext(ctx);
 
     // Alt buffer plays verbatim: it is already rendered, cuts do not apply.
     if (!this._alt) this._lastCuts = normalizeCuts(cuts, buf.duration);
@@ -245,7 +243,22 @@ export class Engine extends EventTarget {
   }
 }
 
-function mixdownMono(buffer) {
+// A suspended context returns a promise that can reject (autoplay policy), and
+// an ignored rejection here is an unhandled one plus a transport that looks
+// like it is playing and is silent. The sequencer already did this; the bench
+// did not, for the same failure.
+function resumeContext(ctx) {
+  if (!ctx || ctx.state !== 'suspended') return;
+  try {
+    const resumed = ctx.resume();
+    if (resumed && typeof resumed.catch === 'function') resumed.catch(() => {});
+  } catch (e) { /* stays suspended: scheduling is still valid */ }
+}
+
+// Exported because the repair path needs the identical mixdown: it had its own
+// copy, and the analysis/spectrogram mono would have quietly stopped matching
+// the post-repair mono the first time either one changed its channel weighting.
+export function mixdownMono(buffer) {
   const n = buffer.length;
   const ch = buffer.numberOfChannels;
   const out = new Float32Array(n);

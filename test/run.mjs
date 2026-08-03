@@ -16,8 +16,10 @@ import {
 import { resample } from '../js/dsp/resample.js';
 import { truePeakDb } from '../js/dsp/truepeak.js';
 import { createProject, registerAsset } from '../js/app/project-store.js';
-import { serializeProject, snapshotDoc, applySnapshot, FORMAT_VERSION } from '../js/app/persist.js';
-import { ProjectStore, createSpace } from '../js/app/project-store.js';
+import {
+  serializeProject, snapshotDoc, applySnapshot, hydrateSample, FORMAT_VERSION,
+} from '../js/app/persist.js';
+import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
 import { fitModal, synthModal } from '../js/analysis/modal.js';
@@ -1775,22 +1777,30 @@ const modalCases = [
 // on any project with a sidechain duck, and only at the moment of printing.
 // These drive both paths through a stub OfflineAudioContext.
 
-function renderStubCtx() {
-  const nodes = () => ({
-    connect() {}, disconnect() {},
-    gain: { value: 1, setValueAtTime() {}, linearRampToValueAtTime() {},
-      setTargetAtTime() {}, cancelScheduledValues() {}, setValueCurveAtTime() {} },
-    pan: { value: 0 },
-    playbackRate: { value: 1 },
-    frequency: { value: 0 }, Q: { value: 0 },
-    start() {}, stop() {}, curve: null, type: '', buffer: null, normalize: true,
-    delayTime: { value: 0 },
-  });
+function renderStubCtx(gainLog = []) {
+  const nodes = () => {
+    // Every scheduled gain value is recorded. The send amounts were assigned
+    // once at strip creation and never scheduled again, which is how one
+    // scene's reverb send survived into every later scene of a song.
+    const events = [];
+    return {
+      connect() {}, disconnect() {},
+      events,
+      gain: { value: 1, setValueAtTime(v, t) { events.push([v, t]); }, linearRampToValueAtTime() {},
+        setTargetAtTime() {}, cancelScheduledValues() {}, setValueCurveAtTime() {} },
+      pan: { value: 0 },
+      playbackRate: { value: 1 },
+      frequency: { value: 0 }, Q: { value: 0 },
+      start() {}, stop() {}, curve: null, type: '', buffer: null, normalize: true,
+      delayTime: { value: 0 },
+    };
+  };
+  const createGain = () => { const n = nodes(); gainLog.push(n); return n; };
   return {
     sampleRate: 44100,
     currentTime: 0,
     destination: nodes(),
-    createGain: nodes, createStereoPanner: nodes, createBufferSource: nodes,
+    createGain, createStereoPanner: nodes, createBufferSource: nodes,
     createBiquadFilter: nodes, createWaveShaper: nodes, createConvolver: nodes,
     createDelay: nodes, createIIRFilter: nodes,
     createBuffer: (ch, len, rate) => new AudioBuffer({ numberOfChannels: ch, length: len, sampleRate: rate }),
@@ -1825,9 +1835,9 @@ function duckedMachine() {
   return m;
 }
 
-function stubSequencer(machine) {
+function stubSequencer(machine, gainLog = []) {
   const prevOffline = globalThis.OfflineAudioContext;
-  globalThis.OfflineAudioContext = function () { return renderStubCtx(); };
+  globalThis.OfflineAudioContext = function () { return renderStubCtx(gainLog); };
   const seq = new Sequencer({ ctx: null, master: null });
   seq.setMachine(machine);
   return { seq, restore: () => { globalThis.OfflineAudioContext = prevOffline; } };
@@ -1864,6 +1874,198 @@ const renderCases = [
   },
 ];
 
+// ---------- scene sends, restore hydration, clamp parity, worker protocol ----------
+// Everything below covers a fix from the 2026-08-03 refinement audit. Each one
+// was invisible because nothing ran the path: the recurring failure mode here.
+
+const sceneSendCases = [
+  async function eachSceneGetsItsOwnVerbSend() {
+    const m = duckedMachine();
+    m.scenes[0].tracks[0].sendVerb = 0.9;
+    m.scenes[1].tracks[0].sendVerb = 0.1;
+    m.song.chain.push({ scene: 0, reps: 1 }, { scene: 1, reps: 1 });
+    const gains = [];
+    const { seq, restore } = stubSequencer(m, gains);
+    try {
+      await seq.renderSongWav(24);
+      // One node carrying BOTH amounts is the send: voice gains ramp to 1 and
+      // duck gains use setTargetAtTime, so neither can produce this pair.
+      const send = gains.find((g) => g.events.some((e) => e[0] === 0.9)
+        && g.events.some((e) => e[0] === 0.1));
+      assert.ok(send, 'a send gain was automated to both scenes amounts');
+      const at09 = send.events.find((e) => e[0] === 0.9)[1];
+      const at01 = send.events.find((e) => e[0] === 0.1)[1];
+      assert.ok(at01 > at09, 'the second scene amount lands later: '
+        + at09.toFixed(3) + ' then ' + at01.toFixed(3));
+    } finally { restore(); }
+  },
+  async function aSendSwitchedOnByALaterSceneStillArrives() {
+    const m = duckedMachine();
+    m.scenes[0].tracks[0].sendVerb = 0;      // dry verse: no send node exists yet
+    m.scenes[1].tracks[0].sendVerb = 0.8;    // chorus turns it on
+    m.song.chain.push({ scene: 0, reps: 1 }, { scene: 1, reps: 1 });
+    const gains = [];
+    const { seq, restore } = stubSequencer(m, gains);
+    try {
+      await seq.renderSongWav(24);
+      const send = gains.find((g) => g.events.some((e) => e[0] === 0.8));
+      assert.ok(send, 'the send node was built when the second scene asked for it');
+    } finally { restore(); }
+  },
+  async function delaySendsFollowTheSceneToo() {
+    const m = duckedMachine();
+    m.scenes[0].tracks[1].sendDelay = 0.7;
+    m.scenes[1].tracks[1].sendDelay = 0.2;
+    m.song.chain.push({ scene: 0, reps: 1 }, { scene: 1, reps: 1 });
+    const gains = [];
+    const { seq, restore } = stubSequencer(m, gains);
+    try {
+      await seq.renderSongWav(24);
+      const send = gains.find((g) => g.events.some((e) => e[0] === 0.7)
+        && g.events.some((e) => e[0] === 0.2));
+      assert.ok(send, 'the delay send was automated per scene as well');
+    } finally { restore(); }
+  },
+];
+
+const hydrateCases = [
+  function hydrateSampleKeepsTheRole() {
+    const frames = 8;
+    const flat = new Float32Array(frames * 2);
+    for (let i = 0; i < flat.length; i++) flat[i] = i / flat.length;
+    const meta = { frames, channelCount: 2, sampleRate: 44100, label: 'KICK 01', role: 'KICK' };
+    const s = hydrateSample(meta, flat);
+    assert.equal(s.role, 'KICK', 'role survived hydration');
+    assert.equal(s.channels.length, 2);
+    assert.equal(s.channels[0].length, frames);
+    assert.equal(s.sampleRate, 44100);
+    assert.equal(s.label, 'KICK 01');
+    assert.equal(s.channels[1][0], flat[frames], 'channel 2 starts at the right offset');
+  },
+  function aRestoredDrumStillStretchesPercussively() {
+    // The whole point of carrying role: stretchMode decides WSOLA vs vocoder,
+    // and an undefined role silently means vocoder.
+    const meta = { frames: 4, channelCount: 1, sampleRate: 44100, label: 'S', role: 'SNARE' };
+    const s = hydrateSample(meta, new Float32Array(4));
+    assert.equal(stretchMode(s.role), 'percussive');
+    assert.equal(stretchMode(undefined), 'tonal', 'and this is what it used to get');
+  },
+  function roleSurvivesTheFullSerializeRoundTrip() {
+    const project = createProject([]);
+    const pcm = new Float32Array(16);
+    const id = registerAsset(project, {
+      kind: 'sample', label: 'HAT', sampleRate: 44100, frames: 16, role: 'HAT',
+    });
+    const track = project.machine.scenes[0].tracks[0];
+    track.sampleId = id;
+    track.sample = { channels: [pcm], sampleRate: 44100, label: 'HAT', role: 'HAT' };
+    const { json, sampleFiles } = serializeProject(project, { repairs: [], sourceBytes: null });
+    assert.equal(json.assets[id].role, 'HAT', 'role is written to the save');
+    const file = sampleFiles.find((f) => f.id === id);
+    const back = hydrateSample(json.assets[id], new Float32Array(file.bytes.buffer || file.bytes));
+    assert.equal(back.role, 'HAT', 'and comes back off disk');
+  },
+  function hydrateSampleRefusesShortOrMissingData() {
+    assert.equal(hydrateSample(null, new Float32Array(4)), null);
+    assert.equal(hydrateSample({ frames: 4, channelCount: 1 }, null), null);
+    assert.equal(hydrateSample({ frames: 8, channelCount: 2 }, new Float32Array(4)), null,
+      'a truncated sample file is refused, not sliced into empty channels');
+  },
+];
+
+const clampParityCases = [
+  function restoreAndTheCompilerAgreeOnFitSteps() {
+    // These disagreed: |0 truncates, Math.round rounds, so 2.6 played as two
+    // steps after a reload and three before it.
+    for (const raw of [2.6, 0.4, 7.5, 63.9, -3, 999]) {
+      const project = createProject([]);
+      const doc = snapshotDoc(project, { repairs: [], sourceBytes: null });
+      doc.machine.scenes[0].tracks[0].voice = { ...createVoice(), fitSteps: raw };
+      applySnapshot(doc, { project, runtime: { repairs: [] } });
+      const restored = project.machine.scenes[0].tracks[0].voice.fitSteps;
+      const compiled = normalizeVoice({ fitSteps: raw }).fitSteps;
+      assert.equal(restored, compiled, 'fitSteps ' + raw + ': restore ' + restored + ' vs compiler ' + compiled);
+    }
+  },
+  function everyVoiceRangeAgreesAcrossRestoreAndCompile() {
+    const wild = {
+      start: -1, end: 40, pitch: 99, attack: 0.01, release: 9999,
+      lpf: 1, res: 90, hpf: 5, drive: 100, fitSteps: 500,
+    };
+    const project = createProject([]);
+    const doc = snapshotDoc(project, { repairs: [], sourceBytes: null });
+    doc.machine.scenes[0].tracks[0].voice = { ...createVoice(), ...wild };
+    applySnapshot(doc, { project, runtime: { repairs: [] } });
+    const restored = project.machine.scenes[0].tracks[0].voice;
+    const compiled = normalizeVoice({ ...createVoice(), ...wild });
+    for (const key of Object.keys(wild)) {
+      assert.equal(restored[key], compiled[key], key + ': restore ' + restored[key] + ' vs compiler ' + compiled[key]);
+    }
+  },
+];
+
+// Worker replies now echo the job they answer. Without it a caller could only
+// assume the next message belonged to its most recent request, which is false
+// whenever two jobs overlap: one promise took the other's result and the other
+// never settled at all.
+// The tag busts the ESM cache: these modules register self.onmessage at import
+// time, so a module already imported by another suite (repair-worker is) would
+// never see the stub, and a second call would reuse the first one's caches.
+async function runWorkerModule(path, message, tag) {
+  const sent = [];
+  const prevSelf = Object.getOwnPropertyDescriptor(globalThis, 'self');
+  globalThis.self = { postMessage: (m) => sent.push(m), onmessage: null };
+  try {
+    await import(path + '?probe=' + tag);
+    assert.equal(typeof globalThis.self.onmessage, 'function',
+      path + ' registered a message handler');
+    globalThis.self.onmessage({ data: message });
+  } finally {
+    if (prevSelf) Object.defineProperty(globalThis, 'self', prevSelf);
+    else delete globalThis.self;
+  }
+  return sent;
+}
+
+const workerProtocolCases = [
+  async function theLoudnessWorkerEchoesItsJob() {
+    const mono = new Float32Array(48000);
+    for (let i = 0; i < mono.length; i++) mono[i] = 0.2 * Math.sin(2 * Math.PI * 440 * i / 48000);
+    const sent = await runWorkerModule('../workers/loudness-worker.js',
+      { type: 'measure', job: 7, channels: [mono], sampleRate: 48000 }, 'loudness');
+    assert.ok(sent.length, 'the worker replied');
+    for (const msg of sent) assert.equal(msg.job, 7, msg.type + ' carried its job id');
+    assert.ok(sent.some((m) => m.type === 'done'), 'and finished');
+  },
+  async function theRepairWorkerEchoesItsJob() {
+    const ch = new Float32Array(4096);
+    const sent = await runWorkerModule('../workers/repair-worker.js', {
+      type: 'repair', job: 42, channels: [ch], sampleRate: 44100,
+      regions: [{ t0: 0.01, t1: 0.02, f0: 200, f1: 400, strength: 1 }],
+    }, 'repair');
+    assert.ok(sent.length, 'the worker replied');
+    for (const msg of sent) assert.equal(msg.job, 42, msg.type + ' carried its job id');
+  },
+  async function theAnalysisWorkerEchoesItsJobOnBothPaths() {
+    const mono = new Float32Array(44100);
+    for (let i = 0; i < mono.length; i++) mono[i] = Math.sin(2 * Math.PI * 110 * i / 44100);
+    const ok = await runWorkerModule('../workers/analysis-worker.js', {
+      type: 'analyze', job: 3, mono, sampleRate: 44100,
+      anchors: { bpm: null, barOneTime: null }, generation: 5,
+    }, 'analysis-ok');
+    assert.ok(ok.length, 'the worker replied');
+    for (const msg of ok) assert.equal(msg.job, 3, msg.type + ' carried its job id');
+    // The error path too: no mono and nothing cached for this generation.
+    const bad = await runWorkerModule('../workers/analysis-worker.js', {
+      type: 'analyze', job: 9, sampleRate: 44100,
+      anchors: { bpm: null, barOneTime: null }, generation: 404,
+    }, 'analysis-miss');
+    const err = bad.find((m) => m.type === 'error');
+    assert.ok(err, 'a cache miss with no audio is an error');
+    assert.equal(err.job, 9, 'and the error names its job');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -1880,6 +2082,10 @@ const groups = [
   ['synth', synthCases],
   ['modal', modalCases],
   ['offline render', renderCases],
+  ['scene sends', sceneSendCases],
+  ['restore hydration', hydrateCases],
+  ['voice clamp parity', clampParityCases],
+  ['worker protocol', workerProtocolCases],
   ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],

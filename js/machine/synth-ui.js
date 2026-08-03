@@ -159,6 +159,14 @@ export class SynthView extends EventTarget {
     this._onEdit();
   }
 
+  // The first preset is loaded during construction, which dispatches 'formula'
+  // before the controller has had a chance to listen: the KICK equation was
+  // visible on screen but uncompiled, unvalidated, and unplotted until you
+  // typed something. The controller calls this once it is wired.
+  emitCurrent() {
+    this._onEdit();
+  }
+
   _onEdit() {
     for (const b of this._presetBtns) b.classList.remove('is-on');
     this.dispatchEvent(new CustomEvent('formula', {

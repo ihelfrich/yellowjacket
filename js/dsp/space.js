@@ -90,7 +90,6 @@ const DIVISION_BEATS = new Map([
   ['1/16t', 1 / 6],     // (2/3) * 1/4
 ]);
 
-export const DELAY_DIVISIONS = [...DIVISION_BEATS.keys()];
 export const DELAY_DIVISION_DEFAULT = '1/8';
 
 // Delay time in seconds. Unknown division falls back to a straight eighth

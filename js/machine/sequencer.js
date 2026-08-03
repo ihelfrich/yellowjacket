@@ -177,8 +177,9 @@ export class Sequencer extends EventTarget {
     if (index >= 0) this._bufferCache[index] = null;
   }
 
-  // Send amounts are baked into the strip graph, so changing one rebuilds the
-  // strips on the next voice rather than mutating a live node.
+  // Send AMOUNTS are automated now, not baked, so they no longer need this.
+  // What still does is a rack swap: the old strips' send nodes are wired to
+  // the previous rack's inputs, and nothing downstream is listening to those.
   bumpStrips() {
     this._resetStrips();
     this._strips = [];
@@ -293,7 +294,7 @@ export class Sequencer extends EventTarget {
       // are a different function's scope and threw ReferenceError here, so any
       // project with a duck routing could not FREEZE at all.
       applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination,
-        scheduler.tracks[seg.track], scheduler.rack), seg.tSec, seg.depthDb);
+        scheduler.tracks[seg.track], scheduler.rack, seg.tSec), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
     return encodeWav(await masterLimit(rendered), 16);
@@ -403,7 +404,7 @@ export class Sequencer extends EventTarget {
       const dScene = scenes[compiled.sections[di].scene];
       const dTracks = dScene && Array.isArray(dScene.tracks) ? dScene.tracks : [];
       applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination,
-        dTracks[seg.track], songRack), seg.tSec, seg.depthDb);
+        dTracks[seg.track], songRack, seg.tSec), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
     const mastered = await masterLimit(rendered);
@@ -504,7 +505,7 @@ export class Sequencer extends EventTarget {
         applyDuck(
           ensureStrip(this._strips, ducks[d].track, this._ctx, this._master,
             this._machine && this._machine.tracks && this._machine.tracks[ducks[d].track],
-            this._liveRack(this._ctx, this._master)),
+            this._liveRack(this._ctx, this._master), this._songAnchor + at),
           this._songAnchor + at,
           ducks[d].depthDb,
         );
@@ -574,7 +575,8 @@ export class Sequencer extends EventTarget {
     for (const seg of ducks) {
       applyDuck(ensureStrip(this._strips, seg.track, ctx, this._master,
         this._machine && this._machine.tracks && this._machine.tracks[seg.track],
-        this._liveRack(ctx, this._master)), this._anchor + seg.tSec, seg.depthDb);
+        this._liveRack(ctx, this._master), this._anchor + seg.tSec),
+      this._anchor + seg.tSec, seg.depthDb);
     }
     this._scheduledUntil = toSec;
     this._emitSteps(patternNow);
@@ -661,7 +663,7 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   const stripTracks = scheduler.machine && scheduler.machine.tracks;
   const strip = ensureStrip(scheduler.strips, event.track, ctx, scheduler.dest,
     scheduler.tracks ? scheduler.tracks[event.track] : (stripTracks && stripTracks[event.track]),
-    scheduler.rack);
+    scheduler.rack, when);
   const startAt = Math.max(ctx.currentTime || 0, when);
 
   const gainNode = ctx.createGain();
@@ -979,31 +981,50 @@ function createSpaceRack(ctx, dest, space, bpm) {
   return rack;
 }
 
-function ensureStrip(strips, index, ctx, dest, track, rack) {
+// One send amount, scheduled rather than assigned. The node is created the
+// first time a scene actually asks for the send, and every later change lands
+// as an automation event at the time of the voice that wanted it.
+function tuneSend(strip, nodeKey, amtKey, busIn, amt, when) {
+  if (strip[amtKey] === amt) return;
+  if (!strip[nodeKey]) {
+    // Nothing to schedule and nothing to build: a track that has never sent
+    // anywhere does not get a gain node it would only ever hold at zero.
+    if (!busIn || !(amt > 0)) { strip[amtKey] = amt; return; }
+    const send = strip.ctx.createGain();
+    send.gain.value = 0;
+    strip.duckGain.connect(send);
+    send.connect(busIn);
+    strip[nodeKey] = send;
+  }
+  try {
+    strip[nodeKey].gain.setValueAtTime(amt, Math.max(0, when));
+  } catch (e) { /* context closing */ }
+  strip[amtKey] = amt;
+}
+
+// Sends are per-track AND per-scene, but one strip per track index is shared
+// across every scene in a song. Baking the amounts in at creation let the
+// first scene that played own the sends for the whole arrangement: a chorus
+// with the snare 90% into the plate kept that send through a dry verse, live
+// and in the printed WAV both. They are scheduled at `when` instead, so each
+// section gets the sends its own scene asked for.
+function ensureStrip(strips, index, ctx, dest, track, rack, when = 0) {
+  const verbAmt = track && Number.isFinite(track.sendVerb) ? track.sendVerb : 0;
+  const delayAmt = track && Number.isFinite(track.sendDelay) ? track.sendDelay : 0;
   const existing = strips[index];
-  if (existing && existing.ctx === ctx && existing.dest === dest) return existing;
+  if (existing && existing.ctx === ctx && existing.dest === dest) {
+    tuneSend(existing, 'verbSend', 'verbAmt', rack && rack.verbIn, verbAmt, when);
+    tuneSend(existing, 'delaySend', 'delayAmt', rack && rack.delayIn, delayAmt, when);
+    return existing;
+  }
   if (existing) {
     try { existing.duckGain.disconnect(); } catch (e) { /* already disconnected */ }
   }
   const duckGain = ctx.createGain();
   duckGain.connect(dest);
-  const strip = { ctx, dest, duckGain };
-  const verbAmt = track && Number.isFinite(track.sendVerb) ? track.sendVerb : 0;
-  const delayAmt = track && Number.isFinite(track.sendDelay) ? track.sendDelay : 0;
-  if (rack && rack.verbIn && verbAmt > 0) {
-    const send = ctx.createGain();
-    send.gain.value = verbAmt;
-    duckGain.connect(send);
-    send.connect(rack.verbIn);
-    strip.verbSend = send;
-  }
-  if (rack && rack.delayIn && delayAmt > 0) {
-    const send = ctx.createGain();
-    send.gain.value = delayAmt;
-    duckGain.connect(send);
-    send.connect(rack.delayIn);
-    strip.delaySend = send;
-  }
+  const strip = { ctx, dest, duckGain, verbAmt: 0, delayAmt: 0 };
+  tuneSend(strip, 'verbSend', 'verbAmt', rack && rack.verbIn, verbAmt, when);
+  tuneSend(strip, 'delaySend', 'delayAmt', rack && rack.delayIn, delayAmt, when);
   strips[index] = strip;
   return strip;
 }

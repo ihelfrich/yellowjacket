@@ -230,6 +230,11 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
   self.onmessage = (e) => {
     const msg = e.data || {};
     if (msg.type !== 'repair') return;
+    // job is echoed on both replies: PREVIEW and the post-APPLY rebuild share
+    // this worker, and without an id the caller can only guess which request a
+    // message answers. It guessed wrong, so a preview fired mid-rebuild took
+    // the rebuild's audio and the rebuild promise never settled.
+    const job = msg.job;
     try {
       const { channels, sampleRate, regions } = msg;
       for (const ch of channels) {
@@ -237,9 +242,9 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
           repairChannel(ch, sampleRate, region);
         }
       }
-      self.postMessage({ type: 'done', channels }, channels.map((c) => c.buffer));
+      self.postMessage({ type: 'done', job, channels }, channels.map((c) => c.buffer));
     } catch (err) {
-      self.postMessage({ type: 'error', message: err && err.message ? err.message : String(err) });
+      self.postMessage({ type: 'error', job, message: err && err.message ? err.message : String(err) });
     }
   };
 }

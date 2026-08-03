@@ -107,6 +107,5 @@ export const loudnorm = {
   process: processLoudnorm
 };
 
-export default loudnorm;
 
 export { loudnorm as descriptor };

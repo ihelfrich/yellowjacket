@@ -307,6 +307,9 @@ export function initWireController(ctx) {
     refreshNoteBase();
     refreshClockOutButton();
     renderMap();
+    // Cleared before re-arming: connecting twice used to leave the first
+    // interval running forever with no handle to stop it.
+    if (clockUiTimer) clearInterval(clockUiTimer);
     clockUiTimer = setInterval(refreshClockIn, CLOCK_UI_MS);
     status('MIDI CONNECTED · ' + wire.ports().length + ' PORTS');
   });

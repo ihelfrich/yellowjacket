@@ -116,6 +116,5 @@ export const gate = {
   process: processGate
 };
 
-export default gate;
 
 export { gate as descriptor };

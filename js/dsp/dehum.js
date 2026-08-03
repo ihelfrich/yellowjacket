@@ -54,6 +54,5 @@ export const dehum = {
   build: buildDehum
 };
 
-export default dehum;
 
 export { dehum as descriptor };

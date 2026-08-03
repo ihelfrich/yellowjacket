@@ -157,6 +157,5 @@ export const limiter = {
   process: processLimiter,
 };
 
-export default limiter;
 
 export { limiter as descriptor };

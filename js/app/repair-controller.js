@@ -4,6 +4,7 @@
 // length-preserving, so words, clips, cuts, and the beatmap stay valid throughout.
 
 import { buildPeakPyramid } from '../render/peaks.js';
+import { mixdownMono } from '../audio-engine.js';
 
 const PAD_SEC = 0.6;          // context frames + window each side of a region
 const PREVIEW_PAD_SEC = 0.15; // audition a little around the region
@@ -27,16 +28,38 @@ export function initRepairController(ctx) {
     return worker;
   }
 
+  // One handler for the life of the worker, dispatching by job id. Replacing
+  // onmessage per call meant the two callers of this worker (PREVIEW and the
+  // rebuild that follows APPLY) could not both be in flight: whichever asked
+  // last owned the next reply, so a preview during a rebuild resolved with the
+  // rebuild's audio and left `building` true forever, wedging the panel busy.
+  let repairJobSeq = 0;
+  const repairJobs = new Map();
+
   function runWorker(channels, sampleRate, regions) {
-    return new Promise((resolve, reject) => {
-      const w = ensureWorker();
+    const w = ensureWorker();
+    if (!w.onmessage) {
       w.onmessage = (e) => {
         const msg = e.data || {};
-        if (msg.type === 'done') resolve(msg.channels);
-        else if (msg.type === 'error') reject(new Error(msg.message));
+        const job = repairJobs.get(msg.job);
+        if (!job) return;
+        repairJobs.delete(msg.job);
+        if (msg.type === 'done') job.resolve(msg.channels);
+        else if (msg.type === 'error') job.reject(new Error(msg.message));
       };
-      w.onerror = (e) => reject(new Error(e.message || 'repair worker error'));
-      w.postMessage({ type: 'repair', channels, sampleRate, regions }, channels.map((c) => c.buffer));
+      // An error event carries no job id, so it fails everything outstanding
+      // rather than leaving whichever job it belonged to hanging.
+      w.onerror = (e) => {
+        const err = new Error(e.message || 'repair worker error');
+        for (const [, job] of repairJobs) job.reject(err);
+        repairJobs.clear();
+      };
+    }
+    const id = ++repairJobSeq;
+    return new Promise((resolve, reject) => {
+      repairJobs.set(id, { resolve, reject });
+      w.postMessage({ type: 'repair', job: id, channels, sampleRate, regions },
+        channels.map((c) => c.buffer));
     });
   }
 
@@ -96,7 +119,7 @@ export function initRepairController(ctx) {
           }
         }
         R.buffer = out;
-        R.mono = mixdown(out);
+        R.mono = mixdownMono(out);
       }
 
       // Swap everything downstream; length is identical so state stays valid.
@@ -257,14 +280,4 @@ export function initRepairController(ctx) {
   ctx.api.repairsRestored = repairsRestored;
 }
 
-function mixdown(buffer) {
-  const n = buffer.length;
-  const out = new Float32Array(n);
-  const ch = buffer.numberOfChannels;
-  for (let c = 0; c < ch; c++) {
-    const data = buffer.getChannelData(c);
-    for (let i = 0; i < n; i++) out[i] += data[i];
-  }
-  if (ch > 1) for (let i = 0; i < n; i++) out[i] /= ch;
-  return out;
-}
+

@@ -370,8 +370,11 @@ export function initMachineController(ctx) {
     if (!range || !P.words) return;
     const clip = wordsToClip(P.words, range.i0, range.i1);
     store.update('clips', (p) => { p.clips.push(clip); });
-    sliceView.setClips(P.clips);
-    updateClipReadout();
+    // refreshClips(), not a hand-rolled subset of it. Updating Slice and the
+    // count directly meant a lifted clip existed, was counted, and was missing
+    // from both the Clip List and the Constellation until some later edit
+    // happened to call the real refresh: setSelected() cannot add a row.
+    refreshClips();
     document.querySelector('.yj-tab-btn[data-tab="machine"]').click();
     // Select it, which is real machinery, rather than the flashClip() that was
     // guarded for and never existed on SliceView.
@@ -385,10 +388,18 @@ export function initMachineController(ctx) {
       for (const b of document.querySelectorAll('.yj-substate-btn')) b.classList.toggle('is-active', b === btn);
       for (const pane of document.querySelectorAll('.yj-mstate')) pane.classList.remove('is-active');
       $('mstate-' + btn.dataset.mstate).classList.add('is-active');
-      if (btn.dataset.mstate === 'slice') {
-        sliceView.render();
-        if (constellation) constellation.render();
-      }
+      // A canvas measured while hidden reads zero, so anything revealed here
+      // has to redraw. This is why the SYNTH plot came up blank: the formula
+      // was compiled and its PCM was ready, and the one draw it got happened
+      // while the pane was still display:none.
+      const revealed = {
+        slice: () => { sliceView.render(); if (constellation) constellation.render(); },
+        crate: () => { if (ctx.api.synthRedraw) ctx.api.synthRedraw(); },
+      }[btn.dataset.mstate];
+      // Called straight away, not on requestAnimationFrame: getBoundingClientRect
+      // forces the layout it needs, and a queued frame never fires at all while
+      // the tab is in the background, which leaves the canvas blank on return.
+      if (revealed) revealed();
     });
   }
 
@@ -402,10 +413,7 @@ export function initMachineController(ctx) {
   }
 
   // ---------- SONG: voice drawer + arrangement (CONTRACT-SONG) ----------
-  let voiceTrack = -1;
-
   function openVoice(track) {
-    voiceTrack = track;
     const t = P.machine.tracks[track];
     if (t && !t.voice) t.voice = normalizeVoice(null);   // pre-SONG saves
     $('voiceHost').hidden = false;
@@ -415,7 +423,7 @@ export function initMachineController(ctx) {
   }
 
   patternView.addEventListener('voiceopen', (e) => openVoice(e.detail.track));
-  voiceView.addEventListener('close', () => { $('voiceHost').hidden = true; voiceTrack = -1; });
+  voiceView.addEventListener('close', () => { $('voiceHost').hidden = true; });
   voiceView.addEventListener('trig', (e) => fireTrack(e.detail.track));
   // Sends live on the track, not the voice: they are mix controls, and they
   // sit with gain and pan (CONTRACT-CONFORM 4).
@@ -425,7 +433,9 @@ export function initMachineController(ctx) {
       const t = p.machine.tracks[track];
       if (t) t[which] = Math.max(0, Math.min(1, value));
     });
-    sequencer.bumpStrips ? sequencer.bumpStrips() : null;
+    // No strip rebuild: send amounts are automation now, so the next voice
+    // scheduled on this track carries the new value. Tearing the strips down
+    // mid-pattern cut the reverb tail of whatever was still ringing.
   });
   voiceView.addEventListener('voiceedit', (e) => {
     const { track, patch } = e.detail;
@@ -755,8 +765,10 @@ export function initMachineController(ctx) {
         });
         const track = p.machine.tracks[slot];
         track.sampleId = id;
-        // The formula rides on the sample so a synth voice can be re-rendered
-        // or read back later; the sequencer only ever sees PCM.
+        // The formula rides on the sample and the asset so the CRATE can show
+        // what a synth voice was made from. Nothing re-renders from it yet:
+        // the sequencer only ever sees PCM, and the sample copy is dropped on
+        // save while the asset copy survives.
         track.sample = {
           channels: [pcm], sampleRate: rate, label: e.detail.name,
           role: e.detail.role, formula: e.detail.formula,
@@ -767,7 +779,15 @@ export function initMachineController(ctx) {
       status('SYNTH · ' + e.detail.name + ' → TRACK ' + (slot + 1) + ' · ' + e.detail.formula.slice(0, 40));
     });
 
-    ctx.api.synthRedraw = () => { if (synthPcm) drawSynthPlot(synthPcm); };
+    // Redraw on reveal, called by the substate switcher above. This existed
+    // before with no caller at all, which is why removing it changed nothing
+    // and why the plot was blank either way.
+    ctx.api.synthRedraw = () => drawSynthPlot(synthPcm);
+
+    // Now that the listener above exists, ask the view to re-announce the
+    // preset it loaded during construction. Without this the panel opens
+    // showing a formula that has never been compiled or plotted.
+    if (typeof synthView.emitCurrent === 'function') synthView.emitCurrent();
   }
 
   if (pads) {
@@ -776,7 +796,8 @@ export function initMachineController(ctx) {
     sequencer.addEventListener('step', (e) => pads.setPlayingStep(e.detail.step));
     store.addEventListener('change', (ev) => {
       const kind = ev.detail && ev.detail.kind;
-      if (kind === 'machine' || kind === 'assets' || kind === 'scene' || kind === 'history') {
+      if (kind === 'machine' || kind === 'assets' || kind === 'scene'
+        || kind === 'history' || kind === 'relight') {
         pads.setTracks(P.machine.tracks);
       }
     });

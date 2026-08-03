@@ -244,6 +244,5 @@ export const highpassDesc = {
   build: buildHighpass
 };
 
-export default eq;
 
 export { eq as descriptor };

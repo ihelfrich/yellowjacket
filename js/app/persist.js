@@ -3,6 +3,8 @@
 // node-testable (scratch/test_persist.mjs); only OpfsStore touches the browser.
 // Autosave scheduling and restore orchestration live in persist-controller.js.
 
+import { normalizeVoice } from '../machine/compile.js';
+
 export const FORMAT_VERSION = 2;
 
 const DIR_NAME = 'yellowjacket-v1';
@@ -135,24 +137,34 @@ export function serializeProject(project, runtime, skipPcm = false) {
   return { json, sampleFiles };
 }
 
+// The inverse of the sample half of serializeProject: one asset's metadata plus
+// its flat f32 file, back into the runtime {channels, sampleRate, label, role}
+// shape a track holds. It lives here rather than inline in the restore loop so
+// the harness can hold it to the round trip. It was inline, and it silently
+// dropped `role`, which is the field that decides whether a fitted slice is
+// stretched by WSOLA or by the phase vocoder: every restored drum came back
+// tonal and smeared.
+export function hydrateSample(meta, raw) {
+  if (!meta || !raw) return null;
+  const flat = raw instanceof Float32Array ? raw : new Float32Array(raw);
+  const frames = Math.max(0, meta.frames | 0);
+  const count = Math.max(1, meta.channelCount | 0);
+  if (!frames || flat.length < frames * count) return null;
+  const channels = [];
+  for (let c = 0; c < count; c++) channels.push(flat.slice(c * frames, (c + 1) * frames));
+  return { channels, sampleRate: meta.sampleRate, label: meta.label, role: meta.role };
+}
+
 function applyTrack(track, saved) {
   track.sampleId = typeof saved.sampleId === 'string' ? saved.sampleId : null;
   track.sample = null;   // PCM attaches after sample files load (RestorePlan)
-  // Voice merges known fields with clamps; pre-SONG saves lack it: defaults stay.
+  // Voice merges saved fields over the defaults, then hands the result to the
+  // compiler's own normalizeVoice. This block used to re-implement all eleven
+  // clamps by hand, and had already drifted: it truncated fitSteps with |0
+  // where the compiler rounds, so a saved 2.6 played as 2 steps after a reload
+  // and 3 before it. The ranges now have exactly one definition.
   if (saved.voice && typeof saved.voice === 'object' && track.voice) {
-    const v = track.voice;
-    const sv = saved.voice;
-    if (Number.isFinite(sv.start)) v.start = Math.max(0, Math.min(0.995, sv.start));
-    if (Number.isFinite(sv.end)) v.end = Math.max(v.start + 0.005, Math.min(1, sv.end));
-    if (Number.isFinite(sv.pitch)) v.pitch = Math.max(-24, Math.min(24, sv.pitch));
-    if (Number.isFinite(sv.attack)) v.attack = Math.max(1, Math.min(500, sv.attack));
-    if (Number.isFinite(sv.release)) v.release = Math.max(2, Math.min(2000, sv.release));
-    if (typeof sv.reverse === 'boolean') v.reverse = sv.reverse;
-    if (Number.isFinite(sv.lpf)) v.lpf = Math.max(200, Math.min(20000, sv.lpf));
-    if (Number.isFinite(sv.res)) v.res = Math.max(0.5, Math.min(8, sv.res));
-    if (Number.isFinite(sv.hpf)) v.hpf = Math.max(20, Math.min(2000, sv.hpf));
-    if (Number.isFinite(sv.drive)) v.drive = Math.max(0, Math.min(24, sv.drive));
-    if (Number.isFinite(sv.fitSteps)) v.fitSteps = Math.max(0, Math.min(64, sv.fitSteps | 0));
+    Object.assign(track.voice, normalizeVoice({ ...track.voice, ...saved.voice }));
   }
   if (Number.isFinite(saved.sendVerb)) track.sendVerb = Math.max(0, Math.min(1, saved.sendVerb));
   if (Number.isFinite(saved.sendDelay)) track.sendDelay = Math.max(0, Math.min(1, saved.sendDelay));
@@ -247,7 +259,6 @@ export function applySnapshot(json, { project, runtime }) {
   }
   const active = savedMachine.activeScene;
   machine.activeScene = Number.isInteger(active) && active >= 0 && active < machine.scenes.length ? active : 0;
-  machine.pendingScene = null;
 
   // Song chain merges into the existing object; entries clamp to real scenes.
   if (machine.song) {

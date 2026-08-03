@@ -30,7 +30,7 @@ export function initSourceController(ctx) {
     // its argument in some engines, so the copy must happen before decode.
     const sourceBytes = ab.slice(0);
     try {
-      await engine.load(ab, name);
+      await engine.load(ab);
     } catch (e) {
       statusFault(COPY.decodeFail);
       return;
@@ -83,7 +83,13 @@ export function initSourceController(ctx) {
   let analysisBusy = false;
   // Per-run state the persistent onmessage handler reads. A closure would freeze the
   // first run's values forever and silently drop every later file's results.
-  let analysisRun = { gen: -1, anchors: null, withMono: true };
+  // Keyed by job id, not a single slot. The worker's replies now carry the job
+  // they answer, so a result is matched to the request that produced it and
+  // installed with THAT request's anchors. The single slot could only ask
+  // whether the newest generation was still newest, which is trivially true
+  // while holding the previous file's beatmap.
+  let analysisSeq = 0;
+  const analysisRuns = new Map();
 
   function analysisAnchors() {
     const a = R.analysis && R.analysis.anchors;
@@ -92,25 +98,31 @@ export function initSourceController(ctx) {
 
   function runAnalysis(anchors = null, withMono = true) {
     if (!R.mono) return;
-    analysisRun = { gen: R.generation, anchors: anchors || analysisAnchors(), withMono };
+    const job = ++analysisSeq;
+    const run = { gen: R.generation, anchors: anchors || analysisAnchors(), withMono };
+    analysisRuns.set(job, run);
     if (!analysisWorker) {
       analysisWorker = new Worker(new URL('../../workers/analysis-worker.js', import.meta.url), { type: 'module' });
       analysisWorker.onmessage = (e) => {
         const msg = e.data || {};
-        if (analysisRun.gen !== R.generation && msg.type !== 'progress') return;
+        const run = analysisRuns.get(msg.job);
+        if (!run) return;
+        if (msg.type !== 'progress') analysisRuns.delete(msg.job);
+        // The generation this job was STARTED for, against the one loaded now.
+        if (run.gen !== R.generation) return;
         if (msg.type === 'progress') {
           if (analysisBusy) status(COPY.mapping + ' · ' + Math.round(msg.pct) + '%', true);
         } else if (msg.type === 'done') {
           analysisBusy = false;
           // Through the store so autosave sees it: anchors live in the snapshot.
           store.update('analysis', (p, r) => {
-            r.analysis = { ...msg.analysis, anchors: analysisRun.anchors };
+            r.analysis = { ...msg.analysis, anchors: run.anchors };
           });
           ctx.api.analysisDone(R.analysis);
           status(COPY.loaded);
         } else if (msg.type === 'error') {
           // Cache miss on an anchors-only rerun: resend with audio. Anything else is a fault.
-          if (!analysisRun.withMono) { runAnalysis(analysisRun.anchors, true); return; }
+          if (!run.withMono) { runAnalysis(run.anchors, true); return; }
           analysisBusy = false;
           ctx.api.analysisFault(msg.message || 'unknown');
         }
@@ -122,7 +134,7 @@ export function initSourceController(ctx) {
     }
     analysisBusy = true;
     ctx.api.analysisStarted();
-    const payload = { type: 'analyze', sampleRate: R.sampleRate, anchors: analysisRun.anchors, generation: analysisRun.gen };
+    const payload = { type: 'analyze', job, sampleRate: R.sampleRate, anchors: run.anchors, generation: run.gen };
     if (withMono) {
       const copy = R.mono.slice();
       payload.mono = copy;

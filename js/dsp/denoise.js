@@ -97,6 +97,5 @@ export const denoise = {
   process: processDenoise
 };
 
-export default denoise;
 
 export { denoise as descriptor };

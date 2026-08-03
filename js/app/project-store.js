@@ -66,7 +66,6 @@ export function createScene(i) {
 export function createMachine() {
   const m = {
     activeScene: 0,
-    pendingScene: null,
     scenes: Array.from({ length: 8 }, (_, i) => createScene(i)),
     song: { chain: [], loop: true },   // patterns of patterns, see CONTRACT-SONG.md
     space: createSpace(),              // send rack, see CONTRACT-CONFORM.md

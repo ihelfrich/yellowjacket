@@ -143,6 +143,12 @@ export function buildDrumPatch({ segments, name }) {
 // Reads layout B (classic AIFF, big-endian PCM) and layout A (AIFC with FVER
 // and 'sowt' little-endian PCM, as real devices write). Multi-channel input is
 // averaged down to the mono Float32Array the bench works in.
+// Test-only by design, and deliberately kept. Nothing in the app calls this:
+// it exists so the harness can read a REAL factory OP-1 drum patch back and
+// hold buildDrumPatch to a byte-exact round trip, which is how the community's
+// approximate "4058 units per sample" constant was caught and replaced with
+// floor(frame * 2147483646 / 529200). Deleting it would delete the only proof
+// the exporter still writes patches the hardware accepts.
 export function parseDrumPatch(bytes) {
   const u8 = toU8(bytes);
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);

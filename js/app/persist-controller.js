@@ -2,7 +2,9 @@
 // routes every mutation through update(), so autosave is one debounced listener.
 // Nothing auto-loads: a saved session offers itself in the drop zone and waits.
 
-import { serializeProject, snapshotDoc, applySnapshot, OpfsStore, FORMAT_VERSION } from './persist.js';
+import {
+  serializeProject, snapshotDoc, applySnapshot, hydrateSample, OpfsStore, FORMAT_VERSION,
+} from './persist.js';
 import { advanceClipCounter } from '../machine/cliprefs.js';
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -99,8 +101,16 @@ export function initPersistController(ctx) {
     }
   }
 
-  // Every surface that mirrors the document, relit in one place. RESTORE and
+  // Every surface that needs an explicit poke, relit in one place. RESTORE and
   // UNDO both land here so they can never drift apart.
+  //
+  // The list below is NOT the full set of surfaces and must not try to be. It
+  // once claimed to be, and Pipeline and Pads were both missing from it: they
+  // refresh from store change events, and restore mutates the document with
+  // applySnapshot() without dispatching one, so after a RESUME the pipeline
+  // strip still described the session you had before reloading. Anything that
+  // listens to the store is covered by the dispatch at the end instead of by
+  // being named here.
   function relightAll() {
     // Isolated per surface. This runs inside the undo transaction, after the
     // history entry has already been popped, so a throw from any one view
@@ -130,6 +140,13 @@ export function initPersistController(ctx) {
       }
     }
     if (broken.length) statusFault('REFRESH FAULT · ' + broken.join(', ') + ' did not repaint');
+    // Now everything that mirrors the document by listening. Undo dispatches
+    // its own 'history' event a moment later, so this is redundant there and
+    // load-bearing for restore, which changes the document silently.
+    store.revision++;
+    store.dispatchEvent(new CustomEvent('change', {
+      detail: { kind: 'relight', revision: store.revision },
+    }));
   }
   ctx.api.relightAll = relightAll;
 
@@ -221,12 +238,7 @@ export function initPersistController(ctx) {
           if (!attached.has(track.sampleId)) {
             const raw = await opfs.readBytes('samples/' + track.sampleId + '.f32').catch(() => null);
             if (!raw) { attached.set(track.sampleId, null); continue; }
-            const flat = new Float32Array(raw);
-            const chans = [];
-            for (let c = 0; c < meta.channelCount; c++) {
-              chans.push(flat.slice(c * meta.frames, (c + 1) * meta.frames));
-            }
-            attached.set(track.sampleId, { channels: chans, sampleRate: meta.sampleRate, label: meta.label });
+            attached.set(track.sampleId, hydrateSample(meta, raw));
           }
           const sample = attached.get(track.sampleId);
           if (sample) track.sample = sample;

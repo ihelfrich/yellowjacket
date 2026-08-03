@@ -60,6 +60,5 @@ export const compressor = {
   build: buildCompressor
 };
 
-export default compressor;
 
 export { compressor as descriptor };

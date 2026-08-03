@@ -173,6 +173,5 @@ export const deess = {
   process: processDeess
 };
 
-export default deess;
 
 export { deess as descriptor };

@@ -103,25 +103,42 @@ const meter = new LevelMeter($('meterLive'));
 const sequencer = new Sequencer(engine);
 const keybed = new Keybed();
 
-const views = {
-  waveMini: new WaveformView($('waveMini')),
-  waveMain: new WaveformView($('waveMain')),
-  spec: new SpectrogramView($('specMain')),
-  transcript: new TranscriptView($('transcriptHost')),
-  sliceView: new SliceView($('sliceMain'), $('beatmapControls')),
-  patternView: new PatternView($('patternHost')),
-  songView: new SongView($('songHost')),
-  clipList: new ClipListView($('clipListHost')),
-  constellation: new ConstellationView($('constellationMain')),
-  voiceView: new VoiceView($('voiceHost')),
-  crateView: new CrateView($('crateHost')),
-  synthView: new SynthView($('synthHost'), SYNTH_PRESETS),
-  modalView: new ModalView($('modalHost')),
-  repairPanel: new RepairPanel($('repairHost')),
-  pipeline: new PipelineView($('pipelineHost')),
-  pads: new PadGridView($('padsHost')),
-  firstRun: new FirstRunView($('firstRunHost')),
-};
+// Views are constructed one at a time and isolated, for the same reason the
+// controllers below are. Every constructor dereferences its host element
+// immediately, so one missing div in index.html threw out of module scope
+// before the controller try/catch existed, before any status was set, and
+// before a single working panel had been built: a blank yellow page.
+const VIEW_SPECS = [
+  ['waveMini', () => new WaveformView($('waveMini'))],
+  ['waveMain', () => new WaveformView($('waveMain'))],
+  ['spec', () => new SpectrogramView($('specMain'))],
+  ['transcript', () => new TranscriptView($('transcriptHost'))],
+  ['sliceView', () => new SliceView($('sliceMain'), $('beatmapControls'))],
+  ['patternView', () => new PatternView($('patternHost'))],
+  ['songView', () => new SongView($('songHost'))],
+  ['clipList', () => new ClipListView($('clipListHost'))],
+  ['constellation', () => new ConstellationView($('constellationMain'))],
+  ['voiceView', () => new VoiceView($('voiceHost'))],
+  ['crateView', () => new CrateView($('crateHost'))],
+  ['synthView', () => new SynthView($('synthHost'), SYNTH_PRESETS)],
+  ['modalView', () => new ModalView($('modalHost'))],
+  ['repairPanel', () => new RepairPanel($('repairHost'))],
+  ['pipeline', () => new PipelineView($('pipelineHost'))],
+  ['pads', () => new PadGridView($('padsHost'))],
+  ['firstRun', () => new FirstRunView($('firstRunHost'))],
+];
+const views = {};
+const deadViews = [];
+for (const [name, make] of VIEW_SPECS) {
+  try {
+    views[name] = make();
+  } catch (err) {
+    views[name] = null;
+    deadViews.push(name);
+    (window.__yjErrors = window.__yjErrors || []).push({ view: name, error: err });
+  }
+}
+
 const auditioner = new ClipAuditioner(engine);
 
 const ctx = {
@@ -182,8 +199,12 @@ function showTab(name) {
   if (pane) pane.classList.add('is-active');
   ctx.api.setKeybedEnabled(name === 'machine');
   // canvases need a size pass when they become visible
-  views.waveMini.render(); views.waveMain.render(); views.spec.render(); views.sliceView.render();
-  if (views.constellation) views.constellation.render();
+  // Hidden canvases measure 0, so anything revealed here needs a size pass.
+  // Guarded per view: a view that failed to construct is null, not a reason
+  // for every other canvas on the tab to stay unsized.
+  for (const name of ['waveMini', 'waveMain', 'spec', 'sliceView', 'constellation']) {
+    if (views[name]) views[name].render();
+  }
 }
 ctx.api.showTab = showTab;
 
@@ -193,7 +214,7 @@ for (const btn of document.querySelectorAll('.yj-tab-btn')) {
 
 // The pipeline strip navigates by asking for a tab and, inside MACHINE, a
 // substate; it clicks the real buttons so their own handlers still run.
-views.pipeline.addEventListener('jump', (e) => {
+if (views.pipeline) views.pipeline.addEventListener('jump', (e) => {
   const { tab, mstate } = e.detail.target || {};
   if (tab) showTab(tab);
   if (mstate) {
@@ -223,7 +244,7 @@ window.addEventListener('keydown', (e) => {
 
 // ---------- pipeline strip: recomputed from the document on every change ----------
 function refreshPipeline() {
-  views.pipeline.setStages(deriveStages(store.project, store.runtime));
+  if (views.pipeline) views.pipeline.setStages(deriveStages(store.project, store.runtime));
 }
 store.addEventListener('change', refreshPipeline);
 refreshPipeline();
@@ -240,7 +261,7 @@ const ROUTES = {
 function markFirstRunDone() {
   try { localStorage.setItem(FIRSTRUN_KEY, '1'); } catch (e) { /* private mode: show it again */ }
 }
-views.firstRun.addEventListener('start', (e) => {
+if (views.firstRun) views.firstRun.addEventListener('start', (e) => {
   markFirstRunDone();
   const route = ROUTES[e.detail.path];
   if (!route) return;
@@ -250,14 +271,14 @@ views.firstRun.addEventListener('start', (e) => {
     if (b) b.click();
   }
 });
-views.firstRun.addEventListener('dismiss', markFirstRunDone);
+if (views.firstRun) views.firstRun.addEventListener('dismiss', markFirstRunDone);
 try {
-  if (!localStorage.getItem(FIRSTRUN_KEY) && !store.runtime.buffer) views.firstRun.show();
+  if (views.firstRun && !localStorage.getItem(FIRSTRUN_KEY) && !store.runtime.buffer) views.firstRun.show();
 } catch (e) { /* storage blocked: skip the overlay rather than break boot */ }
 
 // ---------- boot ----------
-if (failed.length) {
-  statusFault('STARTUP FAULT · ' + failed.join(', ').toUpperCase()
+if (failed.length || deadViews.length) {
+  statusFault('STARTUP FAULT · ' + failed.concat(deadViews).join(', ').toUpperCase()
     + ' did not start. The rest of the bench is running. Details in the console: window.__yjErrors');
 } else {
   status(COPY.idle);

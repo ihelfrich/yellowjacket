@@ -7,10 +7,16 @@
 //   in:  { type:'analyze', mono: Float32Array (transfer; may be omitted on anchor
 //          re-runs for a cached generation), sampleRate,
 //          anchors: { bpm: number|null, barOneTime: number|null },
-//          generation: string|number }
-//   out: { type:'progress', pct }        // at least 5 / 50 / 90 / 100
-//   out: { type:'done', analysis }       // full project.analysis shape minus anchors
-//   out: { type:'error', message }       // no cached envelope for generation and no mono
+//          generation: string|number, job: number }
+//   out: { type:'progress', job, pct }   // at least 5 / 50 / 90 / 100
+//   out: { type:'done', job, analysis }  // full project.analysis shape minus anchors
+//   out: { type:'error', job, message }  // no cached envelope for generation and no mono
+//
+// Every reply echoes `job`. The request carried a generation and the replies
+// dropped it, so the caller could only ask "is the CURRENT generation still
+// current", which is true even when the answer in hand was computed for the
+// previous file. A slow analysis finishing after a new file loaded was
+// installed as the new file's beatmap.
 
 import { onsetAnalysis } from '../js/analysis/onsets.js';
 import { trackBeats } from '../js/analysis/beattrack.js';
@@ -22,10 +28,14 @@ const BEATS_PER_BAR = 4;    // fixed this slice
 // Single-entry cache: the bench holds one source at a time.
 let cache = null; // { generation, envelope, envelopeRate, onsets }
 
+let currentJob = null;   // the job progress messages belong to
+
 self.onmessage = (e) => {
   const msg = e.data;
   if (!msg || msg.type !== 'analyze') return;
 
+  const job = msg.job ?? null;
+  currentJob = job;
   const generation = msg.generation ?? null;
   const anchors = normalizeAnchors(msg.anchors);
   const hasMono = msg.mono instanceof Float32Array;
@@ -58,6 +68,7 @@ self.onmessage = (e) => {
     } else {
       self.postMessage({
         type: 'error',
+        job,
         message: 'Analysis: no cached envelope for this generation and no mono provided'
       });
       return;
@@ -89,14 +100,14 @@ self.onmessage = (e) => {
     postProgress(100);
     // No transfer list on purpose: envelope and onsets stay cached in this worker
     // for anchor re-runs; structured clone copies them to the main thread.
-    self.postMessage({ type: 'done', analysis });
+    self.postMessage({ type: 'done', job, analysis });
   } catch (err) {
-    self.postMessage({ type: 'error', message: err && err.message ? err.message : String(err) });
+    self.postMessage({ type: 'error', job, message: err && err.message ? err.message : String(err) });
   }
 };
 
 function postProgress(pct) {
-  self.postMessage({ type: 'progress', pct });
+  self.postMessage({ type: 'progress', job: currentJob, pct });
 }
 
 function normalizeAnchors(anchors) {
