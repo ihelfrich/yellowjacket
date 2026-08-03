@@ -244,7 +244,12 @@ export function initWireController(ctx) {
     const mapped = findMapping('note', channel, note);
     if (mapped) { runAction(mapped, true); return; }
     const track = note - W.noteBase;
-    if (track >= 0 && track < 8) sequencer.trigger(track, 0, velocity / 127);
+    // Through the shared fan-out so an incoming pad hit lights the on-screen
+    // pad too: the hardware and the software surface stay in agreement.
+    if (track >= 0 && track < 8) {
+      if (ctx.api.fireTrack) ctx.api.fireTrack(track, velocity / 127);
+      else sequencer.trigger(track, 0, velocity / 127);
+    }
   });
 
   wire.addEventListener('noteoff', (e) => {

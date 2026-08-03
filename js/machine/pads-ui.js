@@ -29,7 +29,10 @@ const STYLE = `
 .yj-pads-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .yj-pad {
   position: relative; display: flex; flex-direction: column; align-items: flex-start;
-  aspect-ratio: 1 / 1; min-height: 62px; max-height: 124px; padding: 6px 7px; overflow: hidden;
+  /* No aspect-ratio: paired with a max-height it caps WIDTH too, so each pad
+     sat in the left slice of its grid cell with dead space beside it. A fixed
+     height and a full-width cell gives a real strike target. */
+  height: 104px; min-height: 62px; padding: 6px 7px; overflow: hidden;
   background-color: var(--yj-panel); border: 1px solid var(--yj-line); border-radius: 2px;
   cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none;
 }

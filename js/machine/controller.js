@@ -13,7 +13,8 @@ const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
-  const { sliceView, patternView, songView, voiceView, crateView, clipList, constellation, synthView } = views;
+  const { sliceView, patternView, songView, voiceView, crateView, clipList,
+    constellation, synthView, pads } = views;
   const P = store.project;
   const R = store.runtime;
 
@@ -21,8 +22,16 @@ export function initMachineController(ctx) {
 
   sequencer.setMachine(P.machine);
   patternView.setMachine(P.machine);
+  // Every path that fires a track goes through here, so the pads light whether
+  // the hit came from the mouse, the QWERTY keys, incoming MIDI or the grid.
+  function fireTrack(i, velocity = 1) {
+    sequencer.trigger(i, 0, velocity);
+    if (pads) pads.flash(i);
+  }
+  ctx.api.fireTrack = fireTrack;
+
   keybed.attach(
-    (i) => sequencer.trigger(i),
+    (i) => fireTrack(i),
     (on) => {
       sequencer.fill = on;
       if (typeof patternView.setFill === 'function') patternView.setFill(on);
@@ -232,7 +241,7 @@ export function initMachineController(ctx) {
     store.update('machine', (p) => { p.machine.swing = e.detail.swing; });
     patternView.setMachine(P.machine);
   });
-  patternView.addEventListener('trig', (e) => sequencer.trigger(e.detail.track));
+  patternView.addEventListener('trig', (e) => fireTrack(e.detail.track));
   // ---------- LOCK: step data, scenes, fill ----------
   patternView.addEventListener('stepedit', (e) => {
     const { track, step, patch } = e.detail;
@@ -402,7 +411,7 @@ export function initMachineController(ctx) {
 
   patternView.addEventListener('voiceopen', (e) => openVoice(e.detail.track));
   voiceView.addEventListener('close', () => { $('voiceHost').hidden = true; voiceTrack = -1; });
-  voiceView.addEventListener('trig', (e) => sequencer.trigger(e.detail.track));
+  voiceView.addEventListener('trig', (e) => fireTrack(e.detail.track));
   // Sends live on the track, not the voice: they are mix controls, and they
   // sit with gain and pan (CONTRACT-CONFORM 4).
   voiceView.addEventListener('send', (e) => {
@@ -755,6 +764,18 @@ export function initMachineController(ctx) {
     });
 
     ctx.api.synthRedraw = () => { if (synthPcm) drawSynthPlot(synthPcm); };
+  }
+
+  if (pads) {
+    pads.addEventListener('trig', (e) => fireTrack(e.detail.track, e.detail.velocity));
+    pads.setTracks(P.machine.tracks);
+    sequencer.addEventListener('step', (e) => pads.setPlayingStep(e.detail.step));
+    store.addEventListener('change', (ev) => {
+      const kind = ev.detail && ev.detail.kind;
+      if (kind === 'machine' || kind === 'assets' || kind === 'scene' || kind === 'history') {
+        pads.setTracks(P.machine.tracks);
+      }
+    });
   }
 
   ctx.api.machineReset = resetForSource;

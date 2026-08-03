@@ -19,6 +19,8 @@ import { ConstellationView } from './machine/constellation-ui.js';
 import { VoiceView } from './machine/voice-ui.js';
 import { CrateView } from './machine/crate-ui.js';
 import { SynthView } from './machine/synth-ui.js';
+import { PadGridView } from './machine/pads-ui.js';
+import { FirstRunView } from './app/firstrun-ui.js';
 import { SYNTH_PRESETS } from './machine/synth.js';
 import { Keybed } from './machine/keybed.js';
 import { PipelineView, deriveStages } from './app/pipeline-ui.js';
@@ -114,6 +116,8 @@ const views = {
   synthView: new SynthView($('synthHost'), SYNTH_PRESETS),
   repairPanel: new RepairPanel($('repairHost')),
   pipeline: new PipelineView($('pipelineHost')),
+  pads: new PadGridView($('padsHost')),
+  firstRun: new FirstRunView($('firstRunHost')),
 };
 const auditioner = new ClipAuditioner(engine);
 
@@ -185,6 +189,33 @@ function refreshPipeline() {
 }
 store.addEventListener('change', refreshPipeline);
 refreshPipeline();
+
+// ---------- first run ----------
+// Shown once, only when there is nothing loaded. Taking a path counts as
+// dismissing: the panel must not sit on top of the surface it just opened.
+const FIRSTRUN_KEY = 'yj.firstrun.done';
+const ROUTES = {
+  kit: { tab: 'machine', mstate: 'slice' },
+  clean: { tab: 'transcript' },
+  synth: { tab: 'machine', mstate: 'crate' },
+};
+function markFirstRunDone() {
+  try { localStorage.setItem(FIRSTRUN_KEY, '1'); } catch (e) { /* private mode: show it again */ }
+}
+views.firstRun.addEventListener('start', (e) => {
+  markFirstRunDone();
+  const route = ROUTES[e.detail.path];
+  if (!route) return;
+  showTab(route.tab);
+  if (route.mstate) {
+    const b = document.querySelector('.yj-substate-btn[data-mstate="' + route.mstate + '"]');
+    if (b) b.click();
+  }
+});
+views.firstRun.addEventListener('dismiss', markFirstRunDone);
+try {
+  if (!localStorage.getItem(FIRSTRUN_KEY) && !store.runtime.buffer) views.firstRun.show();
+} catch (e) { /* storage blocked: skip the overlay rather than break boot */ }
 
 // ---------- boot ----------
 status(COPY.idle);
