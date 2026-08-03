@@ -263,6 +263,11 @@
     <div id="mstate-crate" class="yj-mstate">
       <div class="yj-panel yj-grow" data-label="MACHINE / CRATE">
         <div id="synthHost"></div>
+        <div class="yj-toolrow yj-modal-launch">
+          <button id="btnFitModal" class="yj-btn" disabled>FIT THE SELECTED SLICE</button>
+          <span class="yj-canvas-note" id="modalHint">Pick a slice in SLICE, then fit it to see the equation behind it.</span>
+        </div>
+        <div id="modalHost"></div>
         <div id="crateHost"></div>
         <p class="yj-canvas-note">Instruments saved here outlive the session and the source file. Build a voice on any track, hit CRATE + in its drawer, and pull it into any song later.</p>
       </div>

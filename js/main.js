@@ -20,6 +20,7 @@ import { ConstellationView } from './machine/constellation-ui.js';
 import { VoiceView } from './machine/voice-ui.js';
 import { CrateView } from './machine/crate-ui.js';
 import { SynthView } from './machine/synth-ui.js';
+import { ModalView } from './machine/modal-ui.js';
 import { PadGridView } from './machine/pads-ui.js';
 import { FirstRunView } from './app/firstrun-ui.js';
 import { SYNTH_PRESETS } from './machine/synth.js';
@@ -115,6 +116,7 @@ const views = {
   voiceView: new VoiceView($('voiceHost')),
   crateView: new CrateView($('crateHost')),
   synthView: new SynthView($('synthHost'), SYNTH_PRESETS),
+  modalView: new ModalView($('modalHost')),
   repairPanel: new RepairPanel($('repairHost')),
   pipeline: new PipelineView($('pipelineHost')),
   pads: new PadGridView($('padsHost')),

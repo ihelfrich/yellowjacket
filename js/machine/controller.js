@@ -8,13 +8,14 @@ import { encodeWav, download } from '../export.js';
 import { patternLoopSteps, normalizeVoice } from './compile.js';
 import { CrateStore } from '../app/crate.js';
 import { renderFormula } from './synth.js';
+import { fitModal, synthModal } from '../analysis/modal.js';
 
 const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
   const { sliceView, patternView, songView, voiceView, crateView, clipList,
-    constellation, synthView, pads } = views;
+    constellation, synthView, pads, modalView } = views;
   const P = store.project;
   const R = store.runtime;
 
@@ -778,6 +779,123 @@ export function initMachineController(ctx) {
       if (kind === 'machine' || kind === 'assets' || kind === 'scene' || kind === 'history') {
         pads.setTracks(P.machine.tracks);
       }
+    });
+  }
+
+  // ---------- MODAL: a recorded hit as a table of numbers ----------
+  // A struck resonant sound genuinely IS a sum of damped sinusoids, so a
+  // harvested kick can be shown as its own equation, edited, and heard. The
+  // SYNTH panel writes that maths by hand; this extracts it from a recording.
+  if (modalView) {
+    let modalFit = null;
+    let modalModes = null;     // the user's edited copy, which drifts from the fit
+    let modalRate = 44100;
+    let modalName = 'MODAL';
+
+    function slicePcm(clip) {
+      if (!clip || !R.mono) return null;
+      const sr = R.sampleRate;
+      const s = Math.max(0, Math.floor(clip.start * sr));
+      const e = Math.min(R.mono.length, Math.ceil(clip.end * sr));
+      return e - s > 64 ? R.mono.slice(s, e) : null;
+    }
+
+    function playPcm(pcm) {
+      if (!pcm || !pcm.length || !engine.ctx) {
+        if (!engine.ctx) statusFault('Press play once first: the audio engine wakes on a gesture.');
+        return;
+      }
+      const buf = engine.ctx.createBuffer(1, pcm.length, modalRate);
+      buf.getChannelData(0).set(pcm);
+      const src = engine.ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(engine.master);
+      src.start();
+    }
+
+    function fitSelected() {
+      const clip = sliceView.selectedClip;
+      const pcm = slicePcm(clip);
+      if (!pcm) {
+        statusFault('MODAL · select a slice in SLICE first. It needs a bit of audio to fit.');
+        return;
+      }
+      modalRate = R.sampleRate;
+      modalName = (clip.label || clip.tag || 'MODAL').toUpperCase().slice(0, 16);
+      status('FITTING…', true);
+      modalView.setBusy(true);
+      // Off the click so the busy state paints before a fit that can take a
+      // noticeable moment on a long slice.
+      setTimeout(() => {
+        try {
+          modalFit = fitModal(pcm, modalRate);
+          modalModes = modalFit.modes.map((m) => ({ ...m }));
+          modalView.setFit(modalFit, modalRate);
+          const n = modalFit.modes.length;
+          status('MODAL · ' + n + (n === 1 ? ' MODE' : ' MODES')
+            + ' · RESIDUAL ' + modalFit.fitDb.toFixed(1) + ' dB · ' + modalName);
+        } catch (err) {
+          modalFit = null;
+          modalModes = null;
+          modalView.setFit(null, modalRate);
+          statusFault('MODAL FAULT · ' + (err.message || err));
+        } finally {
+          modalView.setBusy(false);
+        }
+      }, 0);
+    }
+
+    $('btnFitModal').addEventListener('click', fitSelected);
+    store.addEventListener('change', () => {
+      $('btnFitModal').disabled = !(R.mono && sliceView.selectedClip);
+    });
+    sliceView.addEventListener('clipselect', () => {
+      $('btnFitModal').disabled = !(R.mono && sliceView.selectedClip);
+    });
+
+    // Edits arrive per keystroke. They update the model rather than firing
+    // audio, because resynthesizing on every character would be unusable;
+    // HEAR MODEL plays whatever the table currently says.
+    modalView.addEventListener('edit', (e) => { modalModes = e.detail.modes; });
+
+    modalView.addEventListener('hear', (e) => {
+      if (!modalFit) return;
+      const seconds = modalFit.residual.length / modalRate;
+      if (e.detail.what === 'original') {
+        playPcm(slicePcm(sliceView.selectedClip));
+      } else if (e.detail.what === 'residual') {
+        // What the model could NOT express: the beater click without the shell.
+        playPcm(modalFit.residual);
+      } else {
+        playPcm(synthModal(modalModes || modalFit.modes, modalRate, seconds));
+      }
+    });
+
+    modalView.addEventListener('make', (e) => {
+      const modes = e.detail.modes && e.detail.modes.length ? e.detail.modes : modalModes;
+      if (!modes || !modes.length || !modalFit) {
+        statusFault('MODAL · nothing to make. Fit a slice first.');
+        return;
+      }
+      const seconds = modalFit.residual.length / modalRate;
+      const pcm = synthModal(modes, modalRate, seconds);
+      const tracks = P.machine.tracks;
+      let slot = tracks.findIndex((t) => !t.sample);
+      if (slot < 0) slot = tracks.length - 1;
+      const name = e.detail.name || modalName;
+      store.update('assets', (p) => {
+        const id = registerAsset(p, {
+          kind: 'modal', label: name, sampleRate: modalRate,
+          frames: pcm.length, role: 'TONE', modes: modes.map((m) => ({ ...m })),
+        });
+        const track = p.machine.tracks[slot];
+        track.sampleId = id;
+        track.sample = { channels: [pcm], sampleRate: modalRate, label: name, role: 'TONE' };
+      });
+      sequencer.bumpTrack(slot);
+      patternView.setMachine(P.machine);
+      if (pads) pads.setTracks(P.machine.tracks);
+      status('MODAL · ' + name + ' → TRACK ' + (slot + 1) + ' · ' + modes.length + ' MODES RESYNTHESIZED');
     });
   }
 
