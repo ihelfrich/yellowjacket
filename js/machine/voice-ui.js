@@ -1,3 +1,5 @@
+import { VoiceCurveView } from './voicecurve-ui.js';
+
 // Yellowjacket MACHINE — VOICE drawer for the PATTERN state. Per
 // CONTRACT-SONG.md section 3: sample name, a mini min/max waveform of the
 // track's PCM with draggable START/END trim handles (fractions of the
@@ -26,6 +28,8 @@ const STYLE = `
 .yj-voice-name.is-empty { color: var(--yj-ink-dim); }
 .yj-voice-actions { display: flex; gap: 6px; margin-left: auto; }
 .yj-voice-wave { width: 100%; height: 72px; display: block; background: var(--yj-well); border: 1px solid var(--yj-line); border-radius: 2px; cursor: ew-resize; touch-action: none; }
+.yj-voice-curves { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.yj-voice-curve { width: 100%; height: 62px; display: block; background: var(--yj-well); border: 1px solid var(--yj-line); border-radius: 2px; }
 .yj-voice-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .yj-voice-c { display: flex; align-items: center; gap: 5px; }
 .yj-voice-label { font-size: 9px; letter-spacing: 0.08em; color: var(--yj-ink-dim); flex-shrink: 0; }
@@ -110,6 +114,20 @@ export class VoiceView extends EventTarget {
     wave.addEventListener('pointercancel', (e) => this._onUp(e));
     host.appendChild(wave);
     this._wave = wave;
+
+    // Two small plots: what the voice DOES, drawn. The sliders below stay the
+    // way values change; these react, so there is one source of truth.
+    const curves = document.createElement('div');
+    curves.className = 'yj-voice-curves';
+    const envC = document.createElement('canvas');
+    envC.className = 'yj-voice-curve';
+    envC.title = 'Amplitude envelope over the slice as it will play';
+    const filtC = document.createElement('canvas');
+    filtC.className = 'yj-voice-curve';
+    filtC.title = 'Filter response, log frequency';
+    curves.append(envC, filtC);
+    host.appendChild(curves);
+    this._curves = new VoiceCurveView(envC, filtC);
 
     const controls = document.createElement('div');
     controls.className = 'yj-voice-controls';
@@ -237,6 +255,25 @@ export class VoiceView extends EventTarget {
     this._peaks = null;
     this._sync();
     this._draw();
+    this._drawCurves();
+  }
+
+  // Called on every edit and whenever the drawer is revealed, because a canvas
+  // measured while hidden reads zero and would bake a 1px bitmap.
+  _drawCurves() {
+    if (!this._curves) return;
+    const t = this._t;
+    const v = this._voice();
+    const sample = t && t.sample;
+    const rate = sample ? sample.sampleRate : 44100;
+    const frames = sample && sample.channels[0] ? sample.channels[0].length : 0;
+    const span = frames ? ((v.end - v.start) * frames) / rate : 1;
+    this._curves.setVoice(sample ? v : null, span, rate);
+  }
+
+  render() {
+    this._draw();
+    this._drawCurves();
   }
 
   // ---------- voice state ----------
@@ -251,6 +288,15 @@ export class VoiceView extends EventTarget {
       attack: Number.isFinite(v.attack) ? v.attack : 3,
       release: Number.isFinite(v.release) ? v.release : 8,
       reverse: !!v.reverse,
+      // COLOR and CONFORM fields were missing here, so every filter, drive and
+      // fit control READ its default and displayed OFF no matter what the
+      // track actually held. Writes worked, which is why it went unnoticed:
+      // the drawer simply never showed you what you had set.
+      lpf: Number.isFinite(v.lpf) ? v.lpf : 20000,
+      res: Number.isFinite(v.res) ? v.res : 0.7,
+      hpf: Number.isFinite(v.hpf) ? v.hpf : 20,
+      drive: Number.isFinite(v.drive) ? v.drive : 0,
+      fitSteps: Number.isFinite(v.fitSteps) ? v.fitSteps : 0,
     };
   }
 

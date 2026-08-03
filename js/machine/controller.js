@@ -393,8 +393,10 @@ export function initMachineController(ctx) {
     voiceTrack = track;
     const t = P.machine.tracks[track];
     if (t && !t.voice) t.voice = normalizeVoice(null);   // pre-SONG saves
-    voiceView.setTrack(track, t);
     $('voiceHost').hidden = false;
+    voiceView.setTrack(track, t);
+    // Reveal first, then draw: a canvas measured while hidden reads zero.
+    if (voiceView.render) requestAnimationFrame(() => voiceView.render());
   }
 
   patternView.addEventListener('voiceopen', (e) => openVoice(e.detail.track));
