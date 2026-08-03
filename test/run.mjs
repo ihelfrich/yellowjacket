@@ -20,6 +20,7 @@ import { serializeProject, snapshotDoc, applySnapshot, FORMAT_VERSION } from '..
 import { ProjectStore } from '../js/app/project-store.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
+import { fitModal, synthModal } from '../js/analysis/modal.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
@@ -1663,6 +1664,99 @@ const synthCases = [
   },
 ];
 
+// ---------- modal analysis ----------
+// A struck resonant object in free vibration IS a sum of damped sinusoids, so
+// a recorded hit can be described by a short table of numbers you can edit.
+
+function damped(sampleRate, seconds, modes) {
+  const n = Math.round(seconds * sampleRate);
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / sampleRate;
+    let v = 0;
+    for (const m of modes) v += m.amp * Math.exp(-t / m.tau) * Math.sin(2 * Math.PI * m.f * t + m.phase);
+    x[i] = v;
+  }
+  return x;
+}
+
+const modalCases = [
+  function recoversASingleModeAlmostExactly() {
+    const sr = 44100;
+    const truth = { f: 220, tau: 0.35, amp: 0.6, phase: 0.9 };
+    const fit = fitModal(damped(sr, 1, [truth]), sr);
+    assert.ok(fit.modes.length >= 1, 'found a mode');
+    const m = fit.modes[0];
+    close(m.freqHz, truth.f, 0.5, 'frequency');
+    close(m.tauSec, truth.tau, truth.tau * 0.05, 'decay time within 5%');
+    close(m.amp, truth.amp, truth.amp * 0.1, 'amplitude within 10%');
+    assert.ok(fit.fitDb < -30, 'residual below -30 dB: ' + fit.fitDb.toFixed(1));
+  },
+  function separatesThreeInharmonicModes() {
+    // Inharmonic on purpose: a real drum is not a harmonic series.
+    const sr = 44100;
+    const truth = [
+      { f: 110, tau: 0.48, amp: 0.52, phase: 0.35 },
+      { f: 271, tau: 0.24, amp: 0.31, phase: -1.1 },
+      { f: 523, tau: 0.095, amp: 0.19, phase: 1.8 },
+    ];
+    const fit = fitModal(damped(sr, 1, truth), sr);
+    for (const want of truth) {
+      const got = fit.modes.find((m) => Math.abs(m.freqHz - want.f) < 2);
+      assert.ok(got, 'found the ' + want.f + ' Hz mode');
+      close(got.tauSec, want.tau, want.tau * 0.1, want.f + ' Hz decay');
+    }
+    assert.ok(fit.fitDb < -30, 'three-mode residual: ' + fit.fitDb.toFixed(1));
+  },
+  function survivesNoiseAndDegradesHonestly() {
+    const sr = 44100;
+    const truth = [{ f: 180, tau: 0.3, amp: 0.5, phase: 0 }];
+    const clean = damped(sr, 1, truth);
+    const rand = mulberry32(0x1234);
+    const noisy = Float32Array.from(clean, (v) => v + (rand() * 2 - 1) * 0.016);
+    const fit = fitModal(noisy, sr);
+    const m = fit.modes.find((x) => Math.abs(x.freqHz - 180) < 2);
+    assert.ok(m, 'the mode is still found under noise');
+    // Pure noise is not modal and must not be described as if it were.
+    const pure = Float32Array.from({ length: sr }, () => rand() * 2 - 1);
+    const noiseFit = fitModal(pure, sr);
+    assert.ok(noiseFit.modes.length <= 2,
+      'white noise yields few or no confident modes, got ' + noiseFit.modes.length);
+  },
+  function resynthesisRoundTripsAndStaysBounded() {
+    const sr = 44100;
+    const truth = [{ f: 150, tau: 0.4, amp: 0.7, phase: 0.2 }];
+    const src = damped(sr, 0.8, truth);
+    const fit = fitModal(src, sr);
+    const out = synthModal(fit.modes, sr, 0.8);
+    assert.equal(out.length, Math.round(0.8 * sr), 'requested length');
+    let inPeak = 0;
+    let outPeak = 0;
+    for (let i = 0; i < src.length; i++) inPeak = Math.max(inPeak, Math.abs(src[i]));
+    for (let i = 0; i < out.length; i++) {
+      assert.ok(Number.isFinite(out[i]), 'finite resynthesis');
+      outPeak = Math.max(outPeak, Math.abs(out[i]));
+    }
+    assert.ok(outPeak <= inPeak * 1.5, 'resynthesis stays bounded: ' + (outPeak / inPeak).toFixed(3));
+    assert.equal(fit.residual.length, src.length, 'residual matches the input length');
+  },
+  function degenerateInputsReturnNothingNotGarbage() {
+    const sr = 44100;
+    for (const [label, x] of [
+      ['empty', new Float32Array(0)],
+      ['zeros', new Float32Array(1000)],
+      ['single', new Float32Array(1)],
+      ['dc', Float32Array.from({ length: 1000 }, () => 0.5)],
+    ]) {
+      const fit = fitModal(x, sr);
+      assert.ok(Array.isArray(fit.modes), label + ' returns a mode list');
+      for (const m of fit.modes) {
+        assert.ok(Number.isFinite(m.freqHz) && Number.isFinite(m.tauSec), label + ' modes are finite');
+      }
+    }
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -1677,6 +1771,7 @@ const groups = [
   ['harvest', harvestCases],
   ['pipeline', pipelineCases],
   ['synth', synthCases],
+  ['modal', modalCases],
   ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],

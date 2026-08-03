@@ -4,7 +4,7 @@ import { FFT, hann, nextPow2 } from '../fft.js';
 
 const ANALYSIS_SECONDS = 0.2;
 const ZERO_PAD_FACTOR = 4;
-const HETERODYNE_PERIODS = 4;
+const HETERODYNE_PERIODS = 8;
 const MIN_SPECTRAL_SNR_DB = 18;
 const MIN_DECAY_R2 = 0.8;
 const MIN_PHASE_COHERENCE = 0.8;
@@ -116,7 +116,7 @@ function candidateFrequencies(samples, sampleRate, minFreqHz, maxFreqHz, floorDb
 }
 
 function heterodyne(samples, sampleRate, freqHz) {
-  // Four-period Hann FIRs reduce adjacent-partial leakage while preserving decay resolution.
+  // Eight-period Hann FIRs suppress longer adjacent modes without smearing short decays.
   let filterLength = Math.round(HETERODYNE_PERIODS * sampleRate / freqHz);
   filterLength = Math.max(8, Math.min(samples.length, filterLength));
   if (filterLength < 8) return null;
