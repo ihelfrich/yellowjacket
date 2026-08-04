@@ -60,6 +60,15 @@ export class Engine extends EventTarget {
   get ctx() { return this._ctx; }
   get master() { return this._master; }
 
+  // AudioContext creation has to happen inside a user gesture. MACHINE can
+  // create sound without a source file (SYNTH / CRATE), so `play()` cannot be
+  // the only doorway into the audio graph.
+  wake() {
+    const ctx = this._ensureCtx();
+    resumeContext(ctx);
+    return ctx;
+  }
+
   get currentTime() {
     if (!this._playing || !this._ctx) return this._position;
     const elapsed = Math.max(0, this._ctx.currentTime - this._t0);
@@ -70,8 +79,7 @@ export class Engine extends EventTarget {
   play(cuts = [], from = null) {
     const buf = this._activeBuffer();
     if (!buf || buf.duration <= 0) return;
-    const ctx = this._ensureCtx();
-    resumeContext(ctx);
+    const ctx = this.wake();
 
     // Alt buffer plays verbatim: it is already rendered, cuts do not apply.
     if (!this._alt) this._lastCuts = normalizeCuts(cuts, buf.duration);

@@ -261,17 +261,32 @@ const ROUTES = {
 function markFirstRunDone() {
   try { localStorage.setItem(FIRSTRUN_KEY, '1'); } catch (e) { /* private mode: show it again */ }
 }
-if (views.firstRun) views.firstRun.addEventListener('start', (e) => {
-  markFirstRunDone();
-  const route = ROUTES[e.detail.path];
+function openStartRoute(path) {
+  const route = ROUTES[path];
   if (!route) return;
+  // SYNTH is deliberately source-free. The general intake overlay otherwise
+  // remains above the route and makes this first-run choice impossible to use.
+  if (path === 'synth') $('dropZone').classList.add('is-hidden');
   showTab(route.tab);
   if (route.mstate) {
     const b = document.querySelector('.yj-substate-btn[data-mstate="' + route.mstate + '"]');
     if (b) b.click();
   }
+}
+if (views.firstRun) views.firstRun.addEventListener('start', (e) => {
+  markFirstRunDone();
+  openStartRoute(e.detail.path);
 });
 if (views.firstRun) views.firstRun.addEventListener('dismiss', markFirstRunDone);
+$('btnOpenSynth').addEventListener('click', () => {
+  if (!$('resumePanel').hidden && typeof window.confirm === 'function'
+    && !window.confirm('Start a new synth session? The saved resume session will be replaced after your first edit. CRATE instruments are kept.')) {
+    status('SAVED SESSION KEPT');
+    return;
+  }
+  markFirstRunDone();
+  openStartRoute('synth');
+});
 try {
   if (views.firstRun && !localStorage.getItem(FIRSTRUN_KEY) && !store.runtime.buffer) views.firstRun.show();
 } catch (e) { /* storage blocked: skip the overlay rather than break boot */ }

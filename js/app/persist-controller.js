@@ -3,7 +3,8 @@
 // Nothing auto-loads: a saved session offers itself in the drop zone and waits.
 
 import {
-  serializeProject, snapshotDoc, applySnapshot, hydrateSample, OpfsStore, FORMAT_VERSION,
+  serializeProject, snapshotDoc, applySnapshot, hydrateSample, projectHasContent,
+  OpfsStore, FORMAT_VERSION,
 } from './persist.js';
 import { advanceClipCounter } from '../machine/cliprefs.js';
 
@@ -43,13 +44,17 @@ export function initPersistController(ctx) {
     try {
       if (await opfs.has('project.json')) {
         const json = await opfs.readJson('project.json');
-        if (json && json.fileName && await opfs.has('source.bin')) {
+        const hasSource = !!(json && json.sourceBytes && json.sourceBytes.size > 0);
+        if (projectHasContent(json) && (!hasSource || await opfs.has('source.bin'))) {
           const scenes = json.machine && json.machine.scenes ? json.machine.scenes : [];
           const liveScenes = scenes.filter((s) => s && s.tracks
             && s.tracks.some((t) => t && t.steps && t.steps.some((v) => v))).length;
-          const bits = ['LAST SESSION · ' + String(json.fileName).toUpperCase()];
+          const sessionName = json.fileName || 'SYNTH SESSION';
+          const bits = ['LAST SESSION · ' + String(sessionName).toUpperCase()];
           if (json.words && json.words.length) bits.push(n(json.words.length, 'WORD'));
           if (json.repairs && json.repairs.length) bits.push(n(json.repairs.length, 'REPAIR'));
+          const instruments = json.assets ? Object.keys(json.assets).length : 0;
+          if (instruments) bits.push(n(instruments, 'INSTRUMENT'));
           if (liveScenes) bits.push(n(liveScenes, 'SCENE'));
           bits.push(timeAgo(json.savedAt || Date.now()));
           $('resumeInfo').textContent = bits.join(' · ');
@@ -58,16 +63,20 @@ export function initPersistController(ctx) {
       }
     } catch (e) { /* unreadable save: leave the panel hidden */ }
     store.addEventListener('change', scheduleSave);
+    // OPFS opens asynchronously. A fast source-free SYNTH edit can land before
+    // this listener exists, so inspect the already-live document once at boot.
+    scheduleSave();
   }
 
   function scheduleSave() {
-    if (!opfs || restoring || !R.buffer) return;
+    if (!opfs || restoring || !projectHasContent(P, R)) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, SAVE_DEBOUNCE_MS);
   }
 
   async function saveNow() {
     saveTimer = 0;
+    if (!opfs || restoring || !projectHasContent(P, R)) return;
     if (saving) { savePending = true; return; }
     saving = true;
     try {
@@ -100,6 +109,23 @@ export function initPersistController(ctx) {
       if (savePending) { savePending = false; saveNow(); }
     }
   }
+
+  // The debounce is right while a knob is moving, but it must not be the last
+  // word when the tab is backgrounded or closed. OPFS writes are asynchronous,
+  // so visibilitychange is the useful early signal; pagehide is the backstop.
+  function flushSave() {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = 0;
+    }
+    saveNow();
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushSave();
+    });
+  }
+  if (typeof window !== 'undefined') window.addEventListener('pagehide', flushSave);
 
   // Every surface that needs an explicit poke, relit in one place. RESTORE and
   // UNDO both land here so they can never drift apart.
@@ -201,8 +227,7 @@ export function initPersistController(ctx) {
     restoring = true;
     try {
       const json = await opfs.readJson('project.json');
-      const bytes = await opfs.readBytes('source.bin');
-      if (!json || !bytes) throw new Error('saved session is incomplete');
+      if (!json) throw new Error('saved session is incomplete');
       // VALIDATE BEFORE DESTROYING. loadArrayBuffer resets fileName, words,
       // clips, machine and assets. If the snapshot is then rejected, the
       // project is an empty one holding the restored audio, and the autosave
@@ -212,19 +237,25 @@ export function initPersistController(ctx) {
         throw new Error('saved session is version ' + json.formatVersion
           + ', this bench reads ' + FORMAT_VERSION + '. Nothing was changed.');
       }
-      // The JSON and the audio are written separately, so a tab closed between
-      // the two writes leaves them describing different files.
-      if (json.sourceBytes && Number.isFinite(json.sourceBytes.size)
-        && json.sourceBytes.size !== bytes.byteLength) {
-        throw new Error('saved audio does not match the saved session ('
-          + bytes.byteLength + ' bytes on disk, ' + json.sourceBytes.size
-          + ' expected). Nothing was changed.');
+      const hasSource = !!(json.sourceBytes && json.sourceBytes.size > 0);
+      if (hasSource) {
+        const bytes = await opfs.readBytes('source.bin');
+        if (!bytes) throw new Error('saved source audio is missing');
+        // The JSON and the audio are written separately, so a tab closed between
+        // the two writes leaves them describing different files.
+        if (Number.isFinite(json.sourceBytes.size) && json.sourceBytes.size !== bytes.byteLength) {
+          throw new Error('saved audio does not match the saved session ('
+            + bytes.byteLength + ' bytes on disk, ' + json.sourceBytes.size
+            + ' expected). Nothing was changed.');
+        }
+        const genBefore = R.generation;
+        // Saved anchors go along for the ride so the deferred analysis run
+        // reproduces the beatmap instead of re-guessing it.
+        await ctx.api.loadArrayBuffer(bytes, json.fileName, json.anchors || null);
+        if (R.generation === genBefore) throw new Error('the saved audio would not decode');
+      } else if (R.buffer) {
+        throw new Error('this source-free session can only be resumed before another source is loaded');
       }
-      const genBefore = R.generation;
-      // Saved anchors go along for the ride so the deferred analysis run
-      // reproduces the beatmap instead of re-guessing it.
-      await ctx.api.loadArrayBuffer(bytes, json.fileName, json.anchors || null);
-      if (R.generation === genBefore) throw new Error('the saved audio would not decode');
       applySnapshot(json, { project: P, runtime: R });
       advanceClipCounter(P.clips);
 
@@ -254,7 +285,13 @@ export function initPersistController(ctx) {
       store.clearHistory();   // a restored session is a starting point, not a step
 
       $('resumePanel').hidden = true;
-      const parts = ['RESTORED · ' + String(json.fileName).toUpperCase()];
+      if (!hasSource) {
+        $('dropZone').classList.add('is-hidden');
+        if (ctx.api.showTab) ctx.api.showTab('machine');
+        const crateTab = document.querySelector('.yj-substate-btn[data-mstate="crate"]');
+        if (crateTab) crateTab.click();
+      }
+      const parts = ['RESTORED · ' + String(json.fileName || 'SYNTH SESSION').toUpperCase()];
       if (R.repairs.length) parts.push(n(R.repairs.length, 'REPAIR'));
       status(parts.join(' · '));
       restoreFailed = false;
@@ -273,6 +310,11 @@ export function initPersistController(ctx) {
 
   async function discard() {
     if (!opfs) return;
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function'
+      && !window.confirm('Discard the saved Yellowjacket session? This cannot be undone. CRATE instruments are kept.')) {
+      status('SAVED SESSION KEPT');
+      return;
+    }
     try {
       await opfs.wipe();
       samplesWritten.clear();

@@ -188,7 +188,9 @@ export class Sequencer extends EventTarget {
   start() {
     if (this._running) return;
     this.stopSong();   // pattern and song transports are exclusive (CONTRACT-SONG 2)
-    const ctx = this._engine && this._engine.ctx;
+    const ctx = this._engine && typeof this._engine.wake === 'function'
+      ? this._engine.wake()
+      : this._engine && this._engine.ctx;
     const master = this._engine && this._engine.master;
     if (!ctx || !master || ctx.state === 'closed') {
       this._emitState(false);
@@ -223,7 +225,9 @@ export class Sequencer extends EventTarget {
 
   trigger(i, when = 0, velocity = 1) {
     const index = trackIndex(i);
-    const ctx = this._engine && this._engine.ctx;
+    const ctx = this._engine && typeof this._engine.wake === 'function'
+      ? this._engine.wake()
+      : this._engine && this._engine.ctx;
     const master = this._engine && this._engine.master;
     if (index < 0 || !ctx || !master || ctx.state === 'closed') return;
 

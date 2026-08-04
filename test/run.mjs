@@ -17,9 +17,11 @@ import { resample } from '../js/dsp/resample.js';
 import { truePeakDb } from '../js/dsp/truepeak.js';
 import { createProject, registerAsset } from '../js/app/project-store.js';
 import {
-  serializeProject, snapshotDoc, applySnapshot, hydrateSample, FORMAT_VERSION,
+  serializeProject, snapshotDoc, applySnapshot, hydrateSample, projectHasContent, FORMAT_VERSION,
 } from '../js/app/persist.js';
 import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
+import { sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
+import { Engine } from '../js/audio-engine.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
 import { fitModal, synthModal } from '../js/analysis/modal.js';
@@ -824,6 +826,61 @@ const persistCases = [
       (err) => err.name === 'FormatVersionError',
       'null json throws typed',
     );
+  },
+  function sourceFreeInstrumentProjectsAreSavable() {
+    const p = createProject(persistChain());
+    const r = { repairs: [], analysis: null, sourceBytes: null, buffer: null };
+    assert.equal(projectHasContent(p, r), false, 'an untouched source-free document is empty');
+    const pcm = Float32Array.from([0, 0.5, -0.5, 0]);
+    const id = registerAsset(p, {
+      kind: 'synth', label: 'KICK', sampleRate: 44100, frames: pcm.length,
+      role: 'KICK', formula: 'sin(t*tau*60)',
+    });
+    p.machine.tracks[0].sampleId = id;
+    p.machine.tracks[0].sample = { channels: [pcm], sampleRate: 44100, label: 'KICK', role: 'KICK' };
+    assert.equal(projectHasContent(p, r), true, 'a synth instrument makes the live project savable');
+    const { json, sampleFiles } = serializeProject(p, r);
+    assert.equal(json.sourceBytes, null, 'the save stays honestly source-free');
+    assert.equal(sampleFiles.length, 1, 'its instrument PCM is still persisted');
+    assert.equal(projectHasContent(json), true, 'the serialized project is offered on next boot');
+  },
+];
+
+// ---------- trust + lifecycle shell ----------
+
+const lifecycleCases = [
+  function replacingOnlyPromptsWhenThereIsAnActiveSource() {
+    assert.equal(sourceReplacementNeedsConfirmation(null), false);
+    assert.equal(sourceReplacementNeedsConfirmation({ buffer: null }), false);
+    assert.equal(sourceReplacementNeedsConfirmation({ buffer: {} }), true);
+  },
+  async function engineCanWakeWithoutLoadingASource() {
+    const previousWindow = globalThis.window;
+    let resumes = 0;
+    class FakeAudioContext {
+      constructor() { this.state = 'suspended'; this.destination = {}; }
+      createGain() { return { connect() {} }; }
+      resume() { resumes++; this.state = 'running'; return Promise.resolve(); }
+    }
+    globalThis.window = { AudioContext: FakeAudioContext };
+    try {
+      const engine = new Engine();
+      const first = engine.wake();
+      const second = engine.wake();
+      assert.equal(first, second, 'wake reuses one context');
+      assert.equal(engine.master != null, true, 'the source-free graph has a master output');
+      assert.equal(resumes, 1, 'only a suspended context is resumed');
+    } finally {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    }
+  },
+  async function canonicalLicenseNoLongerGrantsMitTerms() {
+    const license = await readFile(new URL('../LICENSE', import.meta.url), 'utf8');
+    const terms = await readFile(new URL('../LICENSE.md', import.meta.url), 'utf8');
+    assert.match(license, /PolyForm Noncommercial License 1\.0\.0/);
+    assert.doesNotMatch(license, /Permission is hereby granted, free of charge/);
+    assert.match(terms, /# PolyForm Noncommercial License 1\.0\.0/);
   },
 ];
 
@@ -2074,6 +2131,7 @@ const groups = [
   ['LOCK compiler', lockCases],
   ['spectral repair', repairCases],
   ['persist roundtrip', persistCases],
+  ['trust lifecycle', lifecycleCases],
   ['op1 patch', op1Cases],
   ['midi clock', midiCases],
   ['song compiler', songCases],

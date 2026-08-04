@@ -739,14 +739,12 @@ export function initMachineController(ctx) {
     synthView.addEventListener('formula', (e) => buildSynth(e.detail));
     synthView.addEventListener('preview', (e) => {
       const pcm = buildSynth(e.detail) || synthPcm;
-      if (!pcm || !engine.ctx) {
-        if (!engine.ctx) statusFault('Press play once first: the audio engine wakes on a gesture.');
-        return;
-      }
+      if (!pcm) return;
+      const audioCtx = engine.wake();
       const rate = R.sampleRate || 44100;
-      const buf = engine.ctx.createBuffer(1, pcm.length, rate);
+      const buf = audioCtx.createBuffer(1, pcm.length, rate);
       buf.getChannelData(0).set(pcm);
-      const src = engine.ctx.createBufferSource();
+      const src = audioCtx.createBufferSource();
       src.buffer = buf;
       src.connect(engine.master);
       src.start();

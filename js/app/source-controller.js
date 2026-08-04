@@ -3,14 +3,34 @@
 
 import { buildPeakPyramid } from '../render/peaks.js';
 
+export function sourceReplacementNeedsConfirmation(runtime) {
+  return !!(runtime && runtime.buffer);
+}
+
 export function initSourceController(ctx) {
   const { store, engine, views, $, COPY, status, statusFault, fmtTime } = ctx;
   const { waveMini, waveMain, spec, sliceView } = views;
   const P = store.project;
   const R = store.runtime;
 
+  function confirmSourceReplacement() {
+    if (!sourceReplacementNeedsConfirmation(R)) return true;
+    const name = P.fileName ? '“' + P.fileName + '”' : 'the current source';
+    const ok = typeof window.confirm !== 'function' || window.confirm(
+      'Replace ' + name + '?\n\n'
+      + 'Its transcript, cuts, repairs, slices, and saved resume point will be replaced. '
+      + 'Machine tracks and CRATE instruments are kept.'
+    );
+    if (!ok) {
+      $('dropZone').classList.add('is-hidden');
+      status('SOURCE KEPT');
+    }
+    return ok;
+  }
+
   // ---------- file loading ----------
   async function openFile(file) {
+    if (!confirmSourceReplacement()) return;
     status(COPY.decoding, true);
     let ab;
     try {
@@ -52,6 +72,7 @@ export function initSourceController(ctx) {
     });
 
     $('dropZone').classList.add('is-hidden');
+    $('resumePanel').hidden = true;
     $('roDur').textContent = fmtTime(engine.duration);
     $('roTime').textContent = fmtTime(0);
 
@@ -193,6 +214,7 @@ export function initSourceController(ctx) {
       showRipHelp(u, "That host won't hand audio to a web page. Rip it on your machine, then drop the file here:");
       return;
     }
+    if (!confirmSourceReplacement()) return;
     const btn = $('btnLoadUrl');
     btn.disabled = true;
     btn.classList.add('is-working');

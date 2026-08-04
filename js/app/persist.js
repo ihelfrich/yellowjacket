@@ -10,6 +10,34 @@ export const FORMAT_VERSION = 2;
 const DIR_NAME = 'yellowjacket-v1';
 const MAX_STEPS = 64;
 
+// A project can be real without a source recording: SYNTH and CRATE both make
+// instruments directly. Keep this pure so the controller and test harness use
+// the same definition when deciding whether there is anything worth saving.
+export function projectHasContent(project, runtime = {}) {
+  if (!project || typeof project !== 'object') return false;
+  const source = runtime.sourceBytes || project.sourceBytes;
+  if (source && ((Number(source.byteLength) || 0) > 0 || (Number(source.size) || 0) > 0)) return true;
+  if (Array.isArray(project.words) && project.words.length) return true;
+  if (Array.isArray(project.clips) && project.clips.length) return true;
+  if (runtime.repairs && runtime.repairs.length) return true;
+  if (project.repairs && project.repairs.length) return true;
+  if (project.assets && Object.keys(project.assets).length) return true;
+
+  const machine = project.machine;
+  const scenes = machine && Array.isArray(machine.scenes) ? machine.scenes : [];
+  for (const scene of scenes) {
+    const tracks = scene && Array.isArray(scene.tracks) ? scene.tracks : [];
+    for (const track of tracks) {
+      if (!track) continue;
+      if (track.sampleId) return true;
+      if (track.steps && Array.from(track.steps).some(Boolean)) return true;
+      if (track.stepData && Object.keys(track.stepData).length) return true;
+    }
+  }
+  const song = machine && machine.song;
+  return !!(song && Array.isArray(song.chain) && song.chain.length);
+}
+
 export class FormatVersionError extends Error {
   constructor(version) {
     super('unsupported project formatVersion ' + String(version)
