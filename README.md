@@ -16,7 +16,11 @@ Face's CDN; the browser caches those, so the second session works on a plane. Yo
 never leaves the machine. If that claim sounds like marketing, open the network tab and
 watch it stay empty while you work.
 
-Audio gets in three ways: drop a file, pick one, or paste a URL. Direct links work
+Audio gets in four ways: load the bundled demo, drop a file, pick one, or paste a URL. The
+demo is **Sparks** by Zane Little, a 2:40 electronic pop track released under
+[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/); its vocals, transients,
+and tonal sections exercise every bench without asking a first-time visitor to find a
+file. Direct links work
 whenever the host allows browser fetches (podcast enclosures, archive.org, most CDNs).
 YouTube and SoundCloud don't allow that, and no static page can change it; the tools
 that claim to are servers doing the ripping for you. Paste one of those links anyway and

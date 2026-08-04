@@ -20,7 +20,7 @@ import {
   serializeProject, snapshotDoc, applySnapshot, hydrateSample, projectHasContent, FORMAT_VERSION,
 } from '../js/app/persist.js';
 import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
-import { sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
+import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
 import { Engine } from '../js/audio-engine.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
@@ -881,6 +881,17 @@ const lifecycleCases = [
     assert.match(license, /PolyForm Noncommercial License 1\.0\.0/);
     assert.doesNotMatch(license, /Permission is hereby granted, free of charge/);
     assert.match(terms, /# PolyForm Noncommercial License 1\.0\.0/);
+  },
+  async function bundledDemoIsDiscoverableAndOffline() {
+    const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const worker = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
+    const provenance = await readFile(new URL('../assets/demo/README.md', import.meta.url), 'utf8');
+    assert.match(index, /id="btnLoadDemo"/);
+    assert.match(index, /SPARKS/);
+    assert.match(worker, /assets\/demo\/zane-little-sparks\.mp3/);
+    assert.equal(existsSync(new URL('../' + DEMO_TRACK.path, import.meta.url)), true);
+    assert.match(provenance, /CC0 1\.0 Universal/);
+    assert.match(provenance, /bc025c6956d88245e7a1bf139ec3e69829fa09f0ec4461af5691e5d77428e27c/);
   },
 ];
 

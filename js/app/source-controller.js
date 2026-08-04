@@ -3,6 +3,11 @@
 
 import { buildPeakPyramid } from '../render/peaks.js';
 
+export const DEMO_TRACK = Object.freeze({
+  path: 'assets/demo/zane-little-sparks.mp3',
+  name: 'Sparks — Zane Little.mp3',
+});
+
 export function sourceReplacementNeedsConfirmation(runtime) {
   return !!(runtime && runtime.buffer);
 }
@@ -40,6 +45,24 @@ export function initSourceController(ctx) {
       return;
     }
     await loadArrayBuffer(ab, file.name);
+  }
+
+  async function loadDemo() {
+    if (!confirmSourceReplacement()) return;
+    const btn = $('btnLoadDemo');
+    btn.disabled = true;
+    btn.classList.add('is-working');
+    status('LOADING DEMO', true);
+    try {
+      const resp = await fetch(new URL(DEMO_TRACK.path, document.baseURI));
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      await loadArrayBuffer(await resp.arrayBuffer(), DEMO_TRACK.name);
+    } catch (e) {
+      statusFault('DEMO FAULT · reload the page or pick your own audio');
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('is-working');
+    }
   }
 
   // anchors rides through to the deferred analysis run: RESTORE passes the saved
@@ -274,6 +297,7 @@ export function initSourceController(ctx) {
   // ---------- intake wiring ----------
   $('btnOpen').addEventListener('click', () => $('fileInput').click());
   $('btnOpen2').addEventListener('click', () => $('fileInput').click());
+  $('btnLoadDemo').addEventListener('click', loadDemo);
   $('fileInput').addEventListener('change', (e) => {
     if (e.target.files[0]) openFile(e.target.files[0]);
     e.target.value = '';
