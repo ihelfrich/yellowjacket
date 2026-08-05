@@ -35,6 +35,11 @@ export function initSourceController(ctx) {
 
   // ---------- file loading ----------
   async function openFile(file) {
+    if (/\.yjkt$/i.test(file && file.name || '')) {
+      if (ctx.api.importProjectFile) await ctx.api.importProjectFile(file);
+      else statusFault('PROJECT OPEN FAULT · project loader is not ready');
+      return;
+    }
     if (!confirmSourceReplacement()) return;
     status(COPY.decoding, true);
     let ab;
@@ -120,6 +125,36 @@ export function initSourceController(ctx) {
       // Analysis waits for the spectrogram: both are CPU-heavy, sequential is kinder.
       if (gen === R.generation) runAnalysis(anchors);
     });
+  }
+
+  // Clear only the source-facing half of the bench. Machine instruments are
+  // document assets and survive until the caller applies a replacement
+  // snapshot; this makes source-free portable projects possible without
+  // tearing down the AudioContext that SYNTH and CRATE use.
+  function clearSource() {
+    if (engine.clear) engine.clear();
+    store.update('source-clear', (p, r) => {
+      r.generation++;
+      p.fileName = null;
+      p.words = null;
+      p.clips.length = 0;
+      r.buffer = null;
+      r.mono = null;
+      r.sampleRate = 0;
+      r.renderedBuffer = null;
+      r.analysis = null;
+      r.sourceBytes = null;
+      r.peaks = null;
+    });
+    $('roDur').textContent = fmtTime(0);
+    $('roTime').textContent = fmtTime(0);
+    waveMini.setBuffer(null, 0, null);
+    waveMain.setBuffer(null, 0, null);
+    spec.compute(null, 0).catch(() => {});
+    if (ctx.api.benchClear) ctx.api.benchClear();
+    ctx.api.machineReset();
+    if (ctx.api.repairReset) ctx.api.repairReset();
+    ctx.api.statusRight();
   }
 
   // ---------- beatmap analysis worker ----------
@@ -350,6 +385,7 @@ export function initSourceController(ctx) {
   }
 
   ctx.api.loadArrayBuffer = loadArrayBuffer;
+  ctx.api.clearSource = clearSource;
   ctx.api.openFile = openFile;
   ctx.api.runAnalysis = runAnalysis;
 }

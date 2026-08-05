@@ -33,6 +33,9 @@ import { project2d, standardize, axisLabel } from '../js/analysis/constellation.
 import { stretchSamples, stretchMode } from '../js/dsp/stretch.js';
 import { plateImpulse, delayTimeFor, dampingCoeff } from '../js/dsp/space.js';
 import { nextId, addMeta, removeMeta, listFromIndex } from '../js/app/crate.js';
+import {
+  buildBundle, readBundle, projectEntries, parseProjectEntries, safeProjectName,
+} from '../js/app/project-bundle.js';
 import { existsSync } from 'node:fs';
 
 // The buffer-kind DSP modules construct AudioBuffers; node has none.
@@ -874,6 +877,21 @@ const lifecycleCases = [
       if (previousWindow === undefined) delete globalThis.window;
       else globalThis.window = previousWindow;
     }
+  },
+  function engineCanReturnToASourceFreeState() {
+    const engine = new Engine();
+    engine._buffer = { duration: 4 };
+    engine._mono = new Float32Array([1, 2]);
+    engine._alt = { duration: 3 };
+    engine._position = 2;
+    engine._lastCuts = [{ start: 1, end: 2 }];
+    engine.clear();
+    assert.equal(engine.buffer, null);
+    assert.equal(engine.mono, null);
+    assert.equal(engine.duration, 0);
+    assert.equal(engine.currentTime, 0);
+    assert.equal(engine._alt, null);
+    assert.deepEqual(engine._lastCuts, []);
   },
   async function canonicalLicenseNoLongerGrantsMitTerms() {
     const license = await readFile(new URL('../LICENSE', import.meta.url), 'utf8');
@@ -2134,6 +2152,64 @@ const workerProtocolCases = [
   },
 ];
 
+// ---------- portable .yjkt project bundles ----------
+
+const bundleCases = [
+  function storeZipRoundTripKeepsNamesAndBytes() {
+    const source = new Uint8Array([0, 1, 2, 127, 128, 255]);
+    const zip = buildBundle([
+      ['project.json', '{"formatVersion":2}'],
+      ['samples/a1.f32', source],
+    ], { date: new Date(2026, 6, 28, 12, 0, 0) });
+    const entries = readBundle(zip);
+    assert.equal(new TextDecoder().decode(entries.get('project.json')), '{"formatVersion":2}');
+    assert.deepEqual(Array.from(entries.get('samples/a1.f32')), Array.from(source));
+  },
+  function serializedProjectBecomesAPortableArchive() {
+    const project = createProject([]);
+    project.fileName = 'field interview.wav';
+    const id = registerAsset(project, {
+      kind: 'sample', label: 'VOICE', sampleRate: 48000, frames: 4, role: 'VOCAL',
+    });
+    const track = project.machine.scenes[0].tracks[0];
+    track.sampleId = id;
+    track.sample = {
+      channels: [new Float32Array([0.25, -0.5, 0.75, -1])],
+      sampleRate: 48000, label: 'VOICE', role: 'VOCAL',
+    };
+    const runtime = { repairs: [], sourceBytes: new Uint8Array([82, 73, 70, 70]).buffer };
+    const serialized = serializeProject(project, runtime);
+    const parsed = parseProjectEntries(readBundle(buildBundle(
+      projectEntries(serialized, runtime.sourceBytes),
+    )));
+    assert.equal(parsed.json.fileName, 'field interview.wav');
+    assert.equal(parsed.source.byteLength, 4);
+    assert.ok(parsed.samples.has(id), 'sample PCM is carried in the project');
+    const sample = hydrateSample(parsed.json.assets[id], parsed.samples.get(id));
+    assert.deepEqual(Array.from(sample.channels[0]), [0.25, -0.5, 0.75, -1]);
+  },
+  function corruptEntryIsRefusedBeforeImport() {
+    const zip = buildBundle([['project.json', '{"formatVersion":2}']]);
+    const broken = zip.slice();
+    const view = new DataView(broken.buffer);
+    const nameLen = view.getUint16(26, true);
+    const extraLen = view.getUint16(28, true);
+    broken[30 + nameLen + extraLen] ^= 1;
+    assert.throws(() => readBundle(broken), /checksum/);
+  },
+  function unsafeAndDuplicatePathsAreRefused() {
+    assert.throws(() => buildBundle([['../source.bin', new Uint8Array(1)]]), /unsafe/);
+    assert.throws(() => buildBundle([
+      ['project.json', '{}'], ['project.json', '{}'],
+    ]), /duplicate/);
+  },
+  function projectFilenamesArePortableAndBounded() {
+    assert.equal(safeProjectName('My rough mix.wav'), 'My-rough-mix.yjkt');
+    assert.equal(safeProjectName('../../'), 'yellowjacket-project.yjkt');
+    assert.ok(safeProjectName('x'.repeat(200)).length <= 85);
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -2155,6 +2231,7 @@ const groups = [
   ['restore hydration', hydrateCases],
   ['voice clamp parity', clampParityCases],
   ['worker protocol', workerProtocolCases],
+  ['project bundle', bundleCases],
   ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],

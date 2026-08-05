@@ -429,7 +429,7 @@ export function initBenchController(ctx) {
   $('btnWav24').addEventListener('click', () => exportWav(24));
 
   // ---------- per-source reset (called by source-controller after decode) ----------
-  function resetForSource() {
+  function resetForSource(hasSource = true) {
     cuts = [];
     renderFresh = false;
     liftRange = null;
@@ -438,7 +438,7 @@ export function initBenchController(ctx) {
     transcript.setWords([]);
     $('transcriptHint').hidden = false;
     $('transcriptHost').prepend($('transcriptHint'));
-    for (const id of ['btnTranscribe', 'btnMeasure', 'btnRender', 'btnWav16', 'btnWav24']) $(id).disabled = false;
+    for (const id of ['btnTranscribe', 'btnMeasure', 'btnRender', 'btnWav16', 'btnWav24']) $(id).disabled = !hasSource;
     for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = true;
     $('btnLift').disabled = true;
     $('roFillers').textContent = '—';
@@ -454,6 +454,7 @@ export function initBenchController(ctx) {
   ctx.api.togglePlay = togglePlay;
   ctx.api.statusRight = statusRight;
   ctx.api.benchReset = resetForSource;
+  ctx.api.benchClear = () => resetForSource(false);
   ctx.api.getLiftRange = () => liftRange;
   ctx.api.rebuildRack = buildRack;
   // Restore path: words came back from a saved session, light the same surfaces

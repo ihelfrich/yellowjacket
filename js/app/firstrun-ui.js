@@ -1,4 +1,4 @@
-// First run: one screen that says what this bench is and offers three ways in.
+// First run: one screen that says what this bench is and offers four ways in.
 // A new arrival sees a black page and a drop zone, which hides the fact that
 // the thing transcribes, repairs, chops records into kits, sequences them, and
 // prints OP-Z patches. Not a tutorial and not a modal: focus is never trapped,
@@ -83,6 +83,11 @@ const PATHS = [
     name: 'WRITE A SOUND AS MATHS',
     note: 'Type a formula into the SYNTH panel and hear the sample it makes, with no audio loaded at all.',
   },
+  {
+    path: 'project',
+    name: 'OPEN A YELLOWJACKET PROJECT',
+    note: 'Bring back a complete .yjkt session: source audio, transcript, repairs, slices, instruments, scenes, and song.',
+  },
 ];
 
 let styled = false;
@@ -149,7 +154,7 @@ export class FirstRunView extends EventTarget {
       + 'The MACHINE bench chops a record into a drum kit, sequences that kit across eight tracks, and prints kits an OP-Z reads.';
     const limits = document.createElement('p');
     limits.textContent = 'Nothing you load leaves this machine, because there is no server to send it to. '
-      + 'Everything runs on your own hardware, so a long file takes real time.';
+      + 'Everything runs on your own hardware, so a long file takes real time. Save a .yjkt project when the whole bench needs to travel with you.';
     copy.append(lede, what, limits);
 
     const paths = document.createElement('div');

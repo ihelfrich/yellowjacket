@@ -39,6 +39,23 @@ export class Engine extends EventTarget {
     this.dispatchEvent(new CustomEvent('loaded', { detail: {} }));
   }
 
+  // Return the bench to a true source-free state. SYNTH and CRATE can still
+  // use the existing AudioContext/master graph; only source transport is
+  // cleared. Portable .yjkt imports need this when a synth-only project
+  // replaces a session that previously had a recording loaded.
+  clear() {
+    this._haltPlayback();
+    this._buffer = null;
+    this._mono = null;
+    this._alt = null;
+    this._lastCuts = [];
+    this._position = 0;
+    this._segs = [];
+    this._totalKept = 0;
+    this.dispatchEvent(new CustomEvent('time', { detail: { t: 0 } }));
+    this.dispatchEvent(new CustomEvent('loaded', { detail: {} }));
+  }
+
   // Swap the playable audio without a decode. Only for length-identical
   // replacements (spectral repair): position, cuts, and alt semantics all hold.
   adoptBuffer(audioBuffer, mono = null) {

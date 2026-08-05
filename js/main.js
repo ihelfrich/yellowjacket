@@ -23,6 +23,7 @@ import { SynthView } from './machine/synth-ui.js';
 import { ModalView } from './machine/modal-ui.js';
 import { PadGridView } from './machine/pads-ui.js';
 import { FirstRunView } from './app/firstrun-ui.js';
+import { CommandDeckView } from './app/command-deck.js';
 import { SYNTH_PRESETS } from './machine/synth.js';
 import { Keybed } from './machine/keybed.js';
 import { PipelineView, deriveStages } from './app/pipeline-ui.js';
@@ -126,6 +127,7 @@ const VIEW_SPECS = [
   ['pipeline', () => new PipelineView($('pipelineHost'))],
   ['pads', () => new PadGridView($('padsHost'))],
   ['firstRun', () => new FirstRunView($('firstRunHost'))],
+  ['commandDeck', () => new CommandDeckView($('commandHost'))],
 ];
 const views = {};
 const deadViews = [];
@@ -192,11 +194,20 @@ if (failed.length && typeof Proxy === 'function') {
 // ---------- tabs ----------
 function showTab(name) {
   for (const b of document.querySelectorAll('.yj-tab-btn')) {
-    b.classList.toggle('is-active', b.dataset.tab === name);
+    const active = b.dataset.tab === name;
+    b.classList.toggle('is-active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+    b.tabIndex = active ? 0 : -1;
   }
-  for (const pane of document.querySelectorAll('.yj-tabpane')) pane.classList.remove('is-active');
+  for (const pane of document.querySelectorAll('.yj-tabpane')) {
+    pane.classList.remove('is-active');
+    pane.setAttribute('aria-hidden', 'true');
+  }
   const pane = $('tab-' + name);
-  if (pane) pane.classList.add('is-active');
+  if (pane) {
+    pane.classList.add('is-active');
+    pane.setAttribute('aria-hidden', 'false');
+  }
   ctx.api.setKeybedEnabled(name === 'machine');
   // canvases need a size pass when they become visible
   // Hidden canvases measure 0, so anything revealed here needs a size pass.
@@ -211,6 +222,18 @@ ctx.api.showTab = showTab;
 for (const btn of document.querySelectorAll('.yj-tab-btn')) {
   btn.addEventListener('click', () => showTab(btn.dataset.tab));
 }
+document.querySelector('.yj-tabs').addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = Array.from(document.querySelectorAll('.yj-tab-btn'));
+  let index = tabs.indexOf(document.activeElement);
+  if (index < 0) index = tabs.findIndex((tab) => tab.classList.contains('is-active'));
+  if (event.key === 'Home') index = 0;
+  else if (event.key === 'End') index = tabs.length - 1;
+  else index = (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  event.preventDefault();
+  tabs[index].focus();
+  tabs[index].click();
+});
 
 // The pipeline strip navigates by asking for a tab and, inside MACHINE, a
 // substate; it clicks the real buttons so their own handlers still run.
@@ -220,6 +243,101 @@ if (views.pipeline) views.pipeline.addEventListener('jump', (e) => {
   if (mstate) {
     const b = document.querySelector('.yj-substate-btn[data-mstate="' + mstate + '"]');
     if (b) b.click();
+  }
+});
+
+// ---------- command deck + visible history ----------
+// The bench grew from three panels into a real workstation. The command deck
+// gives every major surface and output one searchable doorway without cloning
+// their business logic: actions click the real controls or use the public API.
+function jump(tab, mstate = null) {
+  showTab(tab);
+  if (mstate) {
+    const button = document.querySelector('.yj-substate-btn[data-mstate="' + mstate + '"]');
+    if (button) button.click();
+  }
+}
+
+const commandDefs = [
+  { id: 'nav-transcript', group: 'BENCHES', label: 'TRANSCRIPT', note: 'Edit speech by deleting words', keywords: 'captions text fillers cleanup', run: () => jump('transcript') },
+  { id: 'nav-signal', group: 'BENCHES', label: 'SIGNAL', note: 'Waveform, spectrogram, repair, and measurement', keywords: 'spectrum loudness lufs paint noise', run: () => jump('signal') },
+  { id: 'nav-rack', group: 'BENCHES', label: 'RACK', note: 'Repair chain, render, A/B, and master export', keywords: 'effects compressor limiter eq denoise', run: () => jump('rack') },
+  { id: 'nav-slice', group: 'MACHINE', label: 'SLICE', note: 'Beatmap, carve, harvest, and patch output', keywords: 'chop clips op1 opz drum kit', run: () => jump('machine', 'slice') },
+  { id: 'nav-pattern', group: 'MACHINE', label: 'PATTERN', note: 'Eight-track sequencer, scenes, locks, and mix', keywords: 'steps groove swing sequencer', run: () => jump('machine', 'pattern') },
+  { id: 'nav-play', group: 'MACHINE', label: 'PLAY', note: 'Velocity pad surface for mouse, touch, or keys', keywords: 'pads perform finger drum', run: () => jump('machine', 'play') },
+  { id: 'nav-song', group: 'MACHINE', label: 'SONG', note: 'Chain scenes and print an arrangement', keywords: 'arrange render sections', run: () => jump('machine', 'song') },
+  { id: 'nav-crate', group: 'MACHINE', label: 'CRATE + SYNTH', note: 'Persistent instruments and source-free synthesis', keywords: 'library formula modal sound design', run: () => jump('machine', 'crate') },
+  { id: 'nav-wire', group: 'MACHINE', label: 'WIRE', note: 'USB MIDI, clock, learn, and hardware routing', keywords: 'controller opz hardware sync', run: () => jump('machine', 'wire') },
+  { id: 'open-audio', group: 'SOURCE', label: 'OPEN AUDIO', note: 'WAV, MP3, M4A, OGG, or FLAC', keywords: 'file source import', button: 'btnOpen', run: () => $('btnOpen').click() },
+  { id: 'open-url', group: 'SOURCE', label: 'OPEN URL', note: 'Fetch a direct audio link', keywords: 'podcast archive download', button: 'btnOpenUrl', run: () => $('btnOpenUrl').click() },
+  { id: 'load-demo', group: 'SOURCE', label: 'LOAD DEMO SONG', note: 'Open the bundled CC0 track', keywords: 'sparks example tour', button: 'btnLoadDemo', run: () => $('btnLoadDemo').click() },
+  { id: 'transcribe', group: 'SOURCE', label: 'TRANSCRIBE', note: 'Run Whisper locally on the loaded source', keywords: 'speech words captions ai', button: 'btnTranscribe', reason: 'LOAD AUDIO FIRST', run: () => { jump('transcript'); $('btnTranscribe').click(); } },
+  { id: 'measure', group: 'TOOLS', label: 'MEASURE LOUDNESS', note: 'Run the BS.1770 measurement stack', keywords: 'lufs true peak rms crest', button: 'btnMeasure', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnMeasure').click(); } },
+  { id: 'harvest', group: 'TOOLS', label: 'HARVEST AUTO-KIT', note: 'Mine the source for a diverse labeled kit', keywords: 'kick snare hat bass vocal chops', button: 'btnHarvest', reason: 'WAIT FOR THE BEATMAP', run: () => { jump('machine', 'slice'); $('btnHarvest').click(); } },
+  { id: 'render-rack', group: 'OUTPUT', label: 'RENDER RACK', note: 'Print the active repair and mastering chain', keywords: 'process bounce effects', button: 'btnRender', reason: 'LOAD AUDIO FIRST', run: () => { jump('rack'); $('btnRender').click(); } },
+  { id: 'export-wav24', group: 'OUTPUT', label: 'EXPORT WAV · 24 BIT', note: 'Export the fresh render or edited original', keywords: 'download audio high resolution', button: 'btnWav24', reason: 'LOAD AUDIO FIRST', run: () => $('btnWav24').click() },
+  { id: 'project-open', group: 'PROJECT', label: 'OPEN .YJKT PROJECT', note: 'Restore a portable session with its source and instruments', keywords: 'import load backup portable', button: 'btnProjectOpen', run: () => $('btnProjectOpen').click() },
+  { id: 'project-save', group: 'PROJECT', label: 'SAVE .YJKT PROJECT', note: 'Bundle the whole session into one local file', keywords: 'export backup share portable', button: 'btnProjectSave', reason: 'THE PROJECT IS EMPTY', run: () => $('btnProjectSave').click() },
+  { id: 'undo', group: 'PROJECT', label: 'UNDO', note: 'Step backward through project edits', key: '⌘Z', enabled: () => store.canUndo, reason: 'NOTHING TO UNDO', run: () => ctx.api.undo() },
+  { id: 'redo', group: 'PROJECT', label: 'REDO', note: 'Step forward through project edits', key: '⇧⌘Z', enabled: () => store.canRedo, reason: 'NOTHING TO REDO', run: () => ctx.api.redo() },
+  { id: 'play-bench', group: 'TRANSPORT', label: 'PLAY / PAUSE BENCH', note: 'Toggle source transport', key: 'SPACE', enabled: () => !!store.runtime.buffer, reason: 'LOAD AUDIO FIRST', run: () => ctx.api.togglePlay() },
+  { id: 'return-zero', group: 'TRANSPORT', label: 'RETURN TO ZERO', note: 'Seek the source transport to the start', key: 'HOME', enabled: () => !!store.runtime.buffer, reason: 'LOAD AUDIO FIRST', run: () => engine.seek(0) },
+];
+
+function commandActions() {
+  return commandDefs.map((def) => {
+    let enabled = true;
+    if (def.button) {
+      const button = $(def.button);
+      enabled = !!button && !button.disabled;
+    }
+    if (typeof def.enabled === 'function') enabled = !!def.enabled();
+    return { ...def, enabled };
+  });
+}
+
+function commandContext() {
+  const P = store.project;
+  const R = store.runtime;
+  const tracks = P.machine.tracks.filter((track) => track.sample).length;
+  const pieces = [String(P.fileName || (tracks ? 'SOURCE-FREE INSTRUMENT' : 'EMPTY BENCH')).toUpperCase()];
+  if (P.words && P.words.length) pieces.push(P.words.length + ' WORDS');
+  if (P.clips.length) pieces.push(P.clips.length + ' CLIPS');
+  if (tracks) pieces.push(tracks + '/8 TRACKS');
+  pieces.push('LOCAL');
+  if (navigator.gpu) pieces.push('WEBGPU');
+  if (navigator.requestMIDIAccess) pieces.push('MIDI');
+  if (navigator.storage && navigator.storage.getDirectory) pieces.push('OPFS');
+  return pieces.join(' · ');
+}
+
+function openCommandDeck() {
+  if (!views.commandDeck) return;
+  views.commandDeck.setActions(commandActions());
+  views.commandDeck.setContext(commandContext());
+  views.commandDeck.show();
+}
+
+if (views.commandDeck) views.commandDeck.addEventListener('run', (event) => {
+  const action = commandDefs.find((item) => item.id === event.detail.id);
+  if (action && action.run) action.run();
+});
+$('btnCommand').addEventListener('click', openCommandDeck);
+$('btnUndo').addEventListener('click', () => ctx.api.undo());
+$('btnRedo').addEventListener('click', () => ctx.api.redo());
+
+function refreshHistoryControls() {
+  $('btnUndo').disabled = !store.canUndo;
+  $('btnRedo').disabled = !store.canRedo;
+}
+store.addEventListener('change', refreshHistoryControls);
+refreshHistoryControls();
+
+window.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.code === 'KeyK') {
+    event.preventDefault();
+    if (views.commandDeck && views.commandDeck.visible) views.commandDeck.hide();
+    else openCommandDeck();
   }
 });
 
@@ -262,6 +380,10 @@ function markFirstRunDone() {
   try { localStorage.setItem(FIRSTRUN_KEY, '1'); } catch (e) { /* private mode: show it again */ }
 }
 function openStartRoute(path) {
+  if (path === 'project') {
+    $('btnProjectOpen').click();
+    return;
+  }
   const route = ROUTES[path];
   if (!route) return;
   // SYNTH is deliberately source-free. The general intake overlay otherwise

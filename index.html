@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Yellowjacket · audio bench</title>
-<meta name="description" content="A text-first audio bench that runs entirely in your browser: transcription, text-based cutting, spectral analysis, repair, loudness, export. Nothing uploads.">
+<meta name="description" content="A local-first audio workstation in one browser tab: transcribe and edit speech, repair spectra, master loudness, harvest samples, sequence songs, and export portable projects. Nothing uploads.">
 <meta name="author" content="Ian Helfrich">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23FFD400'/%3E%3Cpath d='M0 20 L12 32 L4 32 L0 28 Z M8 20 L20 32 L12 32 L0 20 Z M16 20 L28 32 L20 32 L8 20 Z M24 20 L32 28 L32 32 L28 32 L16 20 Z M32 20 L32 24 L24 20 Z' fill='%230B0A07'/%3E%3Cpath d='M6 4 L13 4 L16 10 L19 4 L26 4 L19 16 L13 16 Z' fill='%230B0A07'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/fonts/fonts.css">
@@ -35,6 +35,8 @@
 <link rel="modulepreload" href="js/machine/pattern-ui.js">
 <link rel="modulepreload" href="js/machine/keybed.js">
 <link rel="modulepreload" href="js/app/project-store.js">
+<link rel="modulepreload" href="js/app/project-bundle.js">
+<link rel="modulepreload" href="js/app/command-deck.js">
 <link rel="modulepreload" href="js/app/bench-controller.js">
 <link rel="modulepreload" href="js/app/source-controller.js">
 <link rel="modulepreload" href="js/machine/controller.js">
@@ -56,16 +58,23 @@
     <div class="yj-well yj-time yj-time-dim" id="roDur">--:--.---</div>
   </div>
   <div class="yj-io">
-    <button id="btnOpen" class="yj-btn">OPEN FILE</button>
-    <button id="btnOpenUrl" class="yj-btn">OPEN URL</button>
+    <div class="yj-history" role="group" aria-label="Edit history">
+      <button id="btnUndo" class="yj-btn yj-btn-compact" title="Undo (Command or Control Z)" disabled>UNDO</button>
+      <button id="btnRedo" class="yj-btn yj-btn-compact" title="Redo (Command or Control Shift Z)" disabled>REDO</button>
+    </div>
+    <button id="btnOpen" class="yj-btn" title="Open an audio source">AUDIO IN</button>
+    <button id="btnOpenUrl" class="yj-btn" title="Open an audio URL">URL IN</button>
+    <button id="btnProjectOpen" class="yj-btn" title="Open a portable Yellowjacket project">PROJECT IN</button>
+    <button id="btnProjectSave" class="yj-btn" title="Save a portable Yellowjacket project" disabled>PROJECT OUT</button>
+    <button id="btnCommand" class="yj-btn yj-btn-command" title="Open the command deck (Command or Control K)">COMMAND <span aria-hidden="true">⌘K</span></button>
   </div>
 </header>
 
 <nav class="yj-tabs" role="tablist">
-  <button class="yj-tab-btn is-active" data-tab="transcript" role="tab">TRANSCRIPT</button>
-  <button class="yj-tab-btn" data-tab="signal" role="tab">SIGNAL</button>
-  <button class="yj-tab-btn" data-tab="rack" role="tab">RACK</button>
-  <button class="yj-tab-btn" data-tab="machine" role="tab">MACHINE</button>
+  <button id="tabBtn-transcript" class="yj-tab-btn is-active" data-tab="transcript" role="tab" aria-controls="tab-transcript" aria-selected="true">TRANSCRIPT</button>
+  <button id="tabBtn-signal" class="yj-tab-btn" data-tab="signal" role="tab" aria-controls="tab-signal" aria-selected="false" tabindex="-1">SIGNAL</button>
+  <button id="tabBtn-rack" class="yj-tab-btn" data-tab="rack" role="tab" aria-controls="tab-rack" aria-selected="false" tabindex="-1">RACK</button>
+  <button id="tabBtn-machine" class="yj-tab-btn" data-tab="machine" role="tab" aria-controls="tab-machine" aria-selected="false" tabindex="-1">MACHINE</button>
 </nav>
 
 <div id="pipelineHost"></div>
@@ -73,7 +82,7 @@
 <main class="yj-main">
 
   <!-- ============ TRANSCRIPT ============ -->
-  <section id="tab-transcript" class="yj-tabpane is-active">
+  <section id="tab-transcript" class="yj-tabpane is-active" role="tabpanel" aria-labelledby="tabBtn-transcript" aria-hidden="false">
     <div class="yj-cols">
       <div class="yj-panel yj-grow" data-label="TRANSCRIPT">
         <div id="transcriptHost" class="yj-transcript">
@@ -130,7 +139,7 @@
   </section>
 
   <!-- ============ SIGNAL ============ -->
-  <section id="tab-signal" class="yj-tabpane">
+  <section id="tab-signal" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-signal" aria-hidden="true">
     <div class="yj-cols">
       <div class="yj-grow">
         <div class="yj-panel" data-label="SIGNAL / TIME DOMAIN">
@@ -168,7 +177,7 @@
   </section>
 
   <!-- ============ RACK ============ -->
-  <section id="tab-rack" class="yj-tabpane">
+  <section id="tab-rack" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-rack" aria-hidden="true">
     <div class="yj-cols">
       <div class="yj-grow" id="rackHost"><!-- modules rendered by main.js --></div>
       <aside class="yj-rail">
@@ -202,7 +211,7 @@
   </section>
 
   <!-- ============ MACHINE ============ -->
-  <section id="tab-machine" class="yj-tabpane">
+  <section id="tab-machine" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-machine" aria-hidden="true">
     <div class="yj-substate" role="tablist">
       <button class="yj-substate-btn is-active" data-mstate="slice" role="tab">SLICE</button>
       <button class="yj-substate-btn" data-mstate="pattern" role="tab">PATTERN</button>
@@ -308,6 +317,7 @@
 </main>
 
 <div id="firstRunHost"></div>
+<div id="commandHost"></div>
 
 <div class="yj-drop" id="dropZone">
   <div class="yj-drop-inner">
@@ -319,6 +329,7 @@
       <p class="yj-demo-note"><strong>SPARKS</strong> · ZANE LITTLE · 2:40 · <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a></p>
     </div>
     <button id="btnOpen2" class="yj-btn">OR PICK YOUR OWN</button>
+    <button id="btnProjectOpen2" class="yj-btn">OPEN A .YJKT PROJECT</button>
     <button id="btnOpenSynth" class="yj-btn">MAKE A SOUND WITHOUT AUDIO</button>
     <div class="yj-urlrow">
       <input type="url" id="urlInput" class="yj-urlinput" placeholder="or paste a URL · direct audio link, podcast enclosure, archive.org" spellcheck="false">
@@ -353,6 +364,7 @@
 </footer>
 
 <input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac" hidden>
+<input type="file" id="projectInput" accept=".yjkt,application/vnd.yellowjacket.project+zip" hidden>
 <script type="module" src="js/main.js"></script>
 <script>
 // Offline caching for the deployed site only; on localhost it would serve stale dev files.

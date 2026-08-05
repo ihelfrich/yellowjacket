@@ -128,6 +128,16 @@ writes is sample-for-sample what PLAY SONG played, seeded dice and all.
 Punch-in effects and the CHARACTER color rack are next; the plan lives in
 docs/VISION.md.
 
+## The command deck
+
+Press **Command-K** (or **Control-K**) anywhere to open a searchable map of the
+whole instrument. It jumps directly to every bench and MACHINE state, and it
+surfaces contextual actions such as transcription, loudness measurement,
+HARVEST, rack rendering, audio export, project import/export, and history. An
+action that cannot run says why instead of disappearing. Undo and redo also
+live visibly in the header; their shortcuts remain Command/Control-Z and
+Command/Control-Shift-Z.
+
 ## Out the wire
 
 The MACHINE bench has a third state: WIRE, the hardware side. Connect a USB MIDI
@@ -157,6 +167,16 @@ machine, the repair stack, and the tempo pins. Reopening the page offers the las
 session by name, with RESUME and DISCARD buttons; nothing loads until you choose. The
 saved files never leave the machine, which is the same promise the rest of the tool
 makes.
+
+Autosave protects one browser on one device. **PROJECT OUT** goes further: it
+packs the complete working session into one portable `.yjkt` file—the original
+encoded source, transcript and cuts, repair stack, slices, sample PCM, voices,
+patterns, scenes, song, rack, and MIDI map. **PROJECT IN** restores that file in
+another browser. A `.yjkt` is a deliberately simple STORE-only ZIP with CRCs;
+imports validate the format, source length, every referenced sample, duplicate
+paths, traversal attempts, and checksums before the live bench is changed.
+CRATE remains a separate instrument library and is never overwritten by a
+project import.
 
 ## Models
 

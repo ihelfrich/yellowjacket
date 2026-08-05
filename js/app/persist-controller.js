@@ -6,9 +6,14 @@ import {
   serializeProject, snapshotDoc, applySnapshot, hydrateSample, projectHasContent,
   OpfsStore, FORMAT_VERSION,
 } from './persist.js';
+import {
+  buildBundle, readBundle, projectEntries, parseProjectEntries, safeProjectName,
+} from './project-bundle.js';
+import { download } from '../export.js';
 import { advanceClipCounter } from '../machine/cliprefs.js';
 
 const SAVE_DEBOUNCE_MS = 800;
+const MAX_BUNDLE_BYTES = 768 * 1024 * 1024;
 
 export function initPersistController(ctx) {
   const { store, views, $, status, statusFault } = ctx;
@@ -26,6 +31,73 @@ export function initPersistController(ctx) {
   const samplesWritten = new Set();
 
   const n = (count, word) => count + ' ' + word + (count === 1 ? '' : 'S');
+
+  function projectSummary(json) {
+    const scenes = json.machine && Array.isArray(json.machine.scenes) ? json.machine.scenes : [];
+    const instruments = json.assets && typeof json.assets === 'object' ? Object.keys(json.assets).length : 0;
+    const liveScenes = scenes.filter((scene) => scene && Array.isArray(scene.tracks)
+      && scene.tracks.some((track) => track && Array.isArray(track.steps) && track.steps.some(Boolean))).length;
+    const bits = [];
+    if (json.words && json.words.length) bits.push(n(json.words.length, 'WORD'));
+    if (json.repairs && json.repairs.length) bits.push(n(json.repairs.length, 'REPAIR'));
+    if (instruments) bits.push(n(instruments, 'INSTRUMENT'));
+    if (liveScenes) bits.push(n(liveScenes, 'SCENE'));
+    return bits.length ? bits.join(' · ') : 'SOURCE ONLY';
+  }
+
+  // Validate every byte the snapshot will refer to before loadArrayBuffer or
+  // clearSource changes the live bench. An incomplete archive never gets a
+  // chance to destroy a good session.
+  function preflightBundle(payload) {
+    const { json, source, samples } = payload;
+    if (!json || typeof json !== 'object' || json.formatVersion !== FORMAT_VERSION) {
+      throw new Error('project format is ' + String(json && json.formatVersion)
+        + '; this bench reads ' + FORMAT_VERSION);
+    }
+    const sourceSize = json.sourceBytes && Number(json.sourceBytes.size);
+    if (sourceSize > 0 && (!source || source.byteLength !== sourceSize)) {
+      throw new Error('source audio is missing or truncated');
+    }
+    if (!(sourceSize > 0) && source && source.byteLength) {
+      throw new Error('archive has source audio that project.json does not describe');
+    }
+
+    const hydrated = new Map();
+    const assets = json.assets && typeof json.assets === 'object' ? json.assets : {};
+    const needed = new Set();
+    const scenes = json.machine && Array.isArray(json.machine.scenes) ? json.machine.scenes : [];
+    for (const scene of scenes) {
+      for (const track of scene && Array.isArray(scene.tracks) ? scene.tracks : []) {
+        if (track && typeof track.sampleId === 'string') needed.add(track.sampleId);
+      }
+    }
+    for (const id of needed) {
+      const meta = assets[id];
+      const raw = samples.get(id);
+      const frames = meta && Math.max(0, meta.frames | 0);
+      const channels = meta && Math.max(1, meta.channelCount | 0);
+      const expected = frames * channels * 4;
+      if (!meta || !raw || !frames || raw.byteLength !== expected) {
+        throw new Error('instrument ' + id + ' is missing or truncated');
+      }
+      const sample = hydrateSample(meta, raw);
+      if (!sample) throw new Error('instrument ' + id + ' could not be decoded');
+      hydrated.set(id, sample);
+    }
+    return { hasSource: sourceSize > 0, hydrated };
+  }
+
+  function attachHydrated(hydrated) {
+    for (const scene of P.machine.scenes) {
+      for (const track of scene.tracks) {
+        if (!track.sampleId) continue;
+        const sample = hydrated.get(track.sampleId);
+        if (sample) track.sample = sample;
+        else track.sampleId = null;
+      }
+    }
+    for (let i = 0; i < P.machine.tracks.length; i++) ctx.sequencer.bumpTrack(i);
+  }
 
   function timeAgo(ms) {
     const d = Date.now() - ms;
@@ -107,6 +179,90 @@ export function initPersistController(ctx) {
     } finally {
       saving = false;
       if (savePending) { savePending = false; saveNow(); }
+    }
+  }
+
+  async function exportProject() {
+    if (!projectHasContent(P, R)) {
+      status('PROJECT EMPTY · load audio or build an instrument first');
+      return;
+    }
+    const btn = $('btnProjectSave');
+    if (btn) { btn.disabled = true; btn.classList.add('is-working'); }
+    status('PACKING PROJECT…', true);
+    try {
+      const serialized = serializeProject(P, R);
+      const archive = buildBundle(projectEntries(serialized, R.sourceBytes));
+      download(archive, safeProjectName(P.fileName), 'application/vnd.yellowjacket.project+zip');
+      const mb = archive.byteLength / 1048576;
+      status('PROJECT SAVED · ' + mb.toFixed(mb >= 10 ? 0 : 1) + ' MB · '
+        + projectSummary(serialized.json));
+    } catch (e) {
+      statusFault('PROJECT SAVE FAULT · ' + (e.message || e));
+    } finally {
+      if (btn) { btn.classList.remove('is-working'); btn.disabled = !projectHasContent(P, R); }
+    }
+  }
+
+  async function importProjectFile(file) {
+    if (!file) return;
+    if (file.size > MAX_BUNDLE_BYTES) {
+      statusFault('PROJECT OPEN FAULT · file is over 768 MB');
+      return;
+    }
+    const btn = $('btnProjectOpen');
+    if (btn) { btn.disabled = true; btn.classList.add('is-working'); }
+    status('CHECKING PROJECT…', true);
+    let payload;
+    let checked;
+    try {
+      payload = parseProjectEntries(readBundle(await file.arrayBuffer()));
+      checked = preflightBundle(payload);
+    } catch (e) {
+      statusFault('PROJECT OPEN FAULT · ' + (e.message || e) + ' · nothing was changed');
+      if (btn) { btn.disabled = false; btn.classList.remove('is-working'); }
+      return;
+    }
+
+    if (projectHasContent(P, R) && typeof window.confirm === 'function'
+      && !window.confirm('Open “' + (payload.json.fileName || file.name) + '”?\n\n'
+        + 'This replaces the current bench session. CRATE instruments are kept.')) {
+      status('PROJECT KEPT');
+      if (btn) { btn.disabled = false; btn.classList.remove('is-working'); }
+      return;
+    }
+
+    restoring = true;
+    status('OPENING PROJECT…', true);
+    try {
+      if (checked.hasSource) {
+        const genBefore = R.generation;
+        await ctx.api.loadArrayBuffer(payload.source, payload.json.fileName, payload.json.anchors || null);
+        if (R.generation === genBefore) throw new Error('source audio would not decode');
+      } else {
+        ctx.api.clearSource();
+      }
+      applySnapshot(payload.json, { project: P, runtime: R });
+      advanceClipCounter(P.clips);
+      attachHydrated(checked.hydrated);
+      relightAll();
+      if (R.repairs.length) await ctx.api.repairRebuild();
+      store.clearHistory();
+      $('resumePanel').hidden = true;
+      $('dropZone').classList.add('is-hidden');
+      if (!checked.hasSource && ctx.api.showTab) {
+        ctx.api.showTab('machine');
+        const crateTab = document.querySelector('.yj-substate-btn[data-mstate="crate"]');
+        if (crateTab) crateTab.click();
+      }
+      status('PROJECT OPEN · ' + String(payload.json.fileName || 'SOURCE-FREE PROJECT').toUpperCase()
+        + ' · ' + projectSummary(payload.json));
+    } catch (e) {
+      statusFault('PROJECT OPEN FAULT · ' + (e.message || e));
+    } finally {
+      restoring = false;
+      if (btn) { btn.disabled = false; btn.classList.remove('is-working'); }
+      scheduleSave();
     }
   }
 
@@ -328,6 +484,20 @@ export function initPersistController(ctx) {
 
   $('btnResume').addEventListener('click', restore);
   $('btnDiscard').addEventListener('click', discard);
+  $('btnProjectSave').addEventListener('click', exportProject);
+  $('btnProjectOpen').addEventListener('click', () => $('projectInput').click());
+  $('btnProjectOpen2').addEventListener('click', () => $('projectInput').click());
+  $('projectInput').addEventListener('change', (e) => {
+    if (e.target.files[0]) importProjectFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  store.addEventListener('change', () => {
+    $('btnProjectSave').disabled = !projectHasContent(P, R);
+  });
+  $('btnProjectSave').disabled = !projectHasContent(P, R);
+
+  ctx.api.exportProject = exportProject;
+  ctx.api.importProjectFile = importProjectFile;
 
   boot();
 }
