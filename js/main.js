@@ -22,6 +22,8 @@ import { CrateView } from './machine/crate-ui.js';
 import { SynthView } from './machine/synth-ui.js';
 import { ModalView } from './machine/modal-ui.js';
 import { PadGridView } from './machine/pads-ui.js';
+import { KitView } from './machine/kit-ui.js';
+import { FACTORY_KITS } from './machine/kits.js';
 import { FirstRunView } from './app/firstrun-ui.js';
 import { CommandDeckView } from './app/command-deck.js';
 import { SYNTH_PRESETS } from './machine/synth.js';
@@ -35,6 +37,12 @@ import { RepairPanel } from './app/repair-panel.js';
 import { initRepairController } from './app/repair-controller.js';
 import { initWireController } from './app/wire-controller.js';
 import { initPersistController } from './app/persist-controller.js';
+import { StudioView } from './studio/view.js';
+import { StudioEngine } from './studio/engine.js';
+import { initStudioController } from './studio/controller.js';
+import { LoomView } from './loom/view.js';
+import { LoomEngine } from './loom/engine.js';
+import { initLoomController } from './loom/controller.js';
 
 const COPY = {
   idle: 'IDLE',
@@ -102,6 +110,8 @@ const engine = new Engine();
 const transcriber = new Transcriber();
 const meter = new LevelMeter($('meterLive'));
 const sequencer = new Sequencer(engine);
+const studioEngine = new StudioEngine(engine);
+const loomEngine = new LoomEngine(engine);
 const keybed = new Keybed();
 
 // Views are constructed one at a time and isolated, for the same reason the
@@ -116,6 +126,7 @@ const VIEW_SPECS = [
   ['transcript', () => new TranscriptView($('transcriptHost'))],
   ['sliceView', () => new SliceView($('sliceMain'), $('beatmapControls'))],
   ['patternView', () => new PatternView($('patternHost'))],
+  ['kitView', () => new KitView($('kitHost'), FACTORY_KITS)],
   ['songView', () => new SongView($('songHost'))],
   ['clipList', () => new ClipListView($('clipListHost'))],
   ['constellation', () => new ConstellationView($('constellationMain'))],
@@ -128,6 +139,8 @@ const VIEW_SPECS = [
   ['pads', () => new PadGridView($('padsHost'))],
   ['firstRun', () => new FirstRunView($('firstRunHost'))],
   ['commandDeck', () => new CommandDeckView($('commandHost'))],
+  ['studio', () => new StudioView($('studioHost'))],
+  ['loom', () => new LoomView($('loomHost'))],
 ];
 const views = {};
 const deadViews = [];
@@ -144,7 +157,7 @@ for (const [name, make] of VIEW_SPECS) {
 const auditioner = new ClipAuditioner(engine);
 
 const ctx = {
-  store, engine, meter, transcriber, sequencer, keybed, auditioner, views,
+  store, engine, studioEngine, loomEngine, meter, transcriber, sequencer, keybed, auditioner, views,
   $, COPY, status, statusFault, fmtTime, fmtDb, setLed,
   api: {},
 };
@@ -160,6 +173,8 @@ const CONTROLLERS = [
   ['repair', initRepairController],
   ['wire', initWireController],
   ['source', initSourceController],
+  ['studio', initStudioController],
+  ['loom', initLoomController],
   // persist is last on purpose: restore needs every api registered above it.
   ['persist', initPersistController],
 ];
@@ -208,6 +223,11 @@ function showTab(name) {
     pane.classList.add('is-active');
     pane.setAttribute('aria-hidden', 'false');
   }
+  // The pipeline describes the recording-to-sample workflow. It is useful on
+  // every audio bench and actively misleading above the source-free melodic
+  // studio, which has its own transport and signal path.
+  if ($('pipelineHost')) $('pipelineHost').hidden = name === 'studio' || name === 'loom';
+  if (name === 'loom' && ctx.api.refreshLoom) ctx.api.refreshLoom();
   ctx.api.setKeybedEnabled(name === 'machine');
   // canvases need a size pass when they become visible
   // Hidden canvases measure 0, so anything revealed here needs a size pass.
@@ -262,8 +282,15 @@ const commandDefs = [
   { id: 'nav-transcript', group: 'BENCHES', label: 'TRANSCRIPT', note: 'Edit speech by deleting words', keywords: 'captions text fillers cleanup', run: () => jump('transcript') },
   { id: 'nav-signal', group: 'BENCHES', label: 'SIGNAL', note: 'Waveform, spectrogram, repair, and measurement', keywords: 'spectrum loudness lufs paint noise', run: () => jump('signal') },
   { id: 'nav-rack', group: 'BENCHES', label: 'RACK', note: 'Repair chain, render, A/B, and master export', keywords: 'effects compressor limiter eq denoise', run: () => jump('rack') },
+  { id: 'nav-studio', group: 'STUDIO', label: 'INSTRUMENT STUDIO', note: 'Six polyphonic synths, mixer, note sequencer, and stereo bounce', keywords: 'piano roll chords synth bass pad lead production daw', run: () => jump('studio') },
+  { id: 'nav-loom', group: 'LOOM', label: 'SEMANTIC MIDI LOOM', note: 'Bind source words and spans to a traceable MIDI gesture', keywords: 'weave provenance semantic midi opz source gesture', run: () => jump('loom') },
+  { id: 'loom-weave', group: 'LOOM', label: 'WEAVE MATERIAL × GESTURE', note: 'Compile the current Loom inputs into a traceable performance', keywords: 'make hook bind source midi', button: 'btnLoomWeave', reason: 'LOAD MATERIAL AND GESTURE FIRST', run: () => { jump('loom'); $('btnLoomWeave').click(); } },
+  { id: 'studio-idea', group: 'STUDIO', label: 'GENERATE MUSICAL IDEA', note: 'Build a six-part loop in the selected key and scale', keywords: 'compose create progression melody bass chords', button: 'btnStudioIdea', run: () => { jump('studio'); $('btnStudioIdea').click(); } },
+  { id: 'studio-midi', group: 'STUDIO', label: 'EXPORT STUDIO MIDI', note: 'Write six DAW-ready MIDI channels with tempo and swing', keywords: 'smf daw ableton logic export', button: 'btnStudioMidi', reason: 'WRITE OR GENERATE NOTES FIRST', run: () => { jump('studio'); $('btnStudioMidi').click(); } },
+  { id: 'studio-bounce', group: 'STUDIO', label: 'BOUNCE STUDIO WAV', note: 'Render the instrument mix as 48 kHz stereo audio', keywords: 'render export mix print', button: 'btnStudioBounce', reason: 'WRITE OR GENERATE NOTES FIRST', run: () => { jump('studio'); $('btnStudioBounce').click(); } },
   { id: 'nav-slice', group: 'MACHINE', label: 'SLICE', note: 'Beatmap, carve, harvest, and patch output', keywords: 'chop clips op1 opz drum kit', run: () => jump('machine', 'slice') },
   { id: 'nav-pattern', group: 'MACHINE', label: 'PATTERN', note: 'Eight-track sequencer, scenes, locks, and mix', keywords: 'steps groove swing sequencer', run: () => jump('machine', 'pattern') },
+  { id: 'load-808', group: 'MACHINE', label: 'LOAD 808 KIT + GROOVE', note: 'Generate the canonical 96 kHz kit and write a starter pattern', keywords: 'drums factory trap beat high fidelity', run: () => { jump('machine', 'pattern'); ctx.api.loadDrumStarter(); } },
   { id: 'nav-play', group: 'MACHINE', label: 'PLAY', note: 'Velocity pad surface for mouse, touch, or keys', keywords: 'pads perform finger drum', run: () => jump('machine', 'play') },
   { id: 'nav-song', group: 'MACHINE', label: 'SONG', note: 'Chain scenes and print an arrangement', keywords: 'arrange render sections', run: () => jump('machine', 'song') },
   { id: 'nav-crate', group: 'MACHINE', label: 'CRATE + SYNTH', note: 'Persistent instruments and source-free synthesis', keywords: 'library formula modal sound design', run: () => jump('machine', 'crate') },
@@ -282,6 +309,8 @@ const commandDefs = [
   { id: 'redo', group: 'PROJECT', label: 'REDO', note: 'Step forward through project edits', key: '⇧⌘Z', enabled: () => store.canRedo, reason: 'NOTHING TO REDO', run: () => ctx.api.redo() },
   { id: 'play-bench', group: 'TRANSPORT', label: 'PLAY / PAUSE BENCH', note: 'Toggle source transport', key: 'SPACE', enabled: () => !!store.runtime.buffer, reason: 'LOAD AUDIO FIRST', run: () => ctx.api.togglePlay() },
   { id: 'return-zero', group: 'TRANSPORT', label: 'RETURN TO ZERO', note: 'Seek the source transport to the start', key: 'HOME', enabled: () => !!store.runtime.buffer, reason: 'LOAD AUDIO FIRST', run: () => engine.seek(0) },
+  { id: 'play-studio', group: 'TRANSPORT', label: 'PLAY / PAUSE STUDIO', note: 'Toggle the melodic instrument loop', keywords: 'sequence instruments', run: () => { jump('studio'); ctx.api.toggleStudio(); } },
+  { id: 'stop-loom', group: 'TRANSPORT', label: 'STOP LOOM AUDITION', note: 'Stop the semantic weave audition', keywords: 'loom stop semantic', enabled: () => loomEngine.playing, reason: 'LOOM IS NOT PLAYING', run: () => ctx.api.stopLoom() },
 ];
 
 function commandActions() {
@@ -300,10 +329,12 @@ function commandContext() {
   const P = store.project;
   const R = store.runtime;
   const tracks = P.machine.tracks.filter((track) => track.sample).length;
+  const instruments = P.studio && P.studio.tracks ? P.studio.tracks.filter((track) => track.steps.some(Boolean)).length : 0;
   const pieces = [String(P.fileName || (tracks ? 'SOURCE-FREE INSTRUMENT' : 'EMPTY BENCH')).toUpperCase()];
   if (P.words && P.words.length) pieces.push(P.words.length + ' WORDS');
   if (P.clips.length) pieces.push(P.clips.length + ' CLIPS');
   if (tracks) pieces.push(tracks + '/8 TRACKS');
+  if (instruments) pieces.push(instruments + '/6 INSTRUMENTS');
   pieces.push('LOCAL');
   if (navigator.gpu) pieces.push('WEBGPU');
   if (navigator.requestMIDIAccess) pieces.push('MIDI');
@@ -346,7 +377,14 @@ window.addEventListener('keydown', (e) => {
   if (e.target.matches('input, select, textarea')) return;
   // A focused button owns Space (native click) — TAP TEMPO would double-fire otherwise.
   if (e.code === 'Space' && e.target.closest && e.target.closest('button')) return;
-  if (e.code === 'Space') { e.preventDefault(); ctx.api.togglePlay(); }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    const studioActive = $('tab-studio') && $('tab-studio').classList.contains('is-active');
+    const loomActive = $('tab-loom') && $('tab-loom').classList.contains('is-active');
+    if (studioActive) ctx.api.toggleStudio();
+    else if (loomActive) ctx.api.toggleLoom();
+    else ctx.api.togglePlay();
+  }
   if (e.code === 'Home') engine.seek(0);
 });
 
@@ -372,9 +410,10 @@ refreshPipeline();
 // dismissing: the panel must not sit on top of the surface it just opened.
 const FIRSTRUN_KEY = 'yj.firstrun.done';
 const ROUTES = {
+  drums: { tab: 'machine', mstate: 'pattern' },
   kit: { tab: 'machine', mstate: 'slice' },
   clean: { tab: 'transcript' },
-  synth: { tab: 'machine', mstate: 'crate' },
+  synth: { tab: 'studio' },
 };
 function markFirstRunDone() {
   try { localStorage.setItem(FIRSTRUN_KEY, '1'); } catch (e) { /* private mode: show it again */ }
@@ -388,12 +427,13 @@ function openStartRoute(path) {
   if (!route) return;
   // SYNTH is deliberately source-free. The general intake overlay otherwise
   // remains above the route and makes this first-run choice impossible to use.
-  if (path === 'synth') $('dropZone').classList.add('is-hidden');
+  if (path === 'synth' || path === 'drums') $('dropZone').classList.add('is-hidden');
   showTab(route.tab);
   if (route.mstate) {
     const b = document.querySelector('.yj-substate-btn[data-mstate="' + route.mstate + '"]');
     if (b) b.click();
   }
+  if (path === 'drums' && ctx.api.loadDrumStarter) ctx.api.loadDrumStarter();
 }
 if (views.firstRun) views.firstRun.addEventListener('start', (e) => {
   markFirstRunDone();
@@ -408,6 +448,15 @@ $('btnOpenSynth').addEventListener('click', () => {
   }
   markFirstRunDone();
   openStartRoute('synth');
+});
+$('btnOpenDrums').addEventListener('click', () => {
+  if (!$('resumePanel').hidden && typeof window.confirm === 'function'
+    && !window.confirm('Start a new drum session? The saved resume session will be replaced after your first edit. CRATE instruments are kept.')) {
+    status('SAVED SESSION KEPT');
+    return;
+  }
+  markFirstRunDone();
+  openStartRoute('drums');
 });
 try {
   if (views.firstRun && !localStorage.getItem(FIRSTRUN_KEY) && !store.runtime.buffer) views.firstRun.show();
@@ -424,7 +473,7 @@ ctx.api.statusRight();
 
 // Debug handle for the curious (and for bug reports): poke the bench from the console.
 window.__yj = {
-  engine, store, transcriber, sequencer, auditioner, ...views,
+  engine, studioEngine, store, transcriber, sequencer, auditioner, ...views,
   get project() { return store.project; },
   get runtime() { return store.runtime; },
   api: ctx.api,

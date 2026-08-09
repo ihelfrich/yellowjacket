@@ -5,6 +5,7 @@
 import { MODELS } from '../transcribe.js';
 import { REGISTRY, renderChain, spliceCuts } from '../dsp/chain.js';
 import { encodeWavWithStats, toSrt, toVtt, toTxt, download, editedTime } from '../export.js';
+import { LOOM_TRANSCRIPT_MAX_WORDS } from '../loom/compile.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -19,6 +20,37 @@ export function initBenchController(ctx) {
   let deviceLabel = '—';
   let currentModel = null;
   let liftRange = null;        // {i0, i1} from the last transcript range selection
+
+  function selectedKeptWordCount(range = liftRange) {
+    if (!range || !Array.isArray(P.words) || !P.words.length) return 0;
+    const low = Math.max(0, Math.min(range.i0 | 0, range.i1 | 0));
+    const high = Math.min(P.words.length - 1, Math.max(range.i0 | 0, range.i1 | 0));
+    let count = 0;
+    for (let index = low; index <= high; index++) {
+      const word = P.words[index];
+      if (word && !word.deleted && Number(word.end) > Number(word.start)) count++;
+    }
+    return count;
+  }
+
+  function refreshWeaveWordsButton() {
+    const button = $('btnLift');
+    if (!button) return;
+    const count = selectedKeptWordCount();
+    const tooLong = count > LOOM_TRANSCRIPT_MAX_WORDS;
+    button.disabled = count === 0 || tooLong;
+    button.textContent = tooLong
+      ? 'MAX ' + LOOM_TRANSCRIPT_MAX_WORDS + ' WORDS'
+      : count
+      ? 'WEAVE ' + count + (count === 1 ? ' WORD' : ' WORDS') : 'WEAVE WORDS';
+    button.title = tooLong
+      ? 'Selection has ' + count + ' kept words; choose at most '
+        + LOOM_TRANSCRIPT_MAX_WORDS + ' for one Semantic Take'
+      : count
+      ? 'Load ' + count + (count === 1 ? ' selected kept word' : ' selected kept words')
+        + ' as traceable source material in LOOM'
+      : 'Select kept words in the transcript, then load them into LOOM';
+  }
 
   // ---------- status right ----------
   function statusRight() {
@@ -52,6 +84,7 @@ export function initBenchController(ctx) {
       engine.pause();
     } else {
       if (sequencer.running) sequencer.stop(); // one transport owns the output at a time
+      if (ctx.api.stopLoom) ctx.api.stopLoom();
       hookMeter();
       engine.play(activeCuts());
     }
@@ -136,10 +169,18 @@ export function initBenchController(ctx) {
       setLed('ledModel', 'on');
       const words = await transcriber.transcribe(R.mono, R.sampleRate);
       if (gen !== R.generation) return; // another file loaded mid-job; drop the stale result
-      store.update('words', (p) => { p.words = words; });
+      store.update('words', (p) => {
+        p.words = words;
+        if (p.transcript && Array.isArray(p.transcript.gapCuts)) {
+          p.transcript.gapCuts.length = words.length;
+          p.transcript.gapCuts.fill(false);
+        }
+      });
       $('transcriptHint').hidden = true;
-      transcript.setWords(words);
+      transcript.setWords(words, undefined, P.transcript && P.transcript.gapCuts);
       sliceView.setWords(words);
+      liftRange = null;
+      refreshWeaveWordsButton();
       onEdited();
       for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = false;
       const fillers = words.filter((w) => w.filler).length;
@@ -159,11 +200,16 @@ export function initBenchController(ctx) {
 
   // ---------- transcript editing ----------
   transcript.addEventListener('wordclick', (e) => uiSeek(e.detail.t));
+  transcript.addEventListener('beforeedit', () => {
+    // The view mutates shared document arrays immediately after this intent.
+    // Snapshot here so global undo and debounced autosave see the same edit.
+    store.update('transcript-edit', () => {});
+  });
   transcript.addEventListener('edited', onEdited);
   transcript.addEventListener('selectrange', (e) => {
     liftRange = Number.isInteger(e.detail.i0) && Number.isInteger(e.detail.i1)
       ? { i0: e.detail.i0, i1: e.detail.i1 } : null;
-    $('btnLift').disabled = !liftRange;
+    refreshWeaveWordsButton();
   });
 
   function onEdited() {
@@ -171,6 +217,7 @@ export function initBenchController(ctx) {
     waveMini.setCuts(cuts);
     waveMain.setCuts(cuts);
     updateCutReadout();
+    refreshWeaveWordsButton();
     if (R.renderedBuffer) {
       renderFresh = false;
       setRenderState(COPY.renderStale, 'busy');
@@ -440,7 +487,7 @@ export function initBenchController(ctx) {
     $('transcriptHost').prepend($('transcriptHint'));
     for (const id of ['btnTranscribe', 'btnMeasure', 'btnRender', 'btnWav16', 'btnWav24']) $(id).disabled = !hasSource;
     for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = true;
-    $('btnLift').disabled = true;
+    refreshWeaveWordsButton();
     $('roFillers').textContent = '—';
     $('roDeadAir').textContent = '—';
     setRenderState(COPY.renderNone, 'off');
@@ -461,8 +508,9 @@ export function initBenchController(ctx) {
   // a fresh transcription would.
   ctx.api.wordsRestored = () => {
     if (!P.words) return;
+    liftRange = null;
     $('transcriptHint').hidden = true;
-    transcript.setWords(P.words);
+    transcript.setWords(P.words, undefined, P.transcript && P.transcript.gapCuts);
     sliceView.setWords(P.words);
     onEdited();
     for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = false;

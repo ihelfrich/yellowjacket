@@ -12,7 +12,9 @@ const SCROLL_MS = 300;    // playback autoscroll throttle
 
 export class TranscriptView extends EventTarget {
   // events: 'wordclick'   {index, t}            — seek intent
-  //         'selectrange' {start, end, i0, i1}  — seconds + inclusive word indices
+  //         'selectrange' {start, end, i0, i1}  — seconds + inclusive word indices;
+  //                                                all null when selection clears
+  //         'beforeedit'  {}                    — fires before shared document mutation
   //         'edited'      {}                    — deleted flags or gap cuts changed
   constructor(container) {
     super();
@@ -29,6 +31,7 @@ export class TranscriptView extends EventTarget {
     this._undo = [];        // snapshots of {del: bool[], gap: bool[]}
     this._sel = null;       // {a, b} inclusive word indices, a <= b
     this._selAnchor = null;
+    this._focusIndex = -1;  // roving keyboard focus among transcript words
     this._drag = null;      // {start, moved, shift}
     this._activeIndex = -1;
     this._lastScroll = 0;
@@ -39,23 +42,27 @@ export class TranscriptView extends EventTarget {
       const pill = e.target.closest('.yj-gap');
       if (pill && pill.dataset.g != null) this._toggleGap(Number(pill.dataset.g));
     });
+    this._el.addEventListener('keydown', (e) => this._onWordKey(e));
     window.addEventListener('mouseup', (e) => this._onUp(e));
     window.addEventListener('keydown', (e) => this._onKey(e));
   }
 
   // ---------- public API ----------
 
-  setWords(words, duration) {
+  setWords(words, duration, gapCuts = null) {
     this._words = Array.isArray(words) ? words : [];
     const n = this._words.length;
     const last = n ? this._words[n - 1] : null;
     this._duration = typeof duration === 'number' && isFinite(duration) && duration > 0
       ? duration
       : last ? last.end + (last.gapAfter || 0) : 0;
-    this._gapCut = new Array(n).fill(false);
+    this._gapCut = Array.isArray(gapCuts) ? gapCuts : [];
+    this._gapCut.length = n;
+    for (let i = 0; i < n; i++) this._gapCut[i] = !!this._gapCut[i];
     this._undo = [];
     this._sel = null;
     this._selAnchor = null;
+    this._focusIndex = n ? 0 : -1;
     this._drag = null;
     this._activeIndex = -1;
     this._lastScroll = 0;
@@ -86,6 +93,24 @@ export class TranscriptView extends EventTarget {
       this._lastScroll = now;
       el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
+  }
+
+  // Programmatic selection for provenance tracing. By default this is visual
+  // only: following a woven event back to its word must not accidentally arm a
+  // new material replacement. Callers may opt into the normal select event.
+  selectRange(i0, i1, { emit = false, scroll = false } = {}) {
+    if (!this._words.length) return false;
+    const a = Math.max(0, Math.min(this._words.length - 1, Math.min(i0 | 0, i1 | 0)));
+    const b = Math.max(0, Math.min(this._words.length - 1, Math.max(i0 | 0, i1 | 0)));
+    this._applySel(a, b);
+    this._selAnchor = a;
+    this._setWordFocus(a, false);
+    if (scroll) {
+      const el = this._wordEls[a];
+      if (el) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    }
+    if (emit) this._emitSelect();
+    return true;
   }
 
   deleteSelection() {
@@ -128,11 +153,13 @@ export class TranscriptView extends EventTarget {
   restoreAll() {
     const dirty = this._words.some((w) => w.deleted) || this._gapCut.some(Boolean);
     if (!dirty && !this._sel) return;
+    const hadSelection = !!this._sel;
     if (dirty) this._pushUndo();
     for (const w of this._words) w.deleted = false;
     this._gapCut.fill(false);
     this._sel = null;
     this._refresh();
+    if (hadSelection) this._emitSelect();
     if (dirty) this._emitEdited();
   }
 
@@ -200,20 +227,28 @@ export class TranscriptView extends EventTarget {
     const frag = document.createDocumentFragment();
     for (let i = 0; i < n; i++) {
       const w = words[i];
-      const el = document.createElement('span');
+      const el = document.createElement('button');
+      el.type = 'button';
       el.className = 'yj-word' + (w.filler ? ' is-filler' : '') + (w.deleted ? ' is-cut' : '');
       el.dataset.i = String(i);
       el.textContent = w.text;
+      el.tabIndex = i === this._focusIndex ? 0 : -1;
+      el.setAttribute('aria-pressed', 'false');
+      el.setAttribute('aria-label', 'Word ' + (i + 1) + ': ' + w.text);
+      el.title = 'Enter seeks · Space selects · Shift+Arrow extends selection';
       this._wordEls[i] = el;
       frag.appendChild(el);
       frag.appendChild(document.createTextNode(' '));
       const gap = w.gapAfter || 0;
       if (gap > GAP_PILL) {
-        const pill = document.createElement('span');
+        const pill = document.createElement('button');
+        pill.type = 'button';
         pill.className = 'yj-gap' + (this._gapCut[i] ? ' is-cut' : '');
         pill.dataset.g = String(i);
         pill.textContent = '␣ ' + gap.toFixed(1) + 's';
         pill.title = 'Dead air. Click to toggle cut.';
+        pill.setAttribute('aria-label', gap.toFixed(1) + ' seconds of dead air after word ' + (i + 1));
+        pill.setAttribute('aria-pressed', this._gapCut[i] ? 'true' : 'false');
         this._gapEls[i] = pill;
         frag.appendChild(pill);
         frag.appendChild(document.createTextNode(' '));
@@ -231,8 +266,12 @@ export class TranscriptView extends EventTarget {
       if (!el) continue;
       el.classList.toggle('is-cut', !!words[i].deleted);
       el.classList.toggle('is-sel', !!sel && i >= sel.a && i <= sel.b);
+      el.setAttribute('aria-pressed', sel && i >= sel.a && i <= sel.b ? 'true' : 'false');
       const pill = this._gapEls[i];
-      if (pill) pill.classList.toggle('is-cut', !!this._gapCut[i]);
+      if (pill) {
+        pill.classList.toggle('is-cut', !!this._gapCut[i]);
+        pill.setAttribute('aria-pressed', this._gapCut[i] ? 'true' : 'false');
+      }
     }
   }
 
@@ -246,7 +285,10 @@ export class TranscriptView extends EventTarget {
       for (let i = prev.a; i <= prev.b; i++) {
         if (!next || i < next.a || i > next.b) {
           const el = this._wordEls[i];
-          if (el) el.classList.remove('is-sel');
+          if (el) {
+            el.classList.remove('is-sel');
+            el.setAttribute('aria-pressed', 'false');
+          }
         }
       }
     }
@@ -254,7 +296,10 @@ export class TranscriptView extends EventTarget {
       for (let i = next.a; i <= next.b; i++) {
         if (!prev || i < prev.a || i > prev.b) {
           const el = this._wordEls[i];
-          if (el) el.classList.add('is-sel');
+          if (el) {
+            el.classList.add('is-sel');
+            el.setAttribute('aria-pressed', 'true');
+          }
         }
       }
     }
@@ -262,7 +307,12 @@ export class TranscriptView extends EventTarget {
   }
 
   _emitSelect() {
-    if (!this._sel) return;
+    if (!this._sel) {
+      this.dispatchEvent(new CustomEvent('selectrange', {
+        detail: { start: null, end: null, i0: null, i1: null },
+      }));
+      return;
+    }
     const a = this._words[this._sel.a];
     const b = this._words[this._sel.b];
     if (!a || !b) return;
@@ -294,13 +344,20 @@ export class TranscriptView extends EventTarget {
     this._pushUndo();
     this._gapCut[g] = !this._gapCut[g];
     const pill = this._gapEls[g];
-    if (pill) pill.classList.toggle('is-cut', this._gapCut[g]);
+    if (pill) {
+      pill.classList.toggle('is-cut', this._gapCut[g]);
+      pill.setAttribute('aria-pressed', this._gapCut[g] ? 'true' : 'false');
+    }
     this._emitEdited();
   }
 
   // ---------- undo ----------
 
   _pushUndo() {
+    // ProjectStore snapshots the durable document on this event. It must fire
+    // before the shared words/gap arrays change, not after an edit has already
+    // made the prior state unrecoverable.
+    this.dispatchEvent(new CustomEvent('beforeedit', { detail: {} }));
     this._undo.push({
       del: this._words.map((w) => !!w.deleted),
       gap: this._gapCut.slice(),
@@ -311,16 +368,86 @@ export class TranscriptView extends EventTarget {
   _undoPop() {
     const snap = this._undo.pop();
     if (!snap) return;
+    this.dispatchEvent(new CustomEvent('beforeedit', { detail: {} }));
     const words = this._words;
     const n = Math.min(words.length, snap.del.length);
     for (let i = 0; i < n; i++) words[i].deleted = snap.del[i];
-    this._gapCut = snap.gap.slice(0, this._gapCut.length);
-    while (this._gapCut.length < words.length) this._gapCut.push(false);
+    this._gapCut.length = words.length;
+    for (let i = 0; i < words.length; i++) this._gapCut[i] = !!snap.gap[i];
     this._refresh();
     this._emitEdited();
   }
 
   // ---------- input ----------
+
+  _setWordFocus(index, moveFocus = true) {
+    if (!this._words.length) return;
+    const next = Math.max(0, Math.min(this._words.length - 1, index | 0));
+    const prev = this._wordEls[this._focusIndex];
+    if (prev) prev.tabIndex = -1;
+    this._focusIndex = next;
+    const el = this._wordEls[next];
+    if (!el) return;
+    el.tabIndex = 0;
+    if (moveFocus && el.focus) el.focus();
+  }
+
+  _onWordKey(e) {
+    const el = e.target && e.target.closest ? e.target.closest('.yj-word') : null;
+    if (!el || el.dataset.i == null) return;
+    const index = Number(el.dataset.i);
+    if (!Number.isInteger(index)) return;
+
+    let next = null;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = index - 1;
+    else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = index + 1;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = this._words.length - 1;
+    if (next != null) {
+      e.preventDefault();
+      e.stopPropagation();
+      next = Math.max(0, Math.min(this._words.length - 1, next));
+      if (e.shiftKey) {
+        if (this._selAnchor == null) this._selAnchor = index;
+        this._applySel(Math.min(this._selAnchor, next), Math.max(this._selAnchor, next));
+        this._emitSelect();
+      } else {
+        this._selAnchor = next;
+      }
+      this._setWordFocus(next);
+      return;
+    }
+
+    if (e.key === ' ' || e.code === 'Space') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.shiftKey && this._selAnchor != null) {
+        this._applySel(Math.min(this._selAnchor, index), Math.max(this._selAnchor, index));
+      } else {
+        this._selAnchor = index;
+        this._applySel(index, index);
+      }
+      this._emitSelect();
+      return;
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      const word = this._words[index];
+      if (word) this.dispatchEvent(new CustomEvent('wordclick', {
+        detail: { index, t: word.start },
+      }));
+      return;
+    }
+
+    if (e.key === 'Escape' && this._sel) {
+      e.preventDefault();
+      e.stopPropagation();
+      this._applySel(null);
+      this._emitSelect();
+    }
+  }
 
   _onDown(e) {
     if (e.button !== 0) return;
@@ -346,17 +473,22 @@ export class TranscriptView extends EventTarget {
     this._drag = null;
     if (d.moved) {
       this._selAnchor = d.start;
+      this._setWordFocus(d.start, false);
       this._emitSelect();
       return;
     }
     const i = d.start;
+    this._setWordFocus(i, false);
     if ((d.shift || e.shiftKey) && this._selAnchor != null) {
       this._applySel(Math.min(this._selAnchor, i), Math.max(this._selAnchor, i));
       this._emitSelect();
       return;
     }
     this._selAnchor = i;
-    if (this._sel) this._applySel(null);
+    if (this._sel) {
+      this._applySel(null);
+      this._emitSelect();
+    }
     const w = this._words[i];
     if (w) this.dispatchEvent(new CustomEvent('wordclick', { detail: { index: i, t: w.start } }));
   }

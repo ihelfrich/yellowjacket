@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 
@@ -24,6 +25,14 @@ import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source
 import { Engine } from '../js/audio-engine.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
+import {
+  DRUM_ENGINE_VERSION, DRUM_INTERNAL_RATE, DRUM_OVERSAMPLE, DRUM_RATE,
+  renderFactoryVoice, supportedDrumModels,
+} from '../js/machine/drum-dsp.js';
+import {
+  FACTORY_KITS, drumAssetId, getFactoryKit, grooveFor, kitInstallPlan,
+  renderFactoryKit,
+} from '../js/machine/kits.js';
 import { fitModal, synthModal } from '../js/analysis/modal.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
@@ -36,6 +45,23 @@ import { nextId, addMeta, removeMeta, listFromIndex } from '../js/app/crate.js';
 import {
   buildBundle, readBundle, projectEntries, parseProjectEntries, safeProjectName,
 } from '../js/app/project-bundle.js';
+import {
+  applyInstrumentPreset, chordNotes, createStudio, noteName, normalizeStep,
+  generateStudioIdea, scaleNote, studioStepDuration, studioStepSeconds, transformStudioBar,
+} from '../js/studio/model.js';
+import { studioMidiFile, variableLength } from '../js/studio/midi.js';
+import { compileStudioScore } from '../js/studio/compile.js';
+import {
+  canonicalLoomPlanId, compileLoomPlan, demoMidiGesture, LOOM_TRANSCRIPT_MAX_VOICES,
+  LOOM_TRANSCRIPT_MAX_WORDS, sourceMatchesPlan, spanMaterials, studioGesture,
+  sameLoomPlanContent, traceLoomEvent, transcriptMaterials, TranscriptMaterialError,
+} from '../js/loom/compile.js';
+import { sha256HexSync } from '../js/loom/identity.js';
+import { loomHeadroomGain } from '../js/loom/engine.js';
+import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
+import {
+  compileLoomWindow, compilePerformanceRender, compilePerformanceWindow,
+} from '../js/performance/compile.js';
 import { existsSync } from 'node:fs';
 
 // The buffer-kind DSP modules construct AudioBuffers; node has none.
@@ -1052,7 +1078,14 @@ const midiCases = [
 
 // ---------- song compiler (CONTRACT-SONG) ----------
 
-const { planEnvelope, createFittedBuffer, Sequencer } = await import('../js/machine/sequencer.js');
+const {
+  planEnvelope,
+  createFittedBuffer,
+  masterLimit,
+  renderDurationSec,
+  RENDER_TAIL_FLOOR_DB,
+  Sequencer,
+} = await import('../js/machine/sequencer.js');
 
 function songMachine() {
   const mkTrack = (steps, extras = {}) => ({
@@ -1764,6 +1797,292 @@ const synthCases = [
   },
 ];
 
+// ---------- deterministic 96 kHz factory drums ----------
+
+function dominantDrumFrequency(pcm, startSec, endSec, lo, hi) {
+  const start = Math.max(0, Math.floor(startSec * DRUM_RATE));
+  const end = Math.min(pcm.length, Math.ceil(endSec * DRUM_RATE));
+  const window = pcm.subarray(start, end);
+  let bestHz = lo;
+  let bestPower = -Infinity;
+  for (let hz = lo; hz <= hi; hz++) {
+    const power = goertzelPower(window, hz, DRUM_RATE);
+    if (power > bestPower) { bestPower = power; bestHz = hz; }
+  }
+  return bestHz;
+}
+
+function drumBandPower(pcm, fromHz, toHz, strideHz) {
+  let power = 0;
+  for (let hz = fromHz; hz <= toHz; hz += strideHz) {
+    power += goertzelPower(pcm, hz, DRUM_RATE);
+  }
+  return power;
+}
+
+function installFactoryFixture(project, kitId = 'yj-808', grooveId = null, variation = 0, withAssets = false) {
+  const kit = getFactoryKit(kitId);
+  const selectedGroove = grooveId || kit.grooves[0].id;
+  const plan = kitInstallPlan(kitId, { grooveId: selectedGroove, variation });
+  const scene = project.machine.scenes[project.machine.activeScene];
+  for (const item of plan.voices) {
+    const track = scene.tracks[item.slot];
+    track.sample = {
+      channels: [item.pcm], sampleRate: item.sampleRate, label: item.name,
+      role: item.role, factoryKitId: plan.kitId, engineVersion: item.engineVersion,
+    };
+    if (withAssets) {
+      track.sampleId = registerAsset(project, {
+        kind: 'factory-drum', label: item.name, role: item.role,
+        sampleRate: item.sampleRate, frames: item.pcm.length, channelCount: 1,
+        factoryKitId: plan.kitId, factoryVoiceId: item.assetId,
+        engineVersion: item.engineVersion, model: item.model, seed: item.seed,
+        params: { ...item.params }, oversample: DRUM_OVERSAMPLE,
+      });
+    }
+    Object.assign(track.voice, createVoice(), item.voice);
+    Object.assign(track, item.mix);
+    track.steps.set(plan.tracks[item.slot].steps);
+    for (const key of Object.keys(track.stepData)) delete track.stepData[key];
+    for (const key of Object.keys(plan.tracks[item.slot].stepData)) {
+      track.stepData[key] = JSON.parse(JSON.stringify(plan.tracks[item.slot].stepData[key]));
+    }
+    track.len = plan.tracks[item.slot].len;
+  }
+  Object.assign(project.machine.drums, {
+    kitId: plan.kitId, grooveId: plan.grooveId, variation: plan.variation,
+  });
+  return plan;
+}
+
+const drumCases = [
+  function catalogPinsThreeCompleteHighResolutionKits() {
+    assert.equal(DRUM_RATE, 96000, 'factory PCM has one canonical truth rate');
+    assert.equal(DRUM_OVERSAMPLE, 4, 'nonlinear synthesis runs four-times oversampled');
+    assert.equal(DRUM_INTERNAL_RATE, 384000, 'the nonlinear render rate is 384 kHz');
+    assert.equal(DRUM_ENGINE_VERSION, 1, 'asset provenance pins the DSP version');
+    assert.equal(FACTORY_KITS.length, 3, 'three distinct factory kits ship');
+    assert.equal(new Set(FACTORY_KITS.map((kit) => kit.id)).size, 3, 'kit ids are unique');
+    assert.ok(getFactoryKit('yj-808'), 'the catalog includes an explicit 808 kit');
+    assert.equal(getFactoryKit('not-a-kit'), null, 'unknown kits never silently fall back');
+    const models = new Set(supportedDrumModels());
+    const assetIds = new Set();
+    for (const kit of FACTORY_KITS) {
+      assert.equal(kit.sampleRate, DRUM_RATE, kit.id + ' rate');
+      assert.equal(kit.oversample, DRUM_OVERSAMPLE, kit.id + ' oversampling');
+      assert.equal(kit.tracks.length, 8, kit.id + ' has eight playable voices');
+      assert.deepEqual(kit.tracks.map((item) => item.slot), [0, 1, 2, 3, 4, 5, 6, 7]);
+      assert.equal(new Set(kit.tracks.map((item) => item.name)).size, 8, kit.id + ' voice names are unique');
+      assert.ok(Object.isFrozen(kit) && Object.isFrozen(kit.tracks), kit.id + ' manifest is immutable');
+      for (const item of kit.tracks) {
+        assert.ok(models.has(item.model), kit.id + '/' + item.name + ' uses a supported model');
+        assert.ok(Object.isFrozen(item.params) && Object.isFrozen(item.mix), 'nested factory data is immutable');
+        assetIds.add(drumAssetId(kit.id, item.slot));
+      }
+      assert.ok(Array.isArray(kit.grooves) && kit.grooves.length >= 2, kit.id + ' has multiple grooves');
+      for (const groove of kit.grooves) {
+        assert.equal(groove.lanes.length, 8, kit.id + '/' + groove.id + ' covers every track');
+        assert.ok(groove.lanes.every((lane) => lane.length === 16), 'every groove defines one repeating bar per lane');
+      }
+    }
+    assert.equal(assetIds.size, 24, 'factory asset identities cannot collide across kits or slots');
+    assert.equal(drumAssetId('', 0), null);
+    assert.equal(drumAssetId('yj-808', 8), null);
+  },
+  function everyFactoryVoiceIsBitDeterministicFiniteAndCalibrated() {
+    for (const kit of FACTORY_KITS) {
+      for (const definition of kit.tracks) {
+        const first = renderFactoryVoice(definition);
+        const second = renderFactoryVoice(definition);
+        const label = kit.id + '/' + definition.name;
+        assert.equal(first.sampleRate, DRUM_RATE, label + ' rate');
+        assert.equal(first.engineVersion, DRUM_ENGINE_VERSION, label + ' engine version');
+        assert.equal(first.pcm.constructor, Float32Array, label + ' final storage is Float32');
+        assert.equal(first.pcm.length, Math.round(definition.seconds * DRUM_RATE), label + ' exact frame count');
+        assert.deepEqual(first.pcm, second.pcm, label + ' is sample-for-sample deterministic');
+        let peak = 0;
+        let sum = 0;
+        let sumSq = 0;
+        for (let i = 0; i < first.pcm.length; i++) {
+          const sample = first.pcm[i];
+          assert.ok(Number.isFinite(sample), label + ' frame ' + i + ' is finite');
+          peak = Math.max(peak, Math.abs(sample));
+          sum += sample;
+          sumSq += sample * sample;
+        }
+        const rms = Math.sqrt(sumSq / first.pcm.length);
+        const dc = sum / first.pcm.length;
+        assert.ok(rms > 1e-4, label + ' is audible, not a silent success');
+        const peakDb = 20 * Math.log10(peak);
+        assert.ok(peakDb <= definition.ceilingDb + 0.05,
+          label + ' sample peak ' + peakDb.toFixed(3) + ' dBFS respects its calibrated ceiling');
+        assert.ok(first.metrics.truePeakDb <= definition.ceilingDb + 0.06,
+          label + ' true peak ' + first.metrics.truePeakDb.toFixed(3) + ' dBTP <= ' + definition.ceilingDb);
+        assert.ok(Math.abs(dc) <= rms * 0.08 + 1e-9,
+          label + ' DC is bounded relative to program RMS: ' + dc);
+        close(first.metrics.dc, dc, 1e-12, label + ' reported DC');
+        assert.ok(Math.abs(first.pcm[0]) < 1e-12, label + ' begins at silence');
+        assert.ok(Math.abs(first.pcm[first.pcm.length - 1]) < 1e-12, label + ' ends at silence');
+        assert.ok(Number.isFinite(first.gainReductionDb) && first.gainReductionDb <= 0,
+          label + ' ceiling is a one-way safety trim');
+      }
+    }
+    assert.throws(() => renderFactoryVoice(FACTORY_KITS[0].tracks[0], { sampleRate: 48000 }), /96000/);
+    assert.throws(() => renderFactoryVoice({ model: 'imaginary', seconds: 0.1 }), /unknown drum model/);
+  },
+  function rendered808KeepsItsPitchDropAndMetalBand() {
+    const voices = renderFactoryKit('yj-808').voices;
+    const kickEarly = dominantDrumFrequency(voices[0].pcm, 0.006, 0.040, 30, 240);
+    const kickLate = dominantDrumFrequency(voices[0].pcm, 0.18, 0.34, 30, 120);
+    assert.ok(kickEarly >= 90 && kickEarly <= 150, '808 kick attack is pitched high: ' + kickEarly + ' Hz');
+    assert.ok(kickLate >= 40 && kickLate <= 60, '808 kick resolves into sub: ' + kickLate + ' Hz');
+    assert.ok(kickEarly > kickLate * 1.7, 'the kick audibly falls rather than staying a static sine');
+    const tomEarly = dominantDrumFrequency(voices[5].pcm, 0.01, 0.08, 30, 220);
+    const tomLate = dominantDrumFrequency(voices[5].pcm, 0.25, 0.45, 30, 160);
+    assert.ok(tomLate >= 75 && tomLate <= 92 && tomEarly > tomLate,
+      '808 tom retains its shorter downward pitch gesture: ' + tomEarly + ' -> ' + tomLate + ' Hz');
+    const closedHat = voices[3].pcm;
+    const low = drumBandPower(closedHat, 200, 2000, 200);
+    const high = drumBandPower(closedHat, 6000, 16000, 500);
+    assert.ok(10 * Math.log10(high / low) > 15, 'closed hat energy lives in the metal band');
+    assert.ok(voices[4].pcm.length > closedHat.length * 4, 'open hat has a genuinely longer tail');
+  },
+  function groovesAndInstallPlansNeverShareMutableState() {
+    const kit = getFactoryKit('yj-808');
+    const grooveId = kit.grooves[0].id;
+    const base = grooveFor(kit.id, grooveId, 0);
+    const first = grooveFor(kit.id, grooveId, 3);
+    const second = grooveFor(kit.id, grooveId, 3);
+    assert.deepEqual(first, second, 'the same variation is deterministic');
+    assert.notEqual(first, second);
+    for (let i = 0; i < 8; i++) {
+      assert.notEqual(first[i], second[i], 'track documents are fresh');
+      assert.notEqual(first[i].steps, second[i].steps, 'step arrays are fresh');
+      assert.notEqual(first[i].stepData, second[i].stepData, 'lock maps are fresh');
+      assert.equal(first[i].steps.length, 64);
+    }
+    for (let track = 0; track < 8; track++) {
+      for (let step = 0; step < 64; step++) {
+        if (base[track].steps[step]) assert.equal(first[track].steps[step], 1, 'variation retained programmed hit');
+      }
+    }
+    first[0].steps[0] = 0;
+    assert.equal(second[0].steps[0], 1, 'one take cannot mutate another');
+
+    const renderedA = renderFactoryKit(kit.id);
+    const renderedB = renderFactoryKit(kit.id);
+    assert.notEqual(renderedA.voices, renderedB.voices, 'render wrappers are fresh');
+    assert.notEqual(renderedA.voices[0].params, renderedB.voices[0].params);
+    assert.notEqual(renderedA.voices[0].mix, renderedB.voices[0].mix);
+    assert.equal(renderedA.voices[0].pcm, renderedB.voices[0].pcm,
+      'only immutable canonical PCM is intentionally shared');
+    const before = renderedB.voices[0].params.startHz;
+    renderedA.voices[0].params.startHz = -1;
+    assert.equal(renderFactoryKit(kit.id).voices[0].params.startHz, before, 'mutable wrapper cannot poison cache');
+
+    assert.ok(renderedB.metrics.dryWorstCaseDb <= -6 + 1e-9, 'the factory dry sum retains 6 dB headroom');
+    const soundsOnly = kitInstallPlan(kit.id);
+    assert.equal(soundsOnly.grooveId, null, 'sounds-only load does not claim a groove');
+    assert.equal(soundsOnly.tracks, null, 'sounds-only load cannot overwrite user steps');
+    const planA = kitInstallPlan(kit.id, { grooveId, variation: 2 });
+    const planB = kitInstallPlan(kit.id, { grooveId, variation: 2 });
+    assert.deepEqual(planA, planB);
+    assert.notEqual(planA.voices[0].params, planB.voices[0].params);
+    assert.notEqual(planA.voices[0].voice, planB.voices[0].voice);
+    assert.notEqual(planA.voices[0].mix, planB.voices[0].mix);
+    assert.notEqual(planA.tracks[0].steps, planB.tracks[0].steps);
+    assert.notEqual(planA.tracks[0].stepData, planB.tracks[0].stepData);
+  },
+  function installedFactoryGrooveKeepsCompilerLiveOfflineParity() {
+    const project = createProject([]);
+    installFactoryFixture(project, 'volt', 'fracture', 2, false);
+    const machine = project.machine;
+    const whole = compileRender(machine, 3);
+    assert.ok(whole.events.length > 30, 'the starter groove compiles into a real performance');
+    assert.ok(whole.events.some((event) => event.ratchetIndex > 0), 'factory locks include ratchets');
+    assert.ok(whole.events.some((event) => event.rate !== 1), 'factory percussion locks include pitch movement');
+    assert.ok(whole.events.every((event) => machine.tracks[event.track].sample.sampleRate === DRUM_RATE));
+    const stitched = { events: [], ducks: [] };
+    const slice = 0.137;
+    for (let t = 0; t < whole.totalSec; t += slice) {
+      const window = compileWindow(machine, t, Math.min(t + slice, whole.totalSec));
+      stitched.events.push(...window.events);
+      stitched.ducks.push(...window.ducks);
+    }
+    assert.deepEqual(stitched.events, whole.events, 'live lookahead windows equal offline factory render events');
+    assert.deepEqual(stitched.ducks, whole.ducks, 'factory sidechain events have the same parity');
+    assert.deepEqual(compileRender(machine, 3), whole, 'seeded factory groove recompiles identically');
+  },
+  function drumIdentityChokeGroupsAndPcmRoundTrip() {
+    const project = createProject([]);
+    installFactoryFixture(project, 'yj-808', 'anchor', 4, true);
+    assert.equal(project.machine.tracks[3].chokeGroup, 1, 'closed hat joins group 1');
+    assert.equal(project.machine.tracks[4].chokeGroup, 1, 'open hat joins group 1');
+    assert.equal(projectHasContent(project, {}), true, 'a source-free factory kit is project content');
+    const serialized = serializeProject(project, { repairs: [], sourceBytes: null });
+    assert.equal(serialized.sampleFiles.length, 8, 'one mono PCM attachment per factory voice');
+    assert.deepEqual(serialized.json.machine.drums, {
+      kitId: 'yj-808', grooveId: 'anchor', variation: 4,
+    });
+    const restored = createProject([]);
+    const drumsRef = restored.machine.drums;
+    const restore = applySnapshot(serialized.json, { project: restored, runtime: { repairs: [] } });
+    assert.equal(restored.machine.drums, drumsRef, 'restore mutates drum identity in place');
+    assert.deepEqual(restored.machine.drums, project.machine.drums);
+    assert.equal(restored.machine.tracks[3].chokeGroup, 1);
+    assert.equal(restored.machine.tracks[4].chokeGroup, 1);
+    assert.equal(restore.sampleAttachments.length, 8);
+    for (const attachment of restore.sampleAttachments) {
+      const meta = restored.assets[attachment.assetId];
+      const file = serialized.sampleFiles.find((item) => item.id === attachment.assetId);
+      const sample = hydrateSample(meta, new Float32Array(file.bytes));
+      assert.equal(sample.sampleRate, DRUM_RATE);
+      assert.equal(sample.channels.length, 1);
+      assert.equal(sample.channels[0].length, meta.frames);
+      restored.machine.scenes[attachment.sceneIndex].tracks[attachment.trackIndex].sample = sample;
+    }
+    assert.equal(restored.machine.tracks.every((track) => track.sample && track.sample.sampleRate === DRUM_RATE), true);
+
+    const hostile = snapshotDoc(project, { repairs: [], sourceBytes: null });
+    hostile.machine.scenes[0].tracks[0].chokeGroup = -99;
+    hostile.machine.scenes[0].tracks[1].chokeGroup = 99;
+    hostile.machine.scenes[0].tracks[2].chokeGroup = 2.9;
+    hostile.machine.scenes[0].drums.variation = -10;
+    const clamped = createProject([]);
+    applySnapshot(hostile, { project: clamped, runtime: { repairs: [] } });
+    assert.deepEqual(clamped.machine.scenes[0].tracks.slice(0, 3).map((track) => track.chokeGroup), [0, 4, 2]);
+    assert.equal(clamped.machine.drums.variation, 0);
+    const legacy = snapshotDoc(createProject([]), { repairs: [], sourceBytes: null });
+    delete legacy.machine.drums;
+    for (const scene of legacy.machine.scenes) delete scene.drums;
+    const legacyTarget = createProject([]);
+    Object.assign(legacyTarget.machine.drums, { kitId: 'stale', grooveId: 'stale', variation: 9 });
+    applySnapshot(legacy, { project: legacyTarget, runtime: { repairs: [] } });
+    assert.deepEqual(legacyTarget.machine.drums, { kitId: null, grooveId: null, variation: 0 });
+  },
+  function canonicalFactoryKitPrintsAsAnOpzPatch() {
+    const rendered = renderFactoryKit('yj-808');
+    const segments = rendered.voices.map((item) => ({
+      samples: resample(item.pcm, item.sampleRate, 44100),
+    }));
+    const expectedFrames = segments.reduce((sum, item) => sum + item.samples.length, 0);
+    const first = buildDrumPatch({ segments, name: 'yj-808' });
+    const second = buildDrumPatch({ segments, name: 'yj-808' });
+    assert.deepEqual(new Uint8Array(first.bytes), new Uint8Array(second.bytes), 'hardware patch bytes are deterministic');
+    assert.equal(first.report.slices, 8);
+    assert.equal(first.report.scaled, false, 'the designed kit fits the hardware twelve-second budget');
+    const parsed = parseDrumPatch(first.bytes);
+    assert.equal(parsed.sampleRate, 44100, 'OP-Z/OP-1 patch rate');
+    assert.equal(parsed.frames, expectedFrames, 'all eight canonical voices reach the patch');
+    assert.equal(parsed.json.type, 'drum');
+    for (let i = 1; i < 8; i++) assert.ok(parsed.json.start[i] > parsed.json.start[i - 1], 'real slice ' + i + ' advances');
+    for (let i = 8; i < 24; i++) {
+      assert.equal(parsed.json.start[i], parsed.json.start[7], 'unused slot duplicates final start');
+      assert.equal(parsed.json.end[i], parsed.json.end[7], 'unused slot duplicates final end');
+    }
+  },
+];
+
 // ---------- modal analysis ----------
 // A struck resonant object in free vibration IS a sum of damped sinusoids, so
 // a recorded hit can be described by a short table of numbers you can edit.
@@ -1863,7 +2182,7 @@ const modalCases = [
 // on any project with a sidechain duck, and only at the moment of printing.
 // These drive both paths through a stub OfflineAudioContext.
 
-function renderStubCtx(gainLog = []) {
+function renderStubCtx(gainLog = [], channels = 2, length = 4410, sampleRate = 44100) {
   const nodes = () => {
     // Every scheduled gain value is recorded. The send amounts were assigned
     // once at strip creation and never scheduled again, which is how one
@@ -1883,14 +2202,14 @@ function renderStubCtx(gainLog = []) {
   };
   const createGain = () => { const n = nodes(); gainLog.push(n); return n; };
   return {
-    sampleRate: 44100,
+    sampleRate,
     currentTime: 0,
     destination: nodes(),
     createGain, createStereoPanner: nodes, createBufferSource: nodes,
     createBiquadFilter: nodes, createWaveShaper: nodes, createConvolver: nodes,
     createDelay: nodes, createIIRFilter: nodes,
     createBuffer: (ch, len, rate) => new AudioBuffer({ numberOfChannels: ch, length: len, sampleRate: rate }),
-    startRendering: async () => new AudioBuffer({ numberOfChannels: 2, length: 4410, sampleRate: 44100 }),
+    startRendering: async () => new AudioBuffer({ numberOfChannels: channels, length, sampleRate }),
   };
 }
 
@@ -1923,13 +2242,122 @@ function duckedMachine() {
 
 function stubSequencer(machine, gainLog = []) {
   const prevOffline = globalThis.OfflineAudioContext;
-  globalThis.OfflineAudioContext = function () { return renderStubCtx(gainLog); };
+  globalThis.OfflineAudioContext = function (channels, length, sampleRate) {
+    return renderStubCtx(gainLog, channels, length, sampleRate);
+  };
   const seq = new Sequencer({ ctx: null, master: null });
   seq.setMachine(machine);
   return { seq, restore: () => { globalThis.OfflineAudioContext = prevOffline; } };
 }
 
 const renderCases = [
+  function tailAllocationFinishesDryPlateDelayAndSemanticAudioOnly() {
+    const m = duckedMachine();
+    const track = m.tracks[0];
+    track.sample = {
+      channels: [new Float32Array(44100)], sampleRate: 44100, label: 'ONE SECOND',
+    };
+    const compiled = {
+      totalSec: 2,
+      events: [{ tSec: 1.875, track: 0, gain: 1, rate: 1 }],
+    };
+
+    track.sendVerb = 0;
+    track.sendDelay = 0;
+    close(renderDurationSec(m, compiled), 2.88, 1e-12,
+      'dry voice release plus the scheduler stop pad');
+
+    track.sendVerb = 1;
+    m.space.verbMix = 1;
+    m.space.verbSec = 0.4;
+    close(renderDurationSec(m, compiled), 3.292, 1e-12,
+      'enabled plate carries its exact 12 ms predelay and impulse length');
+
+    track.sendVerb = 0;
+    track.sendDelay = 1;
+    m.space.delayMix = 1;
+    m.space.delayFeedback = 0.5;
+    m.space.delayDivision = '1/4';
+    const repeats = Math.ceil(
+      Math.log(10 ** (RENDER_TAIL_FLOOR_DB / 20)) / Math.log(m.space.delayFeedback),
+    );
+    close(renderDurationSec(m, compiled), 2.88 + 0.5 * repeats, 1e-12,
+      'delay stops after its last repeat at or above the declared amplitude floor');
+
+    close(renderDurationSec(m, {
+      totalSec: 2.875,
+      events: [],
+      semanticEvents: [{ outEndSec: 2.875 }],
+    }), 2.877, 1e-12, 'semantic scheduler stop pad is part of artifact duration');
+  },
+  function songTailPlannerResolvesTheEventSectionScene() {
+    const m = duckedMachine();
+    m.scenes[0].tracks[0].sample = {
+      channels: [new Float32Array(4410)], sampleRate: 44100, label: 'SHORT',
+    };
+    m.scenes[1].tracks[0].sample = {
+      channels: [new Float32Array(44100)], sampleRate: 44100, label: 'LONG',
+    };
+    const compiled = {
+      totalSec: 4,
+      sections: [
+        { scene: 0, startSec: 0, endSec: 2 },
+        { scene: 1, startSec: 2, endSec: 4 },
+      ],
+      events: [{ tSec: 3.875, track: 0, gain: 1, rate: 1 }],
+    };
+    close(renderDurationSec(m, compiled), 4.88, 1e-12,
+      'song tail uses the long sample in scene two, not the active-scene alias');
+  },
+  async function limiterSuccessIsExplicitAndFailureIsFailClosed() {
+    const input = new AudioBuffer({ numberOfChannels: 2, length: 32, sampleRate: 48000 });
+    const result = await masterLimit(input, async (buffer, cfg) => {
+      assert.equal(cfg.ceiling, -0.3, 'the declared ceiling reaches the processor');
+      return buffer;
+    });
+    assert.equal(result.buffer, input);
+    assert.equal(result.applied, true);
+    assert.equal(result.ceilingDbtp, -0.3);
+    assert.equal(Object.isFrozen(result), true, 'limiter evidence cannot be rewritten');
+
+    await assert.rejects(
+      masterLimit(input, async () => { throw new Error('processor unavailable'); }),
+      /MASTER LIMITER FAILED.*processor unavailable/,
+      'a processor error cannot fall through to an unlimited export',
+    );
+    await assert.rejects(
+      masterLimit(input, async () => new AudioBuffer({
+        numberOfChannels: 2, length: 16, sampleRate: 48000,
+      })),
+      /MASTER LIMITER FAILED.*output format changed/,
+      'a malformed limiter result cannot be reported as mastered',
+    );
+  },
+  async function generatedPreloadsMatchTheImportGraphAndIndex() {
+    const generated = execFileSync(process.execPath, ['scripts/gen-preload.mjs'], {
+      cwd: new URL('..', import.meta.url),
+      encoding: 'utf8',
+    });
+    const [snippet, index, serviceWorker] = await Promise.all([
+      readFile(new URL('../docs/preload-snippet.html', import.meta.url), 'utf8'),
+      readFile(new URL('../index.html', import.meta.url), 'utf8'),
+      readFile(new URL('../sw.js', import.meta.url), 'utf8'),
+    ]);
+    assert.equal(snippet, generated,
+      'docs/preload-snippet.html is the current generated static import graph');
+    const hrefs = (html) => [...html.matchAll(/rel="modulepreload" href="([^"]+)"/g)]
+      .map((match) => match[1]);
+    assert.deepEqual(hrefs(index), hrefs(generated),
+      'index modulepreloads exactly match the generated dependency order');
+    const precachedModules = new Set(
+      [...serviceWorker.matchAll(/['"](?:\.\/)?(js\/[^'"]+)['"]/g)]
+        .map((match) => match[1]),
+    );
+    for (const href of hrefs(generated)) {
+      assert.equal(precachedModules.has(href), true,
+        `${href} is present in the versioned service-worker precache`);
+    }
+  },
   async function patternFreezeSurvivesADuckRouting() {
     const m = duckedMachine();
     const { seq, restore } = stubSequencer(m);
@@ -1946,6 +2374,9 @@ const renderCases = [
       const out = await seq.renderSongWav(24);
       assert.ok(out && out.bytes, 'song render produced output');
       assert.ok(out.totalSec > 0, 'song has a duration: ' + out.totalSec);
+      assert.ok(out.totalSec >= out.machineTotalSec, 'artifact covers the complete musical grid');
+      assert.deepEqual(out.limiter, { applied: true, ceilingDbtp: -0.3 },
+        'song render reports a limiter only after it succeeds');
     } finally { restore(); }
   },
   async function rendersStillWorkWithNoDucksAtAll() {
@@ -2210,6 +2641,689 @@ const bundleCases = [
   },
 ];
 
+// ---------- multi-instrument Studio ----------
+
+const studioCases = [
+  function defaultRackHasSixIndependentPolyphonicParts() {
+    const studio = createStudio();
+    assert.equal(studio.tracks.length, 6);
+    assert.ok(studio.tracks.every((track) => track.steps.length === 64));
+    assert.equal(studio.tracks[0].preset, 'bass');
+    assert.equal(studio.tracks[2].preset, 'pad');
+    assert.notEqual(studio.tracks[0].synth, studio.tracks[1].synth, 'sound documents are not shared');
+  },
+  function chordsAndNoteNamesAreDeterministic() {
+    assert.deepEqual(chordNotes(60, 'major'), [60, 64, 67]);
+    assert.deepEqual(chordNotes(60, 'minor'), [60, 63, 67]);
+    assert.deepEqual(chordNotes(60, 'seventh'), [60, 64, 67, 70]);
+    assert.equal(noteName(60), 'C4');
+    assert.equal(noteName(61), 'C#4');
+  },
+  function swingNeverChangesTheLengthOfAPair() {
+    const straight = studioStepSeconds(123);
+    for (const swing of [50, 57, 66, 75]) {
+      close(studioStepDuration(123, swing, 0) + studioStepDuration(123, swing, 1), straight * 2, 1e-12, 'swing pair');
+    }
+  },
+  function noteEventsClampAtTheDocumentBoundary() {
+    assert.deepEqual(normalizeStep({ note: 999, chord: 'nope', velocity: -2, gate: 99 }), {
+      note: 127, chord: 'single', velocity: 0.05, gate: 16,
+    });
+    assert.equal(normalizeStep(null), null);
+  },
+  function presetsReplaceSoundWithoutSharingPresetObjects() {
+    const studio = createStudio();
+    applyInstrumentPreset(studio.tracks[0], 'glass');
+    assert.equal(studio.tracks[0].name, 'GLASS');
+    assert.equal(studio.tracks[0].synth.detune, 1200);
+    studio.tracks[0].synth.detune = 3;
+    applyInstrumentPreset(studio.tracks[1], 'glass');
+    assert.equal(studio.tracks[1].synth.detune, 1200);
+  },
+  function studioOnlyProjectsRoundTripAndCountAsContent() {
+    const project = createProject([]);
+    project.studio.touched = true;
+    project.studio.bpm = 137;
+    project.studio.bars = 3;
+    project.studio.keyRoot = 9;
+    project.studio.scale = 'dorian';
+    project.studio.ideaSeed = 7654321;
+    project.studio.tracks[1].steps[18] = { note: 54, chord: 'minor', velocity: 0.7, gate: 1.5 };
+    project.studio.tracks[1].synth.cutoff = 777;
+    assert.equal(projectHasContent(project, {}), true);
+    const doc = snapshotDoc(project, { repairs: [], sourceBytes: null });
+    const restored = createProject([]);
+    applySnapshot(doc, { project: restored, runtime: { repairs: [] } });
+    assert.equal(restored.studio.bpm, 137);
+    assert.equal(restored.studio.bars, 3);
+    assert.equal(restored.studio.keyRoot, 9);
+    assert.equal(restored.studio.scale, 'dorian');
+    assert.equal(restored.studio.ideaSeed, 7654321);
+    assert.deepEqual(restored.studio.tracks[1].steps[18], { note: 54, chord: 'minor', velocity: 0.7, gate: 1.5 });
+    assert.equal(restored.studio.tracks[1].synth.cutoff, 777);
+  },
+  function scaleMathStaysInKeyAcrossOctaves() {
+    assert.equal(scaleNote(0, 'minor', 0, 4), 60);
+    assert.equal(scaleNote(0, 'minor', 2, 4), 63);
+    assert.equal(scaleNote(0, 'minor', 7, 4), 72);
+    assert.equal(scaleNote(2, 'major', 4, 3), 57);
+  },
+  function ideaGeneratorIsDeterministicAndUsesEveryPart() {
+    const a = createStudio(); const b = createStudio();
+    generateStudioIdea(a, 12345); generateStudioIdea(b, 12345);
+    assert.equal(JSON.stringify(a), JSON.stringify(b));
+    assert.equal(a.bars, 2);
+    assert.ok(a.tracks.every((track) => track.steps.some(Boolean)), 'every instrument got a playable part');
+    assert.ok(a.tracks.flatMap((track) => track.steps.filter(Boolean)).every((step) => step.note >= 0 && step.note <= 127));
+  },
+  function barTransformsRotateInvertAndDuplicateWithoutAliasing() {
+    const studio = createStudio(); const track = studio.tracks[0];
+    track.steps[0] = { note: 48, chord: 'single', velocity: 0.8, gate: 1 };
+    track.steps[4] = { note: 55, chord: 'single', velocity: 0.8, gate: 1 };
+    assert.equal(transformStudioBar(track, 0, 'right'), true);
+    assert.equal(track.steps[1].note, 48);
+    assert.equal(transformStudioBar(track, 0, 'invert'), true);
+    assert.equal(track.steps[1].note, 55);
+    assert.equal(transformStudioBar(track, 0, 'duplicate'), true);
+    assert.deepEqual(track.steps[17], track.steps[1]);
+    assert.notEqual(track.steps[17], track.steps[1]);
+  },
+  function midiVariableLengthsCoverBoundaryValues() {
+    assert.deepEqual(variableLength(0), [0]);
+    assert.deepEqual(variableLength(127), [127]);
+    assert.deepEqual(variableLength(128), [0x81, 0]);
+    assert.deepEqual(variableLength(16383), [0xff, 0x7f]);
+  },
+  function midiExportIsACompleteFormatZeroFile() {
+    const studio = createStudio(); generateStudioIdea(studio, 7);
+    const midi = studioMidiFile(studio);
+    assert.equal(new TextDecoder().decode(midi.subarray(0, 4)), 'MThd');
+    assert.equal(new DataView(midi.buffer).getUint16(8), 0, 'format zero');
+    assert.equal(new DataView(midi.buffer).getUint16(10), 1, 'one merged track');
+    assert.equal(new DataView(midi.buffer).getUint16(12), 480, '480 PPQ');
+    assert.equal(new TextDecoder().decode(midi.subarray(14, 18)), 'MTrk');
+    assert.ok(Array.from(midi).some((byte) => (byte & 0xf0) === 0x90), 'contains note-on events');
+    assert.deepEqual(Array.from(midi.subarray(-4)), [0, 0xff, 0x2f, 0], 'ends with end-of-track');
+  },
+  function laterBarsDoNotCollapseOntoTrackLength() {
+    const studio = createStudio(); studio.bars = 2; studio.tracks[0].length = 16;
+    studio.tracks[0].steps[16] = { note: 60, chord: 'single', velocity: 0.8, gate: 1 };
+    const bytes = Array.from(studioMidiFile(studio));
+    assert.ok(bytes.some((byte, index) => byte === 0x90 && bytes[index + 1] === 48),
+      'bar two note exported at the heard transposition instead of repeating bar one');
+  },
+];
+
+// ---------- semantic MIDI Loom ----------
+
+function sequentialTranscript(count) {
+  return Array.from({ length: count }, (_, index) => ({
+    text: 'w' + index,
+    start: index,
+    end: index + 1,
+  }));
+}
+
+const loomCases = [
+  function rawMidiCapturePreservesHumanTimingVelocityAndGate() {
+    const bpm = 120;
+    const swing = 60;
+    const gesture = capturedMidiGesture([
+      { note: 60, velocity: 96, channel: 2, startSec: 0, endSec: 0.19 },
+      { note: 67, velocity: 127, channel: 2, startSec: 0.37, endSec: 0.81 },
+    ], { bpm, swing, inputId: 'op-z', label: 'OP-Z' });
+    assert.ok(gesture);
+    assert.equal(gesture.kind, 'midi-capture');
+    assert.equal(gesture.inputId, 'op-z');
+    assert.equal(gesture.events.length, 2);
+    close(gesture.events[1].rawStartSec, 0.37, 1e-12, 'raw onset survives');
+    close(gesture.events[1].durationSec, 0.44, 1e-12, 'note-off becomes gate duration');
+    close(gesture.events[0].velocity, 96 / 127, 1e-12, 'hardware velocity survives');
+    assert.ok(gesture.events[1].gridStep % 1 !== 0,
+      'as-played feel rides as a fractional Machine grid position');
+    assert.equal(gesture.events[0].eventRef.surface, 'wire-midi');
+    close(captureBarDuration(bpm, swing), stepTime(16, bpm, swing), 1e-12,
+      'capture bar shares the Machine compiler clock');
+  },
+  function rawMidiCaptureIsContentAddressedAndBoundedToOneBar() {
+    const notes = [
+      { note: 48, velocity: 64, channel: 0, startSec: 0.1, endSec: 0.3 },
+      { note: 50, velocity: 80, channel: 0, startSec: 99, endSec: 100 },
+    ];
+    const a = capturedMidiGesture(notes, { bpm: 100, swing: 55, inputId: 'midi-a' });
+    const b = capturedMidiGesture(notes, { bpm: 100, swing: 55, inputId: 'midi-a' });
+    assert.deepEqual(a, b, 'the same bar compiles to the same gesture and id');
+    assert.equal(a.events.length, 1, 'onsets after the bar are dropped');
+    assert.notEqual(capturedMidiGesture([
+      { note: 49, velocity: 64, channel: 0, startSec: 0.1, endSec: 0.3 },
+    ], { bpm: 100, swing: 55 }).id, a.id, 'musical content changes identity');
+    assert.equal(capturedMidiGesture([], { bpm: 100, swing: 55 }), null);
+  },
+  function midiVelocityDomainNeverMistakesRawOneForFullScale() {
+    const note = { note: 60, velocity: 1, channel: 0, startSec: 0, endSec: 0.1 };
+    const wire = capturedMidiGesture([note], { bpm: 120, swing: 50 });
+    const normalized = capturedMidiGesture([note], {
+      bpm: 120, swing: 50, velocityDomain: 'normalized',
+    });
+    assert.equal(wire.velocityDomain, 'midi');
+    close(wire.events[0].velocity, 1 / 127, 1e-15,
+      'WIRE raw velocity 1 remains the quietest non-zero MIDI velocity');
+    assert.equal(normalized.events[0].velocity, 1,
+      'already-normalized callers must opt into their distinct domain');
+    assert.notEqual(wire.id, normalized.id, 'the declared domain participates in capture identity');
+    assert.throws(() => capturedMidiGesture([note], { velocityDomain: 'guess' }),
+      /VELOCITY DOMAIN/);
+  },
+  function studioScoreCompilerMatchesHeardTransposeAndSwing() {
+    const studio = createStudio();
+    studio.bpm = 120; studio.swing = 62; studio.bars = 1;
+    studio.tracks[0].steps[0] = { note: 60, chord: 'major', velocity: 0.7, gate: 1.5 };
+    studio.tracks[0].steps[1] = { note: 62, chord: 'single', velocity: 0.8, gate: 1 };
+    const score = compileStudioScore(studio, { trackIndex: 0 });
+    assert.equal(score.length, 2);
+    assert.deepEqual(score[0].heardNotes, [48, 52, 55], 'track transpose is part of the canonical score');
+    close(score[1].startSec, studioStepDuration(120, 62, 0), 1e-12, 'swung logical start');
+    close(score[0].durationSec, studioStepSeconds(120) * 1.5, 1e-12, 'gate uses straight sixteenth');
+  },
+  function transcriptMaterialKeepsExactWordOriginsAndSkipsCuts() {
+    const words = [
+      { text: 'anything', start: 1, end: 1.4 },
+      { text: 'you', start: 1.5, end: 1.7, deleted: true },
+      { text: 'say', start: 1.8, end: 2.1 },
+    ];
+    const material = transcriptMaterials(words, 0, 2, { id: 'src-1', name: 'voice.wav', size: 99 });
+    assert.equal(material.length, 2);
+    assert.equal(material[0].label, 'anything');
+    assert.deepEqual(material.map((item) => item.origin.wordStart), [0, 2]);
+    assert.deepEqual(material.map((item) => item.origin.wordEnd), [0, 2]);
+    assert.equal(material[1].origin.sourceSize, 99);
+  },
+  function denseTranscriptSelectionBecomesEightBalancedStablePhrases() {
+    const words = sequentialTranscript(16);
+    const source = { id: 'sha256:dense', name: 'dense.wav', size: 1600 };
+    const first = transcriptMaterials(words, 0, words.length - 1, source);
+    const second = transcriptMaterials(words, words.length - 1, 0, source);
+    assert.equal(first.length, LOOM_TRANSCRIPT_MAX_VOICES);
+    assert.deepEqual(first, second, 'range direction cannot change phrase allocation or ids');
+    assert.deepEqual(first.map((item) => [item.origin.wordStart, item.origin.wordEnd]), [
+      [0, 1], [2, 3], [4, 5], [6, 7], [8, 9], [10, 11], [12, 13], [14, 15],
+    ], 'equal-duration words become equal-duration contiguous phrases');
+    assert.equal(first[0].label, 'w0 w1');
+    assert.deepEqual(first.map((item) => [item.origin.startSec, item.origin.endSec]), [
+      [0, 2], [2, 4], [4, 6], [6, 8], [8, 10], [10, 12], [12, 14], [14, 16],
+    ]);
+    assert.equal(new Set(first.map((item) => item.id)).size, first.length,
+      'grouped ids are stable and distinct');
+
+    const durations = [4, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    let cursor = 0;
+    const varied = durations.map((duration, index) => {
+      const word = { text: 'v' + index, start: cursor, end: cursor + duration };
+      cursor += duration;
+      return word;
+    });
+    const balanced = transcriptMaterials(varied, 0, varied.length - 1, source);
+    assert.deepEqual([balanced[0].origin.wordStart, balanced[0].origin.wordEnd], [0, 0],
+      'the long word stays alone instead of following a count-only partition');
+    assert.ok(balanced.slice(1).every((item) => item.origin.endSec - item.origin.startSec <= 2),
+      'short words form the remaining duration-balanced phrases');
+  },
+  function deletedAndInvalidWordsAreHardGroupingBoundaries() {
+    const words = sequentialTranscript(13);
+    words[5].deleted = true;
+    words[10].end = words[10].start;
+    const material = transcriptMaterials(words, 0, 12, { id: 'src-cuts' });
+    assert.equal(material.length, LOOM_TRANSCRIPT_MAX_VOICES);
+    const expectedKept = [0, 1, 2, 3, 4, 6, 7, 8, 9, 11, 12];
+    const represented = material.flatMap((item) => {
+      assert.equal(item.origin.startSec, words[item.origin.wordStart].start);
+      assert.equal(item.origin.endSec, words[item.origin.wordEnd].end);
+      assert.ok(!(item.origin.wordStart < 5 && item.origin.wordEnd > 5),
+        'a phrase never swallows the deleted word');
+      assert.ok(!(item.origin.wordStart < 10 && item.origin.wordEnd > 10),
+        'a phrase never swallows the invalid word');
+      return Array.from(
+        { length: item.origin.wordEnd - item.origin.wordStart + 1 },
+        (_, offset) => item.origin.wordStart + offset,
+      );
+    });
+    assert.deepEqual(represented, expectedKept, 'every kept word appears once and in order');
+  },
+  function thirtyTwoKeptWordsAreAcceptedWithoutOmission() {
+    const words = sequentialTranscript(LOOM_TRANSCRIPT_MAX_WORDS);
+    const first = transcriptMaterials(words, 0, words.length - 1, { id: 'src-max' });
+    const second = transcriptMaterials(words, 0, words.length - 1, { id: 'src-max' });
+    assert.equal(first.length, LOOM_TRANSCRIPT_MAX_VOICES);
+    assert.deepEqual(first, second);
+    const represented = first.flatMap((item) => Array.from(
+      { length: item.origin.wordEnd - item.origin.wordStart + 1 },
+      (_, offset) => item.origin.wordStart + offset,
+    ));
+    assert.deepEqual(represented, Array.from({ length: LOOM_TRANSCRIPT_MAX_WORDS }, (_, i) => i));
+  },
+  function moreThanThirtyTwoKeptWordsFailsExplicitlyInsteadOfTruncating() {
+    const words = sequentialTranscript(LOOM_TRANSCRIPT_MAX_WORDS + 1);
+    let fault = null;
+    try {
+      transcriptMaterials(words, 0, words.length - 1);
+    } catch (error) {
+      fault = error;
+    }
+    assert.ok(fault instanceof TranscriptMaterialError);
+    assert.equal(fault.code, 'LOOM_TRANSCRIPT_WORD_LIMIT');
+    assert.deepEqual(fault.details, {
+      selectedCount: LOOM_TRANSCRIPT_MAX_WORDS + 1,
+      maxWords: LOOM_TRANSCRIPT_MAX_WORDS,
+    });
+  },
+  function moreThanEightDisjointKeptRunsFailsWithStructuredDetail() {
+    const words = sequentialTranscript(17);
+    for (let index = 1; index < words.length; index += 2) words[index].deleted = true;
+    let fault = null;
+    try {
+      transcriptMaterials(words, 0, words.length - 1);
+    } catch (error) {
+      fault = error;
+    }
+    assert.ok(fault instanceof TranscriptMaterialError);
+    assert.equal(fault.code, 'LOOM_TRANSCRIPT_TOO_DISJOINT');
+    assert.deepEqual(fault.details, {
+      selectedCount: 9,
+      runCount: 9,
+      maxVoices: LOOM_TRANSCRIPT_MAX_VOICES,
+    });
+  },
+  function spanMaterialPartitionsWithoutInventingText() {
+    const material = spanMaterials({ sourceId: 'src', sourceName: 'song.wav', startSec: 10, endSec: 14, segments: 4 });
+    assert.deepEqual(material.map((item) => item.label), ['A', 'B', 'C', 'D']);
+    assert.deepEqual(material.map((item) => [item.origin.startSec, item.origin.endSec]), [
+      [10, 11], [11, 12], [12, 13], [13, 14],
+    ]);
+  },
+  function demoGestureIsDeterministicAndMusicallySparse() {
+    const first = demoMidiGesture(110, 56);
+    const second = demoMidiGesture(110, 56);
+    assert.deepEqual(first, second);
+    assert.equal(first.events.length, 9);
+    assert.deepEqual(first.events.map((event) => event.stepIndex), [0, 2, 4, 6, 8, 10, 11, 13, 14]);
+  },
+  function studioGesturePreservesLeadingRestsInsideTheChosenBar() {
+    const studio = createStudio(); studio.bars = 2;
+    studio.tracks[3].steps[20] = { note: 67, chord: 'single', velocity: 0.8, gate: 1 };
+    const gesture = studioGesture(studio, 3, 1);
+    assert.equal(gesture.events[0].stepIndex, 4);
+    let expected = 0;
+    for (let step = 16; step < 20; step++) expected += studioStepDuration(studio.bpm, studio.swing, step);
+    close(gesture.events[0].startSec, expected, 1e-12, 'bar-local start retains four rests');
+  },
+  function studioGestureUsesTheTransposedNoteActuallyHeard() {
+    const studio = createStudio();
+    studio.tracks[0].steps[0] = { note: 60, chord: 'major', velocity: 0.8, gate: 1 };
+    const gesture = studioGesture(studio, 0, 0);
+    assert.equal(gesture.events[0].writtenNote, 60, 'written root remains available for provenance');
+    assert.equal(gesture.events[0].rootNote, 48, 'Loom gesture follows the -12 instrument transpose');
+    const plan = compileLoomPlan(spanMaterials({ startSec: 0, endSec: 1 }), gesture);
+    assert.equal(plan.events[0].gesture.note, 48);
+    assert.equal(plan.events[0].gesture.writtenNote, 60);
+    assert.equal(plan.events[0].targets.studioNote, 48);
+  },
+  function weaveCyclesMaterialAndKeepsBothOrigins() {
+    const material = spanMaterials({ sourceId: 'src', sourceName: 'voice.wav', sourceSize: 12, startSec: 2, endSec: 4, segments: 2 });
+    const gesture = demoMidiGesture(120, 50);
+    const plan = compileLoomPlan(material, gesture, { weaveNumber: 3 });
+    assert.equal(plan.events.length, 9);
+    assert.deepEqual(plan.events.slice(0, 4).map((event) => event.source.label), ['A', 'B', 'A', 'B']);
+    assert.equal(plan.events[0].gesture.id, 'demo-midi-v1');
+    assert.equal(plan.events[0].source.sourceId, 'src');
+    assert.equal(plan.diagnostics.tracedCount, 9);
+    assert.equal(traceLoomEvent(plan, plan.events[4].id), plan.events[4]);
+  },
+  function loomPlanIdentityIsCanonicalSha256OverMusicalContent() {
+    assert.equal(sha256HexSync('abc'),
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+      'the synchronous digest matches the SHA-256 standard vector');
+    const material = spanMaterials({
+      sourceId: 'sha256:' + '1'.repeat(64), sourceName: 'voice.wav',
+      sourceSize: 123, startSec: 0, endSec: 1, segments: 1,
+    });
+    const earlyGesture = demoMidiGesture(120, 50);
+    const lateGesture = demoMidiGesture(120, 50);
+    earlyGesture.events[0].gridStep = 0.125;
+    lateGesture.events[0].gridStep = 0.875;
+    const early = compileLoomPlan(material, earlyGesture, { weaveNumber: 1 });
+    const sameMusic = compileLoomPlan(material, earlyGesture, { weaveNumber: 99 });
+    const late = compileLoomPlan(material, lateGesture, { weaveNumber: 2 });
+    assert.match(early.id, /^lp-sha256-[a-f0-9]{64}$/);
+    assert.equal(early.contentId, early.id);
+    assert.equal(canonicalLoomPlanId(early), early.id,
+      'persisted identity recomputes from canonical owned content');
+    assert.equal(early.id, sameMusic.id,
+      'the operation counter is metadata, not part of the performance recipe');
+    assert.equal(sameLoomPlanContent(early, sameMusic), true);
+    assert.notEqual(early.id, late.id,
+      'fractional as-played timing is output-affecting and changes identity');
+    assert.equal(sameLoomPlanContent(early, late), false);
+    assert.ok(early.events.every((event, index) =>
+      event.id === early.id + '-event-' + (index + 1)),
+    'event identity is derived deterministically from canonical plan identity');
+  },
+  function capturedNoteOffBoundsAudibleRenderAndLineage() {
+    const material = spanMaterials({
+      sourceId: 'sha256:' + '2'.repeat(64), sourceName: 'voice.wav',
+      sourceSize: 48000, startSec: 0, endSec: 1, segments: 1,
+    });
+    const makePlan = (endSec) => compileLoomPlan(material, capturedMidiGesture([{
+      note: 60, velocity: 64, channel: 0, startSec: 0, endSec,
+    }], { bpm: 120, swing: 50, inputId: 'op-z' }));
+    const short = makePlan(0.05);
+    const long = makePlan(0.9);
+    assert.notEqual(short.id, long.id, 'captured gate is canonical musical content');
+    assert.equal(short.gesture.inputId, 'op-z', 'captured hardware identity reaches the plan');
+    assert.equal(short.gesture.timing, 'as-played', 'capture timing domain reaches the plan');
+    assert.equal(short.gesture.velocityDomain, 'midi', 'velocity domain reaches the plan');
+    close(short.events[0].source.endSec, 0.05, 1e-12, 'short plan source boundary');
+    close(long.events[0].source.endSec, 0.9, 1e-12, 'long plan source boundary');
+    assert.equal(short.events[0].source.materialEndSec, 1,
+      'the full selected material remains available for provenance');
+
+    const project = createProject([]);
+    const scene = project.machine.scenes[0];
+    scene.bpm = 120;
+    scene.swing = 50;
+    const renderedEvent = (plan) => {
+      scene.loomLane = {
+        planId: plan.id, enabled: true, gainDb: -9, pan: 0,
+        repeatSteps: 16, startStep: 0,
+      };
+      const render = compilePerformanceRender(project.machine, { [plan.id]: plan }, 1);
+      assert.equal(render.semanticEvents.length, 1);
+      return render.semanticEvents[0];
+    };
+    const shortEvent = renderedEvent(short);
+    const longEvent = renderedEvent(long);
+    close(shortEvent.sourceSpanSec, 0.05, 1e-12, 'live/offline compiler hears short gate');
+    close(shortEvent.outDurationSec, 0.05, 1e-12, 'short output duration');
+    close(shortEvent.trace.sourceEndSec, 0.05, 1e-12, 'short lineage boundary');
+    close(longEvent.sourceSpanSec, 0.9, 1e-12, 'live/offline compiler hears long gate');
+    close(longEvent.outDurationSec, 0.9, 1e-12, 'long output duration');
+    close(longEvent.trace.sourceEndSec, 0.9, 1e-12, 'long lineage boundary');
+  },
+  function weavePitchContourIsBoundedToOneOctave() {
+    const material = spanMaterials({ sourceId: 'src', startSec: 0, endSec: 1, segments: 1 });
+    const gesture = demoMidiGesture();
+    gesture.events[0].rootNote = 0;
+    gesture.events[gesture.events.length - 1].rootNote = 127;
+    const plan = compileLoomPlan(material, gesture);
+    assert.ok(plan.events.every((event) => event.transform.semitones >= -12 && event.transform.semitones <= 12));
+    assert.ok(plan.events.every((event) => event.transform.rate >= 0.5 && event.transform.rate <= 2));
+  },
+  function auditionHeadroomTracksWorstOverlap() {
+    const material = spanMaterials({ startSec: 0, endSec: 3.599, segments: 4 });
+    const plan = compileLoomPlan(material, demoMidiGesture(110, 56));
+    const gain = loomHeadroomGain(plan, 160);
+    assert.ok(gain < 0.25, 'the overlapping demo gets conservative mix-bus gain: ' + gain);
+    const solo = compileLoomPlan(spanMaterials({ startSec: 0, endSec: 0.1, segments: 1 }), {
+      id: 'one-note', label: 'ONE', channel: 0, bpm: 120, swing: 50, bars: 1,
+      events: [{ eventRef: {}, trackIndex: 0, stepIndex: 0, startSec: 0, durationSec: 0.1,
+        rootNote: 60, heardNotes: [60], velocity: 0.8, gate: 1, audible: true }],
+    });
+    close(loomHeadroomGain(solo, 1), 0.72, 1e-12, 'a single event keeps nominal headroom');
+  },
+  function hashlessPlansStayInspectableButCannotGoOnlineOrPrint() {
+    const material = spanMaterials({ sourceId: 'src', sourceName: 'one.wav', sourceSize: 123, startSec: 0, endSec: 1 });
+    const plan = compileLoomPlan(material, demoMidiGesture());
+    assert.ok(plan.events.length > 0, 'legacy/hashless plan content remains inspectable');
+    assert.equal(traceLoomEvent(plan, plan.events[0].id), plan.events[0]);
+    assert.equal(sourceMatchesPlan(plan, { name: 'one.wav', size: 123 }), false,
+      'filename and size are never treated as content identity');
+    assert.equal(sourceMatchesPlan(plan, { name: 'two.wav', size: 123 }), false);
+    assert.equal(sourceMatchesPlan(plan, { name: 'one.wav', size: 456 }), false);
+    assert.equal(sourceMatchesPlan(plan, { hash: 'sha256:' + 'a'.repeat(64) }), false,
+      'a runtime hash cannot make an unverified historical plan printable');
+  },
+  function shaIdentitySurvivesRenameAndRejectsDifferentBytes() {
+    const hashA = 'sha256:' + 'a'.repeat(64);
+    const hashB = 'sha256:' + 'b'.repeat(64);
+    const plan = compileLoomPlan(spanMaterials({
+      sourceId: hashA, sourceName: 'original.wav', sourceSize: 123,
+      startSec: 0, endSec: 1,
+    }), demoMidiGesture());
+    assert.equal(sourceMatchesPlan(plan, {
+      hash: hashA, name: 'renamed.wav', size: 999,
+    }), true, 'content identity outranks display metadata');
+    assert.equal(sourceMatchesPlan(plan, {
+      hash: hashB, name: 'original.wav', size: 123,
+    }), false, 'matching filename and size cannot impersonate different bytes');
+  },
+  function loomPlanPersistsWithoutPcmOrFormatBump() {
+    const project = createProject([]);
+    project.loom.weaveCount = 1;
+    const plan = compileLoomPlan(
+      spanMaterials({ sourceId: 'src', sourceName: 'voice.wav', startSec: 0, endSec: 1 }),
+      demoMidiGesture(),
+    );
+    project.loom.plan = plan;
+    project.loom.activePlanId = plan.id;
+    project.loom.plans[plan.id] = plan;
+    assert.equal(projectHasContent(project, {}), true);
+    const doc = snapshotDoc(project, { repairs: [], sourceBytes: null });
+    assert.equal(doc.formatVersion, FORMAT_VERSION);
+    const restored = createProject([]);
+    applySnapshot(doc, { project: restored, runtime: { repairs: [] } });
+    assert.deepEqual(restored.loom, project.loom);
+    assert.equal(sourceMatchesPlan(restored.loom.plan, {
+      name: 'voice.wav', size: null,
+    }), false, 'hashless plans survive restore only as offline inspectable recipes');
+  },
+  function persistenceRecomputesStalePlanAndEventIdsThenRemapsScenes() {
+    const project = createProject([]);
+    const plan = compileLoomPlan(spanMaterials({
+      sourceId: 'sha256:' + '3'.repeat(64), sourceName: 'voice.wav',
+      sourceSize: 48000, startSec: 0, endSec: 1, segments: 1,
+    }), demoMidiGesture(120, 50));
+    project.loom.plan = plan;
+    project.loom.activePlanId = plan.id;
+    project.loom.plans[plan.id] = plan;
+    project.machine.scenes[0].loomLane.planId = plan.id;
+
+    const doc = snapshotDoc(project, { repairs: [], sourceBytes: null });
+    const saved = doc.loom.plans[plan.id];
+    saved.events[0].gridStep = 0.375;
+    doc.loom.plan = JSON.parse(JSON.stringify(saved));
+    const staleEventId = saved.events[0].id;
+
+    const restored = createProject([]);
+    applySnapshot(doc, { project: restored, runtime: { repairs: [] } });
+    const ids = Object.keys(restored.loom.plans);
+    assert.equal(ids.length, 1);
+    const restoredId = ids[0];
+    const restoredPlan = restored.loom.plans[restoredId];
+    assert.notEqual(restoredId, plan.id,
+      'mutated musical content cannot retain a stale persisted identity');
+    assert.equal(canonicalLoomPlanId(restoredPlan), restoredId);
+    assert.equal(restored.loom.activePlanId, restoredId);
+    assert.equal(restored.loom.plan, restoredPlan);
+    assert.equal(restored.machine.scenes[0].loomLane.planId, restoredId,
+      'scene references follow the verified canonical content');
+    assert.notEqual(restoredPlan.events[0].id, staleEventId);
+    assert.equal(restoredPlan.events[0].id, restoredId + '-event-1');
+  },
+  function loomCompilerRefusesMissingInputs() {
+    assert.throws(() => compileLoomPlan([], demoMidiGesture()), /MATERIAL/);
+    assert.throws(() => compileLoomPlan(spanMaterials({ startSec: 0, endSec: 1 }), null), /MIDI GESTURE/);
+  },
+];
+
+// ---------- semantic performance compiler ----------
+
+function performanceFixture() {
+  const project = createProject([]);
+  const scene = project.machine.scenes[0];
+  scene.bpm = 120;
+  scene.swing = 50;
+  scene.loomLane = {
+    planId: 'plan-a', enabled: true, gainDb: -9, pan: 0.15,
+    repeatSteps: 16, startStep: 0,
+  };
+  const plan = {
+    id: 'plan-a',
+    events: [
+      {
+        id: 'word-one', gridStep: 0, stepIndex: 7, outStartSec: 99,
+        source: {
+          sourceId: 'sha256:source-a', sourceName: 'voice.wav', materialId: 'word-0',
+          label: 'anything', startSec: 1, endSec: 1.25, wordStart: 0, wordEnd: 0,
+        },
+        gesture: {
+          id: 'studio-bass-bar-1', label: 'STUDIO · BASS',
+          eventRef: { surface: 'studio', trackId: 'bass', stepIndex: 0 },
+          note: 48, velocity: 0.8, gate: 1,
+        },
+        transform: { kind: 'loom.bind', rate: 1, semitones: 0, voice: 1 },
+      },
+      {
+        id: 'word-two', stepIndex: 4,
+        source: {
+          sourceId: 'sha256:source-a', sourceName: 'voice.wav', materialId: 'word-1',
+          label: 'say', startSec: 2, endSec: 2.4, wordStart: 1, wordEnd: 1,
+        },
+        gesture: {
+          id: 'studio-bass-bar-1', label: 'STUDIO · BASS',
+          eventRef: { surface: 'studio', trackId: 'bass', stepIndex: 4 },
+          note: 55, velocity: 0.7, gate: 0.8,
+        },
+        transform: { kind: 'loom.bind', rate: 2, semitones: 12, voice: 2 },
+      },
+    ],
+  };
+  return { project, machine: project.machine, scene, plan, plans: { 'plan-a': plan } };
+}
+
+const performanceCases = [
+  function noLaneIsExactlyMachineNeutral() {
+    const project = createProject([]);
+    const track = project.machine.tracks[0];
+    track.sample = { channels: [new Float32Array(32)], sampleRate: 48000, label: 'HIT' };
+    track.steps[0] = 1;
+    const expected = compileWindow(project.machine, 0, 1, { fill: true });
+    const actual = compilePerformanceWindow(project.machine, {}, 0, 1, { fill: true });
+    assert.deepEqual(actual.events, expected.events);
+    assert.deepEqual(actual.ducks, expected.ducks);
+    assert.deepEqual(actual.semanticEvents, []);
+    assert.deepEqual(actual.lineage, []);
+  },
+  function halfOpenWindowsStitchWithoutAHitAtTheSeamTwice() {
+    const { scene, plan } = performanceFixture();
+    const whole = compileLoomWindow(plan, scene.loomLane, scene, 0, 1);
+    const left = compileLoomWindow(plan, scene.loomLane, scene, 0, 0.5);
+    const right = compileLoomWindow(plan, scene.loomLane, scene, 0.5, 1);
+    assert.deepEqual([...left, ...right], whole);
+    assert.equal(left.some((event) => event.tSec === 0.5), false);
+    assert.equal(right.filter((event) => event.tSec === 0.5).length, 1);
+    assert.equal(new Set(whole.map((event) => event.id)).size, whole.length);
+  },
+  function loomOnsetsRetargetToDestinationTempoAndSwing() {
+    const { scene, plan } = performanceFixture();
+    plan.events = [{ ...plan.events[0], id: 'odd-step', gridStep: 1, outStartSec: 42 }];
+    scene.bpm = 120;
+    scene.swing = 66;
+    let event = compileLoomWindow(plan, scene.loomLane, scene, 0, 1)[0];
+    close(event.tSec, 1 / 6, 1e-12, 'triplet swing destination step');
+    scene.bpm = 60;
+    scene.swing = 50;
+    event = compileLoomWindow(plan, scene.loomLane, scene, 0, 1)[0];
+    close(event.tSec, 0.25, 1e-12, 'destination tempo replaces Loom source seconds');
+  },
+  function laneRepeatsOnItsStepPeriodWithoutDrift() {
+    const { scene, plan } = performanceFixture();
+    plan.events = [plan.events[0]];
+    const events = compileLoomWindow(plan, scene.loomLane, scene, 0, 4.01);
+    assert.deepEqual(events.map((event) => event.tSec), [0, 2, 4]);
+    assert.deepEqual(events.map((event) => event.cycle), [0, 1, 2]);
+    assert.deepEqual(events.map((event) => event.id), [
+      'plan-a:word-one:cycle-0', 'plan-a:word-one:cycle-1', 'plan-a:word-one:cycle-2',
+    ]);
+  },
+  function objectAndMapRegistriesCompileDeterministically() {
+    const { machine, plan, plans } = performanceFixture();
+    const first = compilePerformanceWindow(machine, plans, 0, 3);
+    const second = compilePerformanceWindow(machine, new Map([['plan-a', plan]]), 0, 3);
+    assert.deepEqual(first, second);
+    assert.deepEqual(compilePerformanceWindow(machine, plans, 0, 3), first);
+  },
+  function everySemanticEventCarriesCompleteLineage() {
+    const { machine, plans } = performanceFixture();
+    const compiled = compilePerformanceWindow(machine, plans, 0, 1);
+    const event = compiled.semanticEvents[0];
+    assert.equal(event.trace.planId, 'plan-a');
+    assert.equal(event.trace.eventId, 'word-one');
+    assert.equal(event.trace.sceneId, 's0');
+    assert.equal(event.trace.source.sourceId, 'sha256:source-a');
+    assert.equal(event.trace.source.wordStart, 0);
+    assert.deepEqual(event.trace.gesture.eventRef,
+      { surface: 'studio', trackId: 'bass', stepIndex: 0 });
+    assert.equal(event.trace.transform.kind, 'loom.bind');
+    assert.equal(event.trace.outStartSec, event.tSec);
+    assert.equal(event.trace.outEndSec, event.outEndSec);
+    assert.deepEqual(compiled.lineage[0], { id: event.id, ...event.trace });
+  },
+  function repeatedLongMaterialGetsOverlapSafeFiniteHeadroom() {
+    const { scene, plan } = performanceFixture();
+    scene.loomLane.repeatSteps = 4;
+    scene.loomLane.gainDb = 6;
+    plan.events = [{
+      ...plan.events[0],
+      source: { ...plan.events[0].source, startSec: 0, endSec: 4 },
+      gesture: { ...plan.events[0].gesture, velocity: 0.92 },
+    }];
+    const events = compileLoomWindow(plan, scene.loomLane, scene, 0, 6);
+    assert.ok(events.length > 8);
+    assert.ok(events.every((event) => Number.isFinite(event.gain)
+      && event.gain > 0 && event.headroomGain < 0.1));
+    let worst = 0;
+    for (const probe of events.map((event) => event.tSec + 1e-6)) {
+      let sum = 0;
+      for (const event of events) {
+        if (event.tSec <= probe && event.outEndSec > probe) sum += event.gain;
+      }
+      worst = Math.max(worst, sum);
+    }
+    assert.ok(worst <= 0.900000000001, 'semantic bus peak ' + worst + ' stays within its budget');
+  },
+  function renderAndFullWindowShareTheExactSemanticStream() {
+    const { machine, plans } = performanceFixture();
+    const track = machine.tracks[0];
+    track.sample = { channels: [new Float32Array(32)], sampleRate: 48000, label: 'HIT' };
+    track.steps[0] = 1;
+    const render = compilePerformanceRender(machine, plans, 2, { fill: false });
+    const window = compilePerformanceWindow(machine, plans, 0, render.machineTotalSec, { fill: false });
+    const machineOnly = compileRender(machine, 2, { fill: false });
+    assert.deepEqual(render.semanticEvents, window.semanticEvents);
+    assert.deepEqual(render.lineage, window.lineage);
+    assert.deepEqual(render.events, machineOnly.events);
+    assert.deepEqual(render.ducks, machineOnly.ducks);
+    assert.equal(render.loopSec, machineOnly.loopSec);
+    assert.equal(render.machineTotalSec, machineOnly.totalSec);
+    assert.ok(render.totalSec >= render.machineTotalSec);
+  },
+  function semanticTailExtendsRenderWithoutStartingAnotherCycle() {
+    const { machine, scene, plan, plans } = performanceFixture();
+    plan.events = [{
+      ...plan.events[0], id: 'last-step-word', gridStep: 15,
+      source: { ...plan.events[0].source, startSec: 0, endSec: 1 },
+      transform: { ...plan.events[0].transform, rate: 1 },
+    }];
+    scene.loomLane.repeatSteps = 16;
+    const render = compilePerformanceRender(machine, plans, 1);
+    assert.equal(render.loopSec, 2);
+    assert.equal(render.machineTotalSec, 2);
+    assert.equal(render.semanticEvents.length, 1, 'the cycle at the 2 s boundary is not compiled');
+    close(render.semanticEvents[0].tSec, 1.875, 1e-12, 'last sixteenth starts inside Machine time');
+    close(render.totalSec, 2.875, 1e-12, 'render allocation includes the complete source tail');
+    close(render.lineage[0].outEndSec, render.totalSec, 1e-12, 'lineage and render tail agree');
+  },
+];
+
 const groups = [
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
@@ -2225,6 +3339,7 @@ const groups = [
   ['harvest', harvestCases],
   ['pipeline', pipelineCases],
   ['synth', synthCases],
+  ['factory drums', drumCases],
   ['modal', modalCases],
   ['offline render', renderCases],
   ['scene sends', sceneSendCases],
@@ -2232,6 +3347,9 @@ const groups = [
   ['voice clamp parity', clampParityCases],
   ['worker protocol', workerProtocolCases],
   ['project bundle', bundleCases],
+  ['instrument studio', studioCases],
+  ['semantic MIDI loom', loomCases],
+  ['semantic performance', performanceCases],
   ['constellation', constellationCases],
   ['crate index', crateCases],
   ['clip lifecycle', clipCases],

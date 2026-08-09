@@ -2,34 +2,305 @@
 // Moved from main.js in the STRUCTURE refactor; logic unchanged except sample
 // assignment now also records an asset registry entry (persistence groundwork).
 
-import { wordsToClip } from './cliprefs.js';
-import { registerAsset } from '../app/project-store.js';
+import { createVoice, registerAsset } from '../app/project-store.js';
+import { buildBundle } from '../app/project-bundle.js';
 import { encodeWav, download } from '../export.js';
+import { buildDrumPatch } from '../export/op1patch.js';
+import { resample } from '../dsp/resample.js';
 import { patternLoopSteps, normalizeVoice } from './compile.js';
 import { CrateStore } from '../app/crate.js';
 import { renderFormula } from './synth.js';
 import { fitModal, synthModal } from '../analysis/modal.js';
+import {
+  FACTORY_KITS, drumAssetId, getFactoryKit, grooveFor, renderFactoryKit,
+} from './kits.js';
+import { sourceMatchesPlan } from '../loom/compile.js';
 
 const MAX_TRACK_SAMPLE_SEC = 30;
 
 export function initMachineController(ctx) {
   const { store, engine, sequencer, keybed, auditioner, views, $, COPY, status, statusFault, setLed } = ctx;
-  const { sliceView, patternView, songView, voiceView, crateView, clipList,
+  const { sliceView, patternView, kitView, songView, voiceView, crateView, clipList,
     constellation, synthView, pads, modalView } = views;
   const P = store.project;
   const R = store.runtime;
 
   let machineBpmTouched = false;
+  let semanticPrintBusy = false;
 
   sequencer.setMachine(P.machine);
   patternView.setMachine(P.machine);
+
+  function activeSemanticTake() {
+    const sceneIndex = P.machine.activeScene | 0;
+    const scene = P.machine.scenes[sceneIndex];
+    const lane = scene && scene.loomLane;
+    const plans = P.loom && P.loom.plans ? P.loom.plans : {};
+    const plan = lane && lane.planId ? plans[lane.planId] || null : null;
+    const size = R.sourceBytes ? R.sourceBytes.byteLength : null;
+    const online = !!plan && sourceMatchesPlan(plan, {
+      id: R.sourceHash,
+      hash: R.sourceHash,
+      name: P.fileName,
+      size,
+    });
+    return { sceneIndex, scene, lane, plan, online, size };
+  }
+
+  function refreshSemanticLane() {
+    if (!patternView || typeof patternView.setLoomLane !== 'function') return;
+    const take = activeSemanticTake();
+    patternView.setLoomLane({
+      lane: take.lane,
+      plan: take.plan,
+      online: take.online,
+      sceneLabel: take.scene ? take.scene.name : 'SCENE ' + (take.sceneIndex + 1),
+    });
+  }
+
+  sequencer.setPerformanceSources({
+    plans: () => (P.loom && P.loom.plans) || {},
+    bufferFor: (planId) => {
+      const plans = P.loom && P.loom.plans ? P.loom.plans : {};
+      const plan = planId ? plans[planId] : null;
+      if (!plan || !R.buffer) return null;
+      const size = R.sourceBytes ? R.sourceBytes.byteLength : null;
+      return sourceMatchesPlan(plan, {
+        id: R.sourceHash,
+        hash: R.sourceHash,
+        name: P.fileName,
+        size,
+      }) ? R.buffer : null;
+    },
+    identityFor: (planId) => {
+      const plan = P.loom && P.loom.plans && P.loom.plans[planId];
+      return {
+        sha256: R.sourceHash || (plan && plan.source && plan.source.sha256) || null,
+        name: P.fileName || (plan && plan.source && plan.source.name) || null,
+        size: R.sourceBytes ? R.sourceBytes.byteLength
+          : (plan && plan.source && plan.source.size),
+      };
+    },
+  });
+  refreshSemanticLane();
+  store.addEventListener('change', refreshSemanticLane);
   // Every path that fires a track goes through here, so the pads light whether
   // the hit came from the mouse, the QWERTY keys, incoming MIDI or the grid.
   function fireTrack(i, velocity = 1) {
     sequencer.trigger(i, 0, velocity);
     if (pads) pads.flash(i);
+    if (kitView) {
+      kitView.flash(i);
+      if (!kitView.audioRate && engine.ctx) kitView.setState(P.machine, engine.ctx.sampleRate);
+    }
   }
   ctx.api.fireTrack = fireTrack;
+
+  // Source-free instruments are real kit material too. The legacy PATCH path
+  // slices the loaded recording; this path prints the eight active Machine
+  // voices directly, with the canonical Kaiser conversion required by OP-Z /
+  // OP-1's 44.1 kHz drum-patch format.
+  async function exportActiveKit() {
+    const tracks = P.machine.tracks;
+    if (!tracks.some((track) => track && track.sample)) {
+      statusFault('KIT PRINT FAULT · load or build sounds in MACHINE first.');
+      return;
+    }
+    status('PRINTING ACTIVE KIT…', true);
+    try {
+      const segments = [];
+      for (let i = 0; i < 8; i++) {
+        const track = tracks[i];
+        if (!track || !track.sample) {
+          // The OP format is positional but rejects empty segments. A 2 ms
+          // silent slice preserves the missing pad instead of shifting every
+          // later instrument down one slot.
+          segments.push({ samples: new Float32Array(88) });
+          continue;
+        }
+        const rendered = await sequencer.renderTrackVoice(i);
+        if (!rendered || !rendered.length) throw new Error('track ' + (i + 1) + ' would not render');
+        const mono = rendered.getChannelData(0).slice();
+        segments.push({
+          samples: rendered.sampleRate === 44100
+            ? mono : resample(mono, rendered.sampleRate, 44100),
+        });
+      }
+      const kitName = (P.machine.drums && P.machine.drums.kitId)
+        || (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '');
+      const { bytes, report } = buildDrumPatch({ segments, name: kitName });
+      const stem = String(kitName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'yellowjacket';
+      download(bytes, stem + '-op-kit.aif', 'audio/aiff');
+      status('ACTIVE KIT PRINTED · ' + report.slices + ' VOICES · '
+        + report.seconds.toFixed(2) + 'S · 44.1 KHZ OP-Z/OP-1');
+    } catch (err) {
+      statusFault('KIT PRINT FAULT · ' + (err.message || err));
+    }
+  }
+  ctx.api.exportActiveKit = exportActiveKit;
+
+  function copyStepData(target, source) {
+    for (const key of Object.keys(target)) delete target[key];
+    if (!source || typeof source !== 'object') return;
+    for (const key of Object.keys(source)) {
+      target[key] = JSON.parse(JSON.stringify(source[key]));
+    }
+  }
+
+  function applyGrooveTracks(tracks, groove) {
+    const parts = Array.isArray(groove) ? groove : (groove && groove.tracks);
+    if (!Array.isArray(parts)) throw new Error('factory groove has no track data');
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+      const part = parts[i] || {};
+      track.steps.fill(0);
+      const steps = part.steps || [];
+      const n = Math.min(track.steps.length, steps.length || 0);
+      for (let step = 0; step < n; step++) track.steps[step] = steps[step] ? 1 : 0;
+      copyStepData(track.stepData, part.stepData);
+      track.len = Math.max(1, Math.min(64, Number(part.len) | 0 || 16));
+    }
+  }
+
+  function pruneFactoryAssets(project) {
+    const used = new Set();
+    for (const scene of project.machine.scenes) {
+      for (const track of scene.tracks) if (track.sampleId) used.add(track.sampleId);
+    }
+    for (const id of Object.keys(project.assets)) {
+      const meta = project.assets[id];
+      if (meta && meta.factoryKitId && !used.has(id)) delete project.assets[id];
+    }
+  }
+
+  async function installFactoryKit(kitId, grooveId = null, withGroove = false, variation = 0) {
+    const kit = getFactoryKit(kitId);
+    if (!kit) throw new Error('unknown factory kit ' + String(kitId));
+    if (kitView) kitView.setBusy(true, 'RENDERING 4× DSP…');
+    status('BUILDING ' + kit.name.toUpperCase() + ' · 384 kHz DSP → 96 kHz PCM', true);
+    // Let the busy state paint before deterministic synthesis begins.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      const rendered = renderFactoryKit(kitId);
+      const groove = withGroove ? grooveFor(kitId, grooveId, variation) : null;
+      store.update('machine-kit', (p) => {
+        const scene = p.machine.scenes[p.machine.activeScene];
+        for (const item of rendered.voices) {
+          const slot = Math.max(0, Math.min(scene.tracks.length - 1, item.slot | 0));
+          const sampleRate = Math.round(Number(item.sampleRate || rendered.sampleRate || 96000));
+          const stableId = drumAssetId(kit.id, slot);
+          const meta = {
+            kind: 'factory-drum', label: item.name, role: item.role,
+            sampleRate, frames: item.pcm.length, channelCount: 1,
+            factoryKitId: kit.id, factoryVoiceId: item.id || item.model,
+            engineVersion: item.engineVersion || rendered.engineVersion,
+            model: item.model, seed: item.seed,
+            params: item.params ? JSON.parse(JSON.stringify(item.params)) : {},
+            metrics: item.metrics ? { ...item.metrics } : undefined,
+            oversample: kit.oversample || rendered.oversample || 4,
+          };
+          const id = stableId || registerAsset(p, meta);
+          if (stableId) p.assets[id] = { id, ...meta };
+          const track = scene.tracks[slot];
+          track.sampleId = id;
+          track.sample = {
+            channels: [item.pcm], sampleRate, label: item.name, role: item.role,
+            factoryKitId: kit.id, engineVersion: item.engineVersion || rendered.engineVersion,
+          };
+          Object.assign(track.voice, createVoice(), item.voice || {});
+          const mix = item.mix || {};
+          Object.assign(track, {
+            gainDb: 0, pan: 0, mute: false, solo: false,
+            duckSource: -1, duckDb: 12, choke: false, chokeGroup: 0,
+            sendVerb: 0, sendDelay: 0,
+          });
+          for (const key of ['gainDb', 'pan', 'mute', 'solo', 'duckSource', 'duckDb',
+            'choke', 'chokeGroup', 'sendVerb', 'sendDelay']) {
+            if (mix[key] !== undefined) track[key] = mix[key];
+          }
+        }
+        if (withGroove) {
+          applyGrooveTracks(scene.tracks, groove);
+          if (Number.isFinite(kit.bpm)) scene.bpm = kit.bpm;
+          if (Number.isFinite(kit.swing)) scene.swing = kit.swing;
+        }
+        const previousKit = p.machine.drums.kitId;
+        p.machine.drums.kitId = kit.id;
+        if (withGroove) {
+          p.machine.drums.grooveId = grooveId;
+          p.machine.drums.variation = Math.max(0, variation | 0);
+        } else if (previousKit !== kit.id) {
+          p.machine.drums.grooveId = null;
+          p.machine.drums.variation = 0;
+        }
+        pruneFactoryAssets(p);
+      });
+      for (let i = 0; i < P.machine.tracks.length; i++) sequencer.bumpTrack(i);
+      if (typeof sequencer.bumpStrips === 'function') sequencer.bumpStrips();
+      patternView.setMachine(P.machine);
+      if (pads) pads.setTracks(P.machine.tracks);
+      if (kitView) kitView.setState(P.machine, engine.ctx && engine.ctx.sampleRate);
+      const label = withGroove ? ' + ' + String(grooveId).toUpperCase() + ' · TAKE '
+        + String(variation + 1).padStart(2, '0') : ' · SOUNDS ONLY';
+      status(kit.name.toUpperCase() + label + ' · 8 VOICES · CANONICAL 96 kHz');
+      return rendered;
+    } finally {
+      if (kitView) kitView.setBusy(false);
+    }
+  }
+
+  async function loadKitRequest(detail) {
+    try {
+      await installFactoryKit(detail.kitId, detail.grooveId, !!detail.withGroove, 0);
+    } catch (err) {
+      statusFault('FACTORY KIT FAULT · ' + (err.message || err));
+    }
+  }
+
+  function writeNextTake(detail) {
+    const drums = P.machine.drums;
+    const variation = Math.max(0, drums.variation | 0) + 1;
+    try {
+      const kit = getFactoryKit(detail.kitId);
+      const groove = grooveFor(detail.kitId, detail.grooveId, variation);
+      store.update('machine-groove', (p) => {
+        applyGrooveTracks(p.machine.tracks, groove);
+        if (kit && Number.isFinite(kit.bpm)) p.machine.bpm = kit.bpm;
+        if (kit && Number.isFinite(kit.swing)) p.machine.swing = kit.swing;
+        p.machine.drums.kitId = detail.kitId;
+        p.machine.drums.grooveId = detail.grooveId;
+        p.machine.drums.variation = variation;
+      });
+      patternView.setMachine(P.machine);
+      if (kitView) kitView.setState(P.machine, engine.ctx && engine.ctx.sampleRate);
+      status('NEW TAKE · ' + String(variation + 1).padStart(2, '0')
+        + ' · ANCHORS HELD, GHOSTS RECOMPOSED');
+    } catch (err) {
+      statusFault('NEW TAKE FAULT · ' + (err.message || err));
+    }
+  }
+
+  if (kitView) {
+    kitView.addEventListener('kitload', (event) => loadKitRequest(event.detail));
+    kitView.addEventListener('variation', (event) => writeNextTake(event.detail));
+    kitView.addEventListener('trig', (event) => fireTrack(event.detail.track));
+    kitView.addEventListener('export', exportActiveKit);
+    kitView.setState(P.machine, engine.ctx && engine.ctx.sampleRate);
+    store.addEventListener('change', () => {
+      kitView.setState(P.machine, engine.ctx && engine.ctx.sampleRate);
+    });
+  }
+
+  ctx.api.loadDrumStarter = () => {
+    const kit = FACTORY_KITS[0];
+    const groove = kit && Array.isArray(kit.grooves) ? kit.grooves[0] : null;
+    if (!kit) return Promise.reject(new Error('no factory kits are installed'));
+    return loadKitRequest({
+      kitId: kit.id,
+      grooveId: groove && groove.id,
+      withGroove: true,
+    });
+  };
 
   keybed.attach(
     (i) => fireTrack(i),
@@ -42,6 +313,12 @@ export function initMachineController(ctx) {
 
   function machineHasSound() {
     return P.machine.tracks.some((t) => t.sample);
+  }
+
+  function machineHasPerformance() {
+    const take = activeSemanticTake();
+    return machineHasSound()
+      || !!(take.plan && take.online && take.lane && take.lane.enabled !== false);
   }
 
   function setBeatmapLed(mode, text) {
@@ -244,6 +521,75 @@ export function initMachineController(ctx) {
     patternView.setMachine(P.machine);
   });
   patternView.addEventListener('trig', (e) => fireTrack(e.detail.track));
+  patternView.addEventListener('loomtoggle', (e) => {
+    store.update('loom-lane', (p) => {
+      const scene = p.machine.scenes[p.machine.activeScene];
+      if (scene && scene.loomLane) scene.loomLane.enabled = !!e.detail.enabled;
+    });
+    refreshSemanticLane();
+  });
+  patternView.addEventListener('loomgain', (e) => {
+    store.update('loom-lane', (p) => {
+      const scene = p.machine.scenes[p.machine.activeScene];
+      if (!scene || !scene.loomLane) return;
+      const value = Number(e.detail.gainDb);
+      if (Number.isFinite(value)) scene.loomLane.gainDb = Math.max(-48, Math.min(6, value));
+    });
+    refreshSemanticLane();
+  });
+  patternView.addEventListener('loomtrace', (e) => {
+    const take = activeSemanticTake();
+    if (ctx.api.traceLoomEvent) ctx.api.traceLoomEvent(e.detail.id, take.plan && take.plan.id);
+  });
+  patternView.addEventListener('loomopen', (e) => {
+    const take = activeSemanticTake();
+    // The active scene reference is authoritative. The event detail preserves
+    // the view contract, but never lets a stale rendered row open another plan.
+    const requested = e.detail && typeof e.detail.planId === 'string' ? e.detail.planId : null;
+    const planId = take.plan && take.lane && take.lane.planId === take.plan.id
+      && (!requested || requested === take.plan.id) ? take.plan.id : null;
+    if (planId && ctx.api.openLoomPlan && ctx.api.openLoomPlan(planId)) return;
+    if (ctx.api.showTab) ctx.api.showTab('loom');
+  });
+  patternView.addEventListener('loomprint', async () => {
+    if (semanticPrintBusy) {
+      status('SEMANTIC TAKE PRINT IS ALREADY RUNNING', true);
+      return;
+    }
+    const take = activeSemanticTake();
+    if (!take.plan) {
+      statusFault('PRINT TAKE · ARM A LOOM WEAVE TO THIS SCENE FIRST');
+      return;
+    }
+    if (!take.online) {
+      statusFault('PRINT TAKE · SOURCE OFFLINE · RELOAD THE MATCHING RECORDING');
+      return;
+    }
+    if (sequencer.running) sequencer.stop();
+    const printSourceName = take.plan.source && take.plan.source.name
+      ? take.plan.source.name : (P.fileName || 'yellowjacket');
+    semanticPrintBusy = true;
+    if (patternView.setLoomPrintBusy) patternView.setLoomPrintBusy(true);
+    status('PRINTING SEMANTIC TAKE · 24-BIT AUDIO + SOURCE TRACE…', true);
+    try {
+      const result = await sequencer.renderPerformance(1, 24);
+      const base = printSourceName.replace(/\.[^.]+$/, '');
+      const stem = base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        || 'yellowjacket';
+      const archive = buildBundle([
+        [stem + '-semantic-take.wav', result.bytes],
+        [stem + '-semantic-take.yjmap.json', JSON.stringify(result.lineage, null, 2)],
+      ]);
+      download(archive, stem + '-semantic-take.zip', 'application/zip');
+      status('SEMANTIC TAKE PRINTED · ' + result.totalSec.toFixed(2) + 'S · '
+        + result.sampleRate + ' HZ · 24-BIT WAV + YJMAP');
+    } catch (err) {
+      statusFault('PRINT TAKE FAULT · ' + (err.message || err));
+    } finally {
+      semanticPrintBusy = false;
+      if (patternView.setLoomPrintBusy) patternView.setLoomPrintBusy(false);
+    }
+  });
   // ---------- LOCK: step data, scenes, fill ----------
   patternView.addEventListener('stepedit', (e) => {
     const { track, step, patch } = e.detail;
@@ -287,12 +633,14 @@ export function initMachineController(ctx) {
       // scene's sample refs (never copies PCM). Per-scene kits can come later.
       const from = m.scenes[m.activeScene];
       const to = m.scenes[index];
+      const toHadSound = to.tracks.some((track) => track && track.sample);
       for (let i = 0; i < to.tracks.length; i++) {
         if (!to.tracks[i].sample && from.tracks[i] && from.tracks[i].sample) {
           to.tracks[i].sample = from.tracks[i].sample;
           to.tracks[i].sampleId = from.tracks[i].sampleId;
         }
       }
+      if (!toHadSound) Object.assign(to.drums, from.drums);
       m.activeScene = index;
     });
     patternView.setMachine(P.machine);
@@ -311,6 +659,8 @@ export function initMachineController(ctx) {
       dst.bpm = src.bpm;
       dst.swing = src.swing;
       dst.seed = src.seed;
+      Object.assign(dst.drums, src.drums);
+      Object.assign(dst.loomLane, src.loomLane);
       dst.tracks = src.tracks.map((t) => ({
         ...t,
         steps: t.steps.slice(),
@@ -326,11 +676,12 @@ export function initMachineController(ctx) {
     sequencer.fill = !!e.detail.on;
   });
   patternView.addEventListener('run', () => {
-    if (!machineHasSound()) {
-      statusFault('Nothing to run. Carve a clip in SLICE and assign it to a track.');
+    if (!machineHasPerformance()) {
+      statusFault('Nothing to run. Load a kit or arm a Semantic Take to this scene.');
       return;
     }
     if (engine.playing) engine.pause();
+    if (ctx.api.stopLoom) ctx.api.stopLoom();
     sequencer.start();
   });
   patternView.addEventListener('stopreq', () => sequencer.stop());
@@ -356,30 +707,22 @@ export function initMachineController(ctx) {
   });
   sequencer.addEventListener('state', (e) => {
     patternView.setRunning(e.detail.running);
+    if (kitView) kitView.setState(P.machine, engine.ctx && engine.ctx.sampleRate);
     if (e.detail.running) {
-      status('MACHINE RUNNING · ' + P.machine.bpm + ' BPM', true);
+      const take = activeSemanticTake();
+      status('MACHINE RUNNING · ' + P.machine.bpm + ' BPM'
+        + (take.plan && take.online && take.lane.enabled !== false ? ' · SEMANTIC TAKE' : ''), true);
     } else {
       patternView.setPlayhead(null);
       status(COPY.loaded);
     }
   });
 
-  // ---------- lift from transcript ----------
+  // ---------- transcript selection → Loom (one action, no destructive clip) ----------
   $('btnLift').addEventListener('click', () => {
     const range = ctx.api.getLiftRange();
     if (!range || !P.words) return;
-    const clip = wordsToClip(P.words, range.i0, range.i1);
-    store.update('clips', (p) => { p.clips.push(clip); });
-    // refreshClips(), not a hand-rolled subset of it. Updating Slice and the
-    // count directly meant a lifted clip existed, was counted, and was missing
-    // from both the Clip List and the Constellation until some later edit
-    // happened to call the real refresh: setSelected() cannot add a row.
-    refreshClips();
-    document.querySelector('.yj-tab-btn[data-tab="machine"]').click();
-    // Select it, which is real machinery, rather than the flashClip() that was
-    // guarded for and never existed on SliceView.
-    sliceView.selectClip(clip.id);
-    if (clipList) clipList.setSelected(clip.id);
+    if (ctx.api.weaveTranscriptSelection) ctx.api.weaveTranscriptSelection(range);
   });
 
   // ---------- substate switcher ----------

@@ -80,6 +80,8 @@ export function initWireController(ctx) {
   if (typeof navigator === 'undefined' || !navigator.requestMIDIAccess) {
     $('wireUnsupported').hidden = false;
     $('wireConnect').hidden = true;
+    ctx.api.wireCaptureState = () => Object.freeze({ available: false, connected: false, inputId: null });
+    ctx.api.subscribeWireNotes = () => () => {};
     ctx.api.wireRestored = () => {};
     return;
   }
@@ -92,6 +94,50 @@ export function initWireController(ctx) {
   let ledTimer = 0;
   let clockUiTimer = 0;
   let lastTickAt = 0;
+  const noteSubscribers = new Set();
+
+  // Raw note capture is deliberately a narrow seam: consumers get the MIDI
+  // event before WIRE's learn and performance routing, but own all timing and
+  // document semantics themselves. A consumed note never doubles as a drum hit.
+  ctx.api.wireCaptureState = () => {
+    const inputId = W.inId || null;
+    const inputOnline = inputId != null
+      && wire.ports().some((port) => port.dir === 'in' && port.id === inputId);
+    return Object.freeze({ available: connected && inputOnline, connected, inputId });
+  };
+  ctx.api.subscribeWireNotes = (listener) => {
+    if (typeof listener !== 'function') return () => {};
+    noteSubscribers.add(listener);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      noteSubscribers.delete(listener);
+    };
+  };
+
+  function offerWireNote(type, detail) {
+    const noteEvent = Object.freeze({
+      type,
+      note: detail.note,
+      velocity: detail.velocity,
+      channel: detail.channel,
+      timeStamp: detail.timeStamp,
+    });
+    let consumed = false;
+    // Snapshot iteration keeps subscribe/unsubscribe during a callback from
+    // changing which listeners see this particular hardware event.
+    for (const listener of Array.from(noteSubscribers)) {
+      try {
+        if (listener(noteEvent) === true) consumed = true;
+      } catch (error) {
+        if (typeof window !== 'undefined') {
+          (window.__yjErrors = window.__yjErrors || []).push({ controller: 'wire-note-capture', error });
+        }
+      }
+    }
+    return consumed;
+  }
 
   function saveWire(fn) {
     store.update('wire', () => fn());
@@ -166,6 +212,7 @@ export function initWireController(ctx) {
     fillPortSelect($('wireOut'), ports, 'out', W.outId);
     wire.setInput(W.inId);
     wire.setOutput(W.outId);
+    if (ctx.api.refreshLoom) ctx.api.refreshLoom();
   }
 
   function refreshClockIn() {
@@ -240,6 +287,7 @@ export function initWireController(ctx) {
   wire.addEventListener('noteon', (e) => {
     const { note, velocity, channel } = e.detail;
     flashLed();
+    if (offerWireNote('noteon', e.detail)) return;
     if (learnBinding('note', channel, note)) return;
     const mapped = findMapping('note', channel, note);
     if (mapped) { runAction(mapped, true); return; }
@@ -253,6 +301,7 @@ export function initWireController(ctx) {
   });
 
   wire.addEventListener('noteoff', (e) => {
+    if (offerWireNote('noteoff', e.detail)) return;
     const mapped = findMapping('note', e.detail.channel, e.detail.note);
     if (mapped === 'fill') runAction('fill', false);
   });
@@ -318,6 +367,7 @@ export function initWireController(ctx) {
     saveWire(() => { W.inId = e.target.value || null; });
     wire.setInput(W.inId);
     clockIn.reset();
+    if (ctx.api.refreshLoom) ctx.api.refreshLoom();
   });
   $('wireOut').addEventListener('change', (e) => {
     saveWire(() => { W.outId = e.target.value || null; });

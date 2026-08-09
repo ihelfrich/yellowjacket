@@ -2,12 +2,18 @@
 // pitch, reverse, and gate are PER-VOICE nodes (a lock on one hit must never bend
 // the tail of the previous hit — strip automation cannot do that), strips carry
 // only the duck bus, and live and offline scheduling share one code path so a
-// FREEZE is the performance.
+// FREEZE replays the same compiled decisions. Its finite tail allocation and
+// fail-closed offline master are explicit exceptions to device-output identity.
 
 import { encodeWav, encodeWavWithStats } from '../export.js';
 import { stretchSamples } from '../dsp/stretch.js';
 import { plateImpulse, delayTimeFor, dampingCoeff } from '../dsp/space.js';
 import { processLimiter } from '../dsp/limiter.js';
+import { scheduleSemanticEvent } from '../loom/schedule.js';
+import {
+  compilePerformanceRender,
+  compilePerformanceWindow,
+} from '../performance/compile.js';
 import {
   compileRender,
   compileSong,
@@ -26,6 +32,14 @@ const ATTACK_SEC = 0.003;
 const RELEASE_SEC = 0.008;
 const STOP_PAD_SEC = 0.005;
 const CHOKE_SEC = 0.003;
+const LIMITER_CEILING_DBTP = -0.3;
+// Delay feedback is mathematically infinite. Offline prints carry it until the
+// next repeat would fall below this declared amplitude floor, rather than
+// ending at an arbitrary fixed number of seconds.
+export const RENDER_TAIL_FLOOR_DB = -80;
+const RENDER_TAIL_FLOOR = Math.pow(10, RENDER_TAIL_FLOOR_DB / 20);
+const PLATE_PREDELAY_SEC = 0.012;  // createSpaceRack() passes 12 ms
+const SEMANTIC_STOP_PAD_SEC = 0.002;
 // Duck pump: dip in ~5 ms, hold ~60 ms, recover with a ~180 ms tail.
 const DUCK_DIP_TC = 0.0017;
 const DUCK_HOLD_SEC = 0.065;
@@ -69,6 +83,7 @@ export class Sequencer extends EventTarget {
     this._timer = 0;
     this._voices = new Set();
     this._lastTrackVoice = [];   // per track, for choke
+    this._lastChokeVoice = [];   // cross-track groups (closed/open hats, etc.)
     this._strips = [];
     this._bufferCache = [];
     this._songPlaying = false;
@@ -76,12 +91,33 @@ export class Sequencer extends EventTarget {
     this._songTimer = 0;
     this._songAnchor = 0;
     this._rack = null;
+    // Resolver functions are owned by the controller so the scheduler never
+    // stores project state or source PCM. Plans are immutable JSON; the source
+    // buffer is supplied only while its SHA-256 identity is online.
+    this._performanceSources = null;
   }
 
   setMachine(machine) {
     if (machine === this._machine) return;
     this._machine = machine || null;
     this._bufferCache = [];
+  }
+
+  setPerformanceSources(resolver) {
+    this._performanceSources = resolver || null;
+  }
+
+  _performancePlans() {
+    const resolver = this._performanceSources;
+    if (!resolver) return {};
+    const plans = typeof resolver.plans === 'function' ? resolver.plans() : resolver.plans;
+    return plans && typeof plans === 'object' ? plans : {};
+  }
+
+  _semanticSource(planId) {
+    const resolver = this._performanceSources;
+    if (!resolver || typeof resolver.bufferFor !== 'function') return null;
+    return resolver.bufferFor(planId) || null;
   }
 
   trackBuffer(i, reversed = false, fitSec = null, offsetSec = 0, sliceSec = 0) {
@@ -250,11 +286,11 @@ export class Sequencer extends EventTarget {
   }
 
   async renderWav(loops) {
-    // FREEZE prints the performance: if FILL was held, those hits are part
-    // of what was heard (Codex finding 7, verified compile-side).
+    // If FILL was held, those hits are part of the deterministic event stream.
     const compiled = compileRender(this._machine, loops, { fill: !!this.fill });
     const sampleRate = renderSampleRate(this._machine);
-    const length = Math.max(1, Math.ceil(compiled.totalSec * sampleRate));
+    const renderSec = renderDurationSec(this._machine, compiled);
+    const length = Math.max(1, Math.ceil(renderSec * sampleRate));
     const OfflineCtx = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
     if (!OfflineCtx) throw new Error('OfflineAudioContext is not available');
 
@@ -288,6 +324,7 @@ export class Sequencer extends EventTarget {
         return buffers[index][key];
       },
       lastTrackVoice: [],
+      lastChokeVoice: [],
       machine: this._machine,
     };
     for (const event of compiled.events) {
@@ -301,7 +338,197 @@ export class Sequencer extends EventTarget {
         scheduler.tracks[seg.track], scheduler.rack, seg.tSec), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
-    return encodeWav(await masterLimit(rendered), 16);
+    const limited = await masterLimit(rendered);
+    return encodeWav(limited.buffer, 16);
+  }
+
+  // PRINT TAKE is deliberately separate from FREEZE. FREEZE keeps its legacy
+  // source-replacement behavior; this path prints the active scene's eight
+  // Machine tracks plus its ninth semantic lane and returns a provenance map.
+  async renderPerformance(loops = 1, bitDepth = 24) {
+    const plans = this._performancePlans();
+    const compiled = compilePerformanceRender(this._machine, plans, loops, {
+      fill: !!this.fill,
+    });
+    const scene = this._machine && Array.isArray(this._machine.scenes)
+      ? this._machine.scenes[this._machine.activeScene | 0]
+      : this._machine;
+    const lane = scene && scene.loomLane;
+    const planId = lane && lane.planId != null ? String(lane.planId) : null;
+    const resolver = this._performanceSources;
+    const identity = resolver && typeof resolver.identityFor === 'function'
+      ? { ...(resolver.identityFor(planId) || {}) } : {};
+    const plan = planId && plans
+      ? (plans instanceof Map ? (plans.get(planId) || null) : (plans[planId] || null))
+      : null;
+    const sourceBuffer = compiled.semanticEvents.length ? this._semanticSource(planId) : null;
+    if (compiled.semanticEvents.length && !sourceBuffer) {
+      throw new Error('the Semantic Take source is offline');
+    }
+
+    const sourceRate = sourceBuffer && Number(sourceBuffer.sampleRate);
+    const sampleRate = Math.round(Math.max(
+      renderSampleRate(this._machine),
+      Number.isFinite(sourceRate) ? sourceRate : MIN_RENDER_RATE,
+    ));
+    const renderSec = renderDurationSec(this._machine, compiled);
+    const length = Math.max(1, Math.ceil(renderSec * sampleRate));
+    const OfflineCtx = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
+    if (!OfflineCtx) throw new Error('OfflineAudioContext is not available');
+
+    const ctx = new OfflineCtx(2, length, sampleRate);
+    const tracks = this._machine && Array.isArray(this._machine.tracks)
+      ? this._machine.tracks : [];
+    const buffers = new Array(tracks.length);
+    const strips = [];
+    const rack = createSpaceRack(ctx, ctx.destination,
+      this._machine && this._machine.space, this._machine && this._machine.bpm);
+    const scheduler = {
+      ctx,
+      strips,
+      dest: ctx.destination,
+      tracks,
+      rack,
+      buffer: (index, reversed, fitSec, offsetSec, sliceSec) => {
+        const key = fitSec > 0
+          ? fitKey(reversed, fitSec, offsetSec, sliceSec)
+          : (reversed ? 'r' : 'f');
+        if (!buffers[index]) buffers[index] = {};
+        if (buffers[index][key] === undefined) {
+          const track = tracks[index];
+          const sample = track && track.sample;
+          let baked = null;
+          if (sample && fitSec > 0) {
+            try {
+              baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+            } catch (error) { baked = null; }
+          }
+          buffers[index][key] = baked || createTrackBuffer(ctx, sample, reversed);
+        }
+        return buffers[index][key];
+      },
+      lastTrackVoice: [],
+      lastChokeVoice: [],
+      machine: this._machine,
+    };
+
+    for (const event of compiled.events) scheduleEvent(scheduler, event, event.tSec);
+    for (const seg of compiled.ducks) {
+      applyDuck(ensureStrip(strips, seg.track, ctx, ctx.destination,
+        tracks[seg.track], rack, seg.tSec), seg.tSec, seg.depthDb);
+    }
+    for (const event of compiled.semanticEvents) {
+      scheduleSemanticEvent({
+        ctx,
+        destination: ctx.destination,
+        sourceBuffer,
+        event,
+        when: event.tSec,
+      });
+    }
+
+    const rendered = await ctx.startRendering();
+    const limited = await masterLimit(rendered);
+    const mastered = limited.buffer;
+    const bits = bitDepth === 16 ? 16 : 24;
+    const { blob, stats } = encodeWavWithStats(mastered, bits);
+    const lineage = {
+      format: 'yellowjacket-semantic-performance',
+      version: 1,
+      renderedAt: new Date().toISOString(),
+      audio: {
+        sampleRate,
+        bitDepth: bits,
+        channels: 2,
+        frames: mastered.length,
+        durationSec: mastered.length / sampleRate,
+        limiterApplied: limited.applied,
+        limiterCeilingDbtp: limited.ceilingDbtp,
+        samplePeakDbfs: stats && stats.peakDb,
+        clippedSamples: stats && stats.clippedSamples,
+      },
+      performance: {
+        sceneId: scene && scene.id != null ? String(scene.id) : null,
+        sceneIndex: this._machine && Number.isFinite(this._machine.activeScene)
+          ? this._machine.activeScene | 0 : 0,
+        bpm: scene && scene.bpm,
+        swing: scene && scene.swing,
+        seed: scene && scene.seed,
+        loops: Math.max(1, Math.min(64, Math.floor(Number(loops)) || 1)),
+        machineDurationSec: compiled.machineTotalSec,
+        renderDurationSec: mastered.length / sampleRate,
+        tailDurationSec: Math.max(0, mastered.length / sampleRate - compiled.machineTotalSec),
+      },
+      semanticTake: plan ? {
+        planId,
+        compilerVersion: plan.compilerVersion || null,
+        source: {
+          sha256: identity.sha256 || (plan.source && plan.source.sha256) || null,
+          name: identity.name || (plan.source && plan.source.name) || null,
+          size: identity.size != null ? identity.size : (plan.source && plan.source.size),
+        },
+        gesture: plan.gesture || null,
+        events: compiled.lineage,
+      } : null,
+    };
+    return {
+      bytes: await blob.arrayBuffer(),
+      stats,
+      lineage,
+      totalSec: mastered.length / sampleRate,
+      sampleRate,
+    };
+  }
+
+  // Print one active Machine voice through the exact scheduling graph used by
+  // pads/patterns: trim, tune, reverse, envelope, COLOR, and track gain. This
+  // is the source-free hardware-patch seam; conversion to OP's 44.1 kHz format
+  // happens once, after this graph, through the canonical Kaiser resampler.
+  async renderTrackVoice(i) {
+    const index = trackIndex(i);
+    const tracks = this._machine && Array.isArray(this._machine.tracks)
+      ? this._machine.tracks : [];
+    const track = index >= 0 ? tracks[index] : null;
+    const sample = track && track.sample;
+    if (!sample) return null;
+    const event = compileTrigger(this._machine, index);
+    if (!event) return null;
+
+    const rate = Math.max(MIN_RENDER_RATE, Math.round(Number(sample.sampleRate)) || MIN_RENDER_RATE);
+    const naturalSec = sample.channels && sample.channels[0]
+      ? sample.channels[0].length / rate : 0;
+    let playSec = event.fitSec > 0 ? event.fitSec
+      : (event.sliceSec != null ? event.sliceSec : naturalSec) / Math.max(0.001, event.rate || 1);
+    if (event.durSec != null) playSec = Math.min(playSec, event.durSec);
+    const release = event.releaseSec != null ? event.releaseSec : RELEASE_SEC;
+    const seconds = Math.max(0.03, Math.min(12, playSec + release + STOP_PAD_SEC + 0.01));
+    const length = Math.max(1, Math.ceil(seconds * rate));
+    const OfflineCtx = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
+    if (!OfflineCtx) throw new Error('OfflineAudioContext is not available');
+    const ctx = new OfflineCtx(1, length, rate);
+    const localTracks = tracks.map((item, n) => n === index
+      ? { ...item, pan: 0, sendVerb: 0, sendDelay: 0 }
+      : item);
+    const scheduler = {
+      ctx,
+      strips: [],
+      dest: ctx.destination,
+      tracks: localTracks,
+      rack: null,
+      buffer: (_track, reversed, fitSec, offsetSec, sliceSec) => {
+        if (fitSec > 0) {
+          const fitted = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+          if (fitted) return fitted;
+        }
+        return createTrackBuffer(ctx, sample, reversed);
+      },
+      lastTrackVoice: [],
+      lastChokeVoice: [],
+      machine: { tracks: localTracks },
+    };
+    event.pan = 0;
+    scheduleEvent(scheduler, event, 0, true);
+    return ctx.startRendering();
   }
 
   // ---- song transport (CONTRACT-SONG 2): one precompiled stream feeds the
@@ -369,7 +596,8 @@ export class Sequencer extends EventTarget {
       ? this._machine.scenes
       : [];
     const sampleRate = songSampleRate(scenes, compiled.sections);
-    const length = Math.max(1, Math.ceil(compiled.totalSec * sampleRate));
+    const renderSec = renderDurationSec(this._machine, compiled);
+    const length = Math.max(1, Math.ceil(renderSec * sampleRate));
     const OfflineCtx = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
     if (!OfflineCtx) throw new Error('OfflineAudioContext is not available');
 
@@ -377,6 +605,7 @@ export class Sequencer extends EventTarget {
     const cache = new Map();
     const strips = [];
     const lastTrackVoice = [];
+    const lastChokeVoice = [];
     const songRack = createSpaceRack(ctx, ctx.destination, this._machine && this._machine.space,
       this._machine && this._machine.bpm);
     const schedulers = compiled.sections.map((section) => {
@@ -391,6 +620,7 @@ export class Sequencer extends EventTarget {
         buffer: (index, reversed, fitSec, offsetSec, sliceSec) =>
         songBuffer(ctx, cache, tracks, index, reversed, fitSec, offsetSec, sliceSec),
         lastTrackVoice,
+        lastChokeVoice,
         machine: { tracks },
       };
     });
@@ -411,9 +641,18 @@ export class Sequencer extends EventTarget {
         dTracks[seg.track], songRack, seg.tSec), seg.tSec, seg.depthDb);
     }
     const rendered = await ctx.startRendering();
-    const mastered = await masterLimit(rendered);
+    const limited = await masterLimit(rendered);
+    const mastered = limited.buffer;
     const { blob, stats } = encodeWavWithStats(mastered, bitDepth === 16 ? 16 : 24);
-    return { bytes: await blob.arrayBuffer(), stats, totalSec: compiled.totalSec };
+    const totalSec = mastered.length / sampleRate;
+    return {
+      bytes: await blob.arrayBuffer(),
+      stats,
+      totalSec,
+      machineTotalSec: compiled.totalSec,
+      tailSec: Math.max(0, totalSec - compiled.totalSec),
+      limiter: { applied: limited.applied, ceilingDbtp: limited.ceilingDbtp },
+    };
   }
 
   _songScheduler(ctx, master, scenes, sceneIndex, cache) {
@@ -428,6 +667,7 @@ export class Sequencer extends EventTarget {
       buffer: (index, reversed, fitSec, offsetSec, sliceSec) =>
         songBuffer(ctx, cache, tracks, index, reversed, fitSec, offsetSec, sliceSec),
       lastTrackVoice: this._lastTrackVoice,
+      lastChokeVoice: this._lastChokeVoice,
       machine: { tracks },
       voices: this._voices,
       owner: this,
@@ -550,6 +790,7 @@ export class Sequencer extends EventTarget {
       buffer: (index, reversed, fitSec, offsetSec, sliceSec) =>
         this.trackBuffer(index, reversed, fitSec, offsetSec, sliceSec),
       lastTrackVoice: this._lastTrackVoice,
+      lastChokeVoice: this._lastChokeVoice,
       machine: this._machine,
       voices: this._voices,
       owner: this,
@@ -571,10 +812,28 @@ export class Sequencer extends EventTarget {
     const patternNow = Math.max(0, ctx.currentTime - this._anchor);
     const fromSec = Math.max(this._scheduledUntil, patternNow);
     const toSec = Math.max(fromSec, ctx.currentTime + LOOKAHEAD_SEC - this._anchor);
-    const { events, ducks } = compileWindow(this._machine, fromSec, toSec, { fill: this.fill });
+    const { events, ducks, semanticEvents } = compilePerformanceWindow(
+      this._machine,
+      this._performancePlans(),
+      fromSec,
+      toSec,
+      { fill: this.fill },
+    );
     const scheduler = this._liveStrips(ctx, this._master);
     for (const event of events) {
       scheduleEvent(scheduler, event, this._anchor + event.tSec);
+    }
+    for (const event of semanticEvents) {
+      const sourceBuffer = this._semanticSource(event.planId);
+      if (!sourceBuffer) continue;
+      scheduleSemanticEvent({
+        ctx,
+        destination: this._master,
+        sourceBuffer,
+        event,
+        when: this._anchor + event.tSec,
+        voices: this._voices,
+      });
     }
     for (const seg of ducks) {
       applyDuck(ensureStrip(this._strips, seg.track, ctx, this._master,
@@ -624,6 +883,7 @@ export class Sequencer extends EventTarget {
     }
     this._voices.clear();
     this._lastTrackVoice = [];
+    this._lastChokeVoice = [];
   }
 
   _resetStrips() {
@@ -700,6 +960,10 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   if (event.driveDb != null) {
     const shaper = ctx.createWaveShaper();
     shaper.curve = driveCurve(event.driveDb);
+    // Browser-native anti-aliasing for editable per-voice saturation. Factory
+    // drum nonlinearities are already baked at 4x before their 96 kHz asset
+    // boundary; this covers the user's subsequent DRIVE edits live/offline.
+    shaper.oversample = '4x';
     tail.connect(shaper);
     tail = shaper;
     colorNodes.push(shaper);
@@ -725,12 +989,24 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
   }
   tail.connect(gainNode);
 
-  // Choke: a mono track fades its previous voice out as the new one lands.
+  // Choke: a mono track fades its own previous voice; a numbered group also
+  // fades the most recent voice on any matching track (notably closed/open hats).
   const tracks = scheduler.machine && scheduler.machine.tracks;
-  const choke = !oneShot && tracks && tracks[event.track] && tracks[event.track].choke;
-  if (choke) {
-    const prev = scheduler.lastTrackVoice[event.track];
-    if (prev && prev !== undefined) {
+  const track = tracks && tracks[event.track];
+  // `choke` means monophonic by design, including pads, QWERTY, and incoming
+  // MIDI. A manual 808 hit must not layer over its own tail while programmed
+  // hits cut correctly.
+  const choke = track && track.choke;
+  const chokeGroup = track ? Math.max(0, Math.min(4, track.chokeGroup | 0)) : 0;
+  const previous = new Set();
+  if (choke && scheduler.lastTrackVoice[event.track]) {
+    previous.add(scheduler.lastTrackVoice[event.track]);
+  }
+  if (chokeGroup && scheduler.lastChokeVoice && scheduler.lastChokeVoice[chokeGroup]) {
+    previous.add(scheduler.lastChokeVoice[chokeGroup]);
+  }
+  for (const prev of previous) {
+    if (prev) {
       try {
         prev.gainNode.gain.cancelScheduledValues(startAt);
         prev.gainNode.gain.setTargetAtTime(0, startAt, CHOKE_SEC / 3);
@@ -753,9 +1029,14 @@ function scheduleEvent(scheduler, event, when, oneShot = false) {
       if (scheduler.lastTrackVoice[event.track] === voice) {
         scheduler.lastTrackVoice[event.track] = null;
       }
+      if (chokeGroup && scheduler.lastChokeVoice
+        && scheduler.lastChokeVoice[chokeGroup] === voice) {
+        scheduler.lastChokeVoice[chokeGroup] = null;
+      }
     };
   }
   scheduler.lastTrackVoice[event.track] = voice;
+  if (chokeGroup && scheduler.lastChokeVoice) scheduler.lastChokeVoice[chokeGroup] = voice;
 
   try {
     if (fitted && buffer.duration > 0) {
@@ -922,18 +1203,119 @@ function songSampleRate(scenes, sections) {
   return Math.round(sampleRate);
 }
 
+function bounded(value, low, high, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(low, Math.min(high, number)) : fallback;
+}
+
+function trackSampleSeconds(track) {
+  const sample = track && track.sample;
+  const rate = Math.round(Number(sample && sample.sampleRate));
+  if (!(rate > 0) || !sample || !Array.isArray(sample.channels)) return 0;
+  let frames = 0;
+  for (const channel of sample.channels) {
+    if (channel && Number.isFinite(channel.length)) frames = Math.max(frames, channel.length);
+  }
+  return frames / rate;
+}
+
+function eventVoiceSeconds(event, track) {
+  const sourceSec = trackSampleSeconds(track);
+  if (!(sourceSec > 0)) return 0;
+  const fitted = event && event.fitSec > 0;
+  const bufferSec = fitted ? event.fitSec : sourceSec;
+  // This mirrors scheduleEvent(): a fitted bake is already the requested wall
+  // span, so its envelope is planned at unity rate over the baked duration.
+  const envelopeEvent = fitted ? { ...event, sliceSec: bufferSec, rate: 1 } : event;
+  const envelope = planEnvelope(envelopeEvent, bufferSec);
+  return envelope.stopSec != null && Number.isFinite(envelope.stopSec)
+    ? Math.max(0, envelope.stopSec) : 0;
+}
+
+function spaceTailSeconds(machine, track) {
+  if (!track) return 0;
+  const space = machine && machine.space || {};
+  let tail = 0;
+  const verbMix = bounded(space.verbMix, 0, 1, 0.9);
+  if (Number(track.sendVerb) > 0 && verbMix > 0) {
+    // Exact ConvolverNode impulse length used by createSpaceRack().
+    tail = bounded(space.verbSec, 0.05, 10, 2) + PLATE_PREDELAY_SEC;
+  }
+  const delayMix = bounded(space.delayMix, 0, 1, 0.8);
+  if (Number(track.sendDelay) > 0 && delayMix > 0) {
+    const feedback = bounded(space.delayFeedback, 0, 0.9, 0.38);
+    const repeats = feedback > 0
+      ? Math.max(1, Math.ceil(Math.log(RENDER_TAIL_FLOOR) / Math.log(feedback)))
+      : 1;
+    tail = Math.max(tail,
+      delayTimeFor(machine && machine.bpm, space.delayDivision) * repeats);
+  }
+  return tail;
+}
+
+/**
+ * Allocation boundary for an offline Machine print. The musical grid still
+ * ends at compiled.totalSec; this extends only already-started dry voices and
+ * their enabled Space returns. Delay feedback ends below a declared -80 dB
+ * amplitude floor. No new Machine or Loom occurrence is compiled into the tail.
+ */
+export function renderDurationSec(machine, compiled) {
+  const base = Number(compiled && compiled.totalSec);
+  let end = Number.isFinite(base) && base > 0 ? base : 0;
+  const events = compiled && Array.isArray(compiled.events) ? compiled.events : [];
+  const sections = compiled && Array.isArray(compiled.sections) ? compiled.sections : [];
+  const scenes = machine && Array.isArray(machine.scenes) ? machine.scenes : [];
+  let sectionIndex = 0;
+  for (const event of events) {
+    if (!event || !(event.gain > 0) || !Number.isFinite(event.tSec)) continue;
+    let tracks = machine && Array.isArray(machine.tracks) ? machine.tracks : [];
+    if (sections.length) {
+      while (sectionIndex < sections.length - 1
+        && event.tSec >= sections[sectionIndex].endSec) sectionIndex++;
+      const section = sections[sectionIndex];
+      const scene = section && scenes[section.scene];
+      tracks = scene && Array.isArray(scene.tracks) ? scene.tracks : [];
+    }
+    const track = tracks[event.track];
+    const voiceEnd = event.tSec + eventVoiceSeconds(event, track);
+    end = Math.max(end, voiceEnd + spaceTailSeconds(machine, track));
+  }
+  const semanticEvents = compiled && Array.isArray(compiled.semanticEvents)
+    ? compiled.semanticEvents : [];
+  for (const event of semanticEvents) {
+    if (event && Number.isFinite(event.outEndSec)) {
+      end = Math.max(end, event.outEndSec + SEMANTIC_STOP_PAD_SEC);
+    }
+  }
+  return end;
+}
+
 // SPACE rack (CONTRACT-CONFORM 4): one plate and one tempo-synced delay per
 // context, fed from the per-track strips so a duck ducks the sends too, and
 // so the cost is two gain nodes per track rather than per voice.
 // Master stage for offline renders: the same lookahead true-peak limiter the
 // RACK uses, at a -0.3 dBTP ceiling. Eight tracks plus sends sum well past
 // unity, and a bench that reports true peak to 0.1 dB cannot ship clipped WAVs.
-async function masterLimit(buffer) {
-  try {
-    return await processLimiter(buffer, { ceiling: -0.3 });
-  } catch (e) {
-    return buffer;   // never lose a render to the master stage
+export async function masterLimit(buffer, processor = processLimiter) {
+  if (!buffer || typeof processor !== 'function') {
+    throw new Error('MASTER LIMITER FAILED · invalid render or processor');
   }
+  let mastered;
+  try {
+    mastered = await processor(buffer, { ceiling: LIMITER_CEILING_DBTP });
+  } catch (error) {
+    throw new Error('MASTER LIMITER FAILED · ' + (error && error.message ? error.message : error));
+  }
+  if (!mastered || mastered.length !== buffer.length
+    || mastered.numberOfChannels !== buffer.numberOfChannels
+    || mastered.sampleRate !== buffer.sampleRate) {
+    throw new Error('MASTER LIMITER FAILED · output format changed');
+  }
+  return Object.freeze({
+    buffer: mastered,
+    applied: true,
+    ceilingDbtp: LIMITER_CEILING_DBTP,
+  });
 }
 
 function createSpaceRack(ctx, dest, space, bpm) {

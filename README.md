@@ -8,6 +8,13 @@ transcript, shows the signal as waveform and spectrogram, measures loudness the 
 broadcast meters measure it, and runs a repair chain (denoise, de-hum, de-ess, EQ, gate,
 compression, limiting, loudness normalization) before handing you a WAV.
 
+It is also a multi-instrument virtual production studio: six polyphonic melodic parts
+sit beside the eight-track sample machine, with dual-oscillator sound design, chords, a
+four-bar note sequencer, channel mixing, reverb/delay sends, and a 48 kHz stereo bounce.
+LOOM binds source-grounded words or audio spans to MIDI gestures, then arms that binding
+as a ninth, scene-local MACHINE lane. A recording can become an inspectable musical
+performance without losing where any sound came from.
+
 Live at **[ihelfrich.github.io/yellowjacket](https://ihelfrich.github.io/yellowjacket/)**.
 
 It is a static page. There is no server to upload to. The only things fetched over the
@@ -43,7 +50,7 @@ Audio API has been able to splice, filter, and render audio offline for a decade
 is that: the local three-quarters of Descript, plus the measurement bench Descript never
 had, on a page that costs nothing to host and nothing to use.
 
-## The four benches
+## The six benches
 
 **TRANSCRIPT** is the Descript part. Pick a Whisper model, transcribe, then edit the audio
 by editing words: click a word to seek there, select a run of words and delete them, and
@@ -80,22 +87,74 @@ limiter, and loudness normalization to a LUFS target (-16 for podcasts is the de
 Every module has a power switch and a few honest parameters. Render, then A/B the result
 against the original before exporting WAV at 16 or 24 bit.
 
-**MACHINE** is the newest bench and the start of something bigger: it maps the beat grid
+**STUDIO** is the melodic production layer: six independent polyphonic instruments with
+eight starting architectures (sub, bass, keys, pluck, pad, lead, organ, and glass). Each
+part has two oscillators, detune or harmonic intervals, transpose, a resonant low-pass,
+and a full ADSR envelope. A four-bar note sequencer writes single notes, fifths, minor or
+major chords, and dominant sevenths with per-event velocity and gate. Its mixer adds
+level, pan, mute, solo, plate reverb, and tempo delay; BOUNCE prints the whole loop through
+the same graph as a 48 kHz stereo, 24-bit WAV. Pick a key and scale and IDEA writes a
+deterministic six-part starting arrangement; SHIFT, INVERT, and DUPLICATE reshape bars,
+while MIDI OUT sends the tempo, swing, chords, velocities, gates, and six channels to a
+DAW. Studio edits participate in undo, autosave, and portable `.yjkt` projects without
+needing a recording loaded first.
+
+**LOOM** is the semantic performance layer. Select kept transcript words and **WEAVE
+WORDS** opens them as real source material in one action; a real audio span works too.
+Gesture comes from a deterministic starter phrase, any populated STUDIO track, or one bar
+played live from the selected WIRE MIDI input. Live capture keeps note, velocity, note-off
+gate, and sub-step timing; note-off bounds the audible source span, while the as-played feel becomes a fractional position on Machine's
+own clock rather than a second transport. WEAVE
+binds material and gesture into an immutable event map addressed by canonical SHA-256. Every event
+retains its source timestamps, word range, note, velocity, timing feel, pitch treatment,
+and intended hardware channel, so TRACE returns to the exact recording span even when the
+audio itself is offline.
+
+ARM TO SCENE places that map above the eight MACHINE tracks as a ninth lane without
+turning words into disposable samples. It runs on the same compiler clock as the drums,
+follows the active scene's tempo and swing, survives scene copies and source replacement,
+and can be bypassed or trimmed from PATTERN. PRINT 24-BIT renders the combined Machine +
+semantic performance and downloads one ZIP containing a WAV and a `.yjmap.json` lineage
+map. The encoded recording's local SHA-256—not its filename—is the source identity.
+Material and gesture remain independently replaceable, while scenes already armed to an
+older take keep their immutable recipe. The exact contract and fidelity boundary live in
+[CONTRACT-SEMANTIC-TAKE](docs/CONTRACT-SEMANTIC-TAKE.md).
+
+**MACHINE** is the sample production bench: it maps the beat grid
 of whatever you loaded (spectral-flux onsets, Ellis-style dynamic-programming beat
 tracking, with a confidence readout that admits when material has no usable pulse), then
 lets you carve the audio into clips. Drag to cut a region with edges that snap to beats,
 cut a whole selection into bars with one button, click any clip to hear it, and export a
-clip as a WAV loop. Selected words in the transcript lift straight over as clips, so a
-spoken phrase becomes a loop in two clicks. Tempo detection wrong? Tap the tempo or pin
+clip as a WAV loop. Selected transcript words now enter LOOM directly and can ride above
+the pattern as a traceable performance instead of becoming an irreversible clip. Tempo
+detection wrong? Tap the tempo or pin
 bar one and it re-tracks around your anchor.
+
+MACHINE also starts without source audio. Its factory rack builds three coherent
+eight-voice kits locally: deep analog 808 weight, a warmer tape-shaped set, and a
+sharper digital set. These are not bundled MP3s or loosely matched presets. Each voice
+is deterministic model synthesis with Float64 state and true phase accumulation; its
+nonlinear core runs 4× at 384 kHz, then the same Kaiser sinc converter used elsewhere
+produces the canonical 96 kHz PCM. Role-specific calibration leaves intentional mix
+headroom instead of normalizing every hit to the same ceiling. The long 808 bass is
+pitched through ordinary voice and step locks, and open/closed hats share a real
+cross-track choke group.
+
+Every kit includes authored grooves and deterministic NEW TAKES. A take holds the
+musical anchors while recomposing ghost hits, velocities, probabilities, ratchets, and
+bass pitches from a saved variation number; the result is repeatable after reload and
+prints identically offline. LOAD SOUNDS keeps the current grid. LOAD + GROOVE replaces
+it explicitly. Either operation is one undoable project edit.
 
 MACHINE's PATTERN state is an eight-track step sequencer in the OP-XY lineage: assign
 clips to tracks (the samples are copied in, like loading a pad), program 64 steps across
 four pages, set per-track lengths for polymeter, swing the grid MPC-style, fire tracks
 live from keys 1 through 8, and mix with per-track gain, pan, mute, and solo. Live
-playback and offline render come from one event compiler, so FREEZE prints exactly what
-you heard: the loop becomes the new bench source while the machine keeps its pattern,
-and you can slice the freeze and go around again.
+playback and offline render come from one event compiler, so FREEZE replays the same
+deterministic musical decisions. The print lets already-started voices and Space returns
+finish, then passes through the -0.3 dBTP offline limiter; it is intentionally not a
+bit-identical capture of the live device path. The loop becomes the new bench source
+while the machine keeps its pattern, and you can slice the freeze and go around again.
 
 HARVEST mines a whole track for its best material instead of making you hunt
 for it. It classifies every candidate slice by role (kick, snare, hat, bass,
@@ -141,7 +200,8 @@ Command/Control-Shift-Z.
 ## Out the wire
 
 The MACHINE bench has a third state: WIRE, the hardware side. Connect a USB MIDI
-device and its pads fire the eight tracks with velocity; LEARN maps any note or
+device and its pads fire the eight tracks with velocity; LOOM can capture one bar from that
+same selected input as a source-traceable human gesture; LEARN maps any note or
 knob to track mutes, scene switches, and momentary fill; CLOCK OUT makes the
 bench a MIDI clock master, ticks scheduled with driver-level timestamps off the
 same audio clock the sequencer runs on, so a groovebox on the desk locks to the
@@ -155,7 +215,9 @@ seconds, slice points written in the device's own fixed-point scheme (verified
 byte-for-byte against a factory patch). Drop the file onto an OP-Z in content
 mode or an OP-1 disk and the pads play your slices. The whole trip runs in the
 page: rip, beatmap, carve, repair if the source is rough, print, drag to the
-device. Works with the teenage engineering OP-Z and OP-1; this is not a teenage
+device. A source-free factory or custom Machine kit can print directly from PATTERN;
+its active voices are folded to mono and band-limited once from their real source rates
+to the hardware format. Works with the teenage engineering OP-Z and OP-1; this is not a teenage
 engineering product and is not affiliated with them.
 
 ## The bench remembers
@@ -220,6 +282,13 @@ resampled through a Kaiser polyphase sinc with 80 dB stopband; the denoiser is t
 spectral-gating recipe from the noisereduce literature rather than something
 improvised. Every one of these claims is locked by a test you can run yourself:
 node test/run.mjs.
+
+Factory drum PCM is fixed at 96 kHz and synthesized through a 4× nonlinear core before
+band-limited decimation. Live monitoring still follows the actual AudioContext/device
+rate—reported in the kit strip—while Machine FREEZE and SONG automatically choose the
+highest active sample rate and therefore print a factory-kit performance at 96 kHz.
+Editable drive stages request Web Audio's 4× oversampling in the one graph shared by
+live and offline playback; the offline master retains the -0.3 dBTP true-peak ceiling.
 
 ## Running it locally
 
