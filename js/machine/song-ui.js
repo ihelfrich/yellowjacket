@@ -77,7 +77,7 @@ export class SongView extends EventTarget {
     render.type = 'button';
     render.className = 'yj-btn';
     render.textContent = 'RENDER SONG';
-    render.title = 'Render the arrangement offline to a WAV: prints exactly what PLAY SONG plays';
+    render.title = 'Render the same seeded arrangement decisions, finish started voices and Space tails, then apply the offline master';
     render.disabled = true;
     render.addEventListener('click', () => this._emit('render', {}));
     this._btnRender = render;
@@ -85,7 +85,7 @@ export class SongView extends EventTarget {
     const readout = document.createElement('div');
     readout.className = 'yj-well yj-count yj-song-readout';
     readout.textContent = 'NO SECTIONS';
-    readout.title = 'Sections and total duration; position while playing. Songs are deterministic: every pass replays the same seeded take, so RENDER SONG prints exactly what PLAY SONG played.';
+    readout.title = 'Sections and musical-grid duration; position while playing. Renders replay the same seeded decisions, then finish already-started audio before mastering.';
     this._readout = readout;
 
     bar.append(play, loop, render, readout);

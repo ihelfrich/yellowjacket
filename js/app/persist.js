@@ -4,6 +4,8 @@
 // Autosave scheduling and restore orchestration live in persist-controller.js.
 
 import { normalizeVoice } from '../machine/compile.js';
+import { applyStudioSnapshot, studioHasContent } from '../studio/model.js';
+import { reidentifyLoomPlan, sameLoomPlanContent } from '../loom/identity.js';
 
 export const FORMAT_VERSION = 2;
 
@@ -22,6 +24,9 @@ export function projectHasContent(project, runtime = {}) {
   if (runtime.repairs && runtime.repairs.length) return true;
   if (project.repairs && project.repairs.length) return true;
   if (project.assets && Object.keys(project.assets).length) return true;
+  if (studioHasContent(project.studio)) return true;
+  if (project.loom && (project.loom.plan
+    || (project.loom.plans && Object.keys(project.loom.plans).length))) return true;
 
   const machine = project.machine;
   const scenes = machine && Array.isArray(machine.scenes) ? machine.scenes : [];
@@ -95,6 +100,7 @@ function serializeTrack(track) {
     duckSource: track.duckSource,
     duckDb: track.duckDb,
     choke: !!track.choke,
+    chokeGroup: track.chokeGroup,
     sendVerb: track.sendVerb,
     sendDelay: track.sendDelay,
   };
@@ -107,8 +113,17 @@ function serializeScene(scene) {
     bpm: scene.bpm,
     swing: scene.swing,
     seed: scene.seed,
+    drums: scene.drums ? clone(scene.drums) : null,
+    loomLane: scene.loomLane ? clone(scene.loomLane) : null,
     tracks: scene.tracks.map(serializeTrack),
   };
+}
+
+function serializeTranscript(project) {
+  const count = Array.isArray(project.words) ? project.words.length : 0;
+  const source = project.transcript && Array.isArray(project.transcript.gapCuts)
+    ? project.transcript.gapCuts : [];
+  return { gapCuts: Array.from({ length: count }, (_, index) => !!source[index]) };
 }
 
 // Undo snapshots need the document only. Copying every referenced PCM buffer
@@ -149,6 +164,7 @@ export function serializeProject(project, runtime, skipPcm = false) {
     fileName: project.fileName != null ? project.fileName : null,
     sourceBytes: src ? { size: src.byteLength } : null,
     words: clone(project.words),
+    transcript: serializeTranscript(project),
     clips: clone(project.clips || []),
     chain: clone(project.chain || []),
     machine: {
@@ -156,7 +172,10 @@ export function serializeProject(project, runtime, skipPcm = false) {
       scenes: machine.scenes.map(serializeScene),
       song: machine.song ? clone(machine.song) : null,
       space: machine.space ? clone(machine.space) : null,
+      drums: machine.drums ? clone(machine.drums) : null,
     },
+    studio: project.studio ? clone(project.studio) : null,
+    loom: project.loom ? clone(project.loom) : null,
     assets,
     repairs: clone(runtime.repairs || []),
     anchors: anchors ? clone(anchors) : null,
@@ -218,6 +237,9 @@ function applyTrack(track, saved) {
   if (Number.isFinite(saved.duckSource)) track.duckSource = saved.duckSource | 0;
   if (Number.isFinite(saved.duckDb)) track.duckDb = saved.duckDb;
   if (typeof saved.choke === 'boolean') track.choke = saved.choke;
+  if (Number.isFinite(saved.chokeGroup)) {
+    track.chokeGroup = Math.max(0, Math.min(4, saved.chokeGroup | 0));
+  }
 }
 
 function applyScene(scene, saved) {
@@ -228,6 +250,31 @@ function applyScene(scene, saved) {
   if (Number.isFinite(saved.bpm)) scene.bpm = saved.bpm;
   if (Number.isFinite(saved.swing)) scene.swing = saved.swing;
   if (Number.isFinite(saved.seed)) scene.seed = saved.seed >>> 0;
+  if (scene.drums) {
+    scene.drums.kitId = null;
+    scene.drums.grooveId = null;
+    scene.drums.variation = 0;
+    if (saved.drums && typeof saved.drums === 'object') {
+      scene.drums.kitId = typeof saved.drums.kitId === 'string' ? saved.drums.kitId : null;
+      scene.drums.grooveId = typeof saved.drums.grooveId === 'string' ? saved.drums.grooveId : null;
+      if (Number.isFinite(saved.drums.variation)) {
+        scene.drums.variation = Math.max(0, saved.drums.variation | 0);
+      }
+    }
+  }
+  if (scene.loomLane) {
+    const lane = saved.loomLane && typeof saved.loomLane === 'object' ? saved.loomLane : {};
+    scene.loomLane.planId = typeof lane.planId === 'string' ? lane.planId : null;
+    scene.loomLane.enabled = lane.enabled !== false;
+    scene.loomLane.gainDb = Number.isFinite(lane.gainDb)
+      ? Math.max(-48, Math.min(6, lane.gainDb)) : -9;
+    scene.loomLane.pan = Number.isFinite(lane.pan)
+      ? Math.max(-1, Math.min(1, lane.pan)) : 0;
+    scene.loomLane.repeatSteps = Number.isFinite(lane.repeatSteps)
+      ? Math.max(1, Math.min(64, lane.repeatSteps | 0)) : 16;
+    scene.loomLane.startStep = Number.isFinite(lane.startStep)
+      ? Math.max(0, Math.min(63, lane.startStep | 0)) : 0;
+  }
   const savedTracks = Array.isArray(saved.tracks) ? saved.tracks : [];
   const n = Math.min(scene.tracks.length, savedTracks.length);
   for (let i = 0; i < n; i++) {
@@ -258,6 +305,16 @@ export function applySnapshot(json, { project, runtime }) {
   } else {
     project.words = null;
   }
+
+  if (!project.transcript || typeof project.transcript !== 'object') {
+    project.transcript = { gapCuts: [] };
+  }
+  if (!Array.isArray(project.transcript.gapCuts)) project.transcript.gapCuts = [];
+  project.transcript.gapCuts.length = 0;
+  const savedGaps = json.transcript && Array.isArray(json.transcript.gapCuts)
+    ? json.transcript.gapCuts : [];
+  const gapCount = Array.isArray(project.words) ? project.words.length : 0;
+  for (let i = 0; i < gapCount; i++) project.transcript.gapCuts.push(!!savedGaps[i]);
 
   project.clips.length = 0;
   if (Array.isArray(json.clips)) {
@@ -316,6 +373,98 @@ export function applySnapshot(json, { project, runtime }) {
     if (typeof sv.delayDivision === 'string') sp.delayDivision = sv.delayDivision;
     if (Number.isFinite(sv.delayFeedback)) sp.delayFeedback = Math.max(0, Math.min(0.95, sv.delayFeedback));
     if (Number.isFinite(sv.delayMix)) sp.delayMix = Math.max(0, Math.min(1, sv.delayMix));
+  }
+
+  // Factory-kit identity is lightweight UI provenance. The actual PCM remains
+  // ordinary persisted assets, so old projects and custom kits need no special
+  // restore path.
+  if (machine.drums && !(savedScenes[machine.activeScene]
+    && savedScenes[machine.activeScene].drums)) {
+    const savedDrums = savedMachine.drums;
+    if (savedDrums && typeof savedDrums === 'object') {
+      machine.drums.kitId = typeof savedDrums.kitId === 'string' ? savedDrums.kitId : null;
+      machine.drums.grooveId = typeof savedDrums.grooveId === 'string' ? savedDrums.grooveId : null;
+      if (Number.isFinite(savedDrums.variation)) {
+        machine.drums.variation = Math.max(0, savedDrums.variation | 0);
+      }
+    }
+  }
+
+  // Studio is optional in formatVersion 2 so projects from the sampler-only
+  // era open with a fresh instrument rack. Existing objects stay in place for
+  // the controller and audio engine.
+  if (project.studio && json.studio && typeof json.studio === 'object') {
+    applyStudioSnapshot(project.studio, json.studio);
+  }
+
+  // LOOM is optional in formatVersion 2. It is JSON-only and deliberately
+  // mutates in place because its controller holds the live project object.
+  if (project.loom) {
+    project.loom.weaveCount = 0;
+    project.loom.plan = null;
+    project.loom.activePlanId = null;
+    if (!project.loom.plans || typeof project.loom.plans !== 'object') project.loom.plans = {};
+    for (const id of Object.keys(project.loom.plans)) delete project.loom.plans[id];
+    const planAliases = new Map();
+    const bindPlanAlias = (alias, canonicalId) => {
+      if (typeof alias !== 'string') return;
+      const existing = planAliases.get(alias);
+      if (existing && existing !== canonicalId) {
+        throw new Error('LOOM PLAN ALIAS COLLISION · PROJECT WAS NOT TRUSTED');
+      }
+      planAliases.set(alias, canonicalId);
+    };
+    if (json.loom && typeof json.loom === 'object') {
+      const installPlan = (savedPlan, fallbackId) => {
+        if (!savedPlan || typeof savedPlan !== 'object') return null;
+        const staleId = typeof savedPlan.id === 'string' ? savedPlan.id : null;
+        const plan = reidentifyLoomPlan(clone(savedPlan));
+        if (!plan) return null;
+        const existing = project.loom.plans[plan.id];
+        if (existing && !sameLoomPlanContent(existing, plan)) {
+          throw new Error('LOOM PLAN ID COLLISION · PROJECT WAS NOT TRUSTED');
+        }
+        if (!existing) project.loom.plans[plan.id] = plan;
+        bindPlanAlias(fallbackId, plan.id);
+        bindPlanAlias(staleId, plan.id);
+        return project.loom.plans[plan.id];
+      };
+      if (Number.isFinite(json.loom.weaveCount)) {
+        project.loom.weaveCount = Math.max(0, json.loom.weaveCount | 0);
+      }
+      if (json.loom.plans && typeof json.loom.plans === 'object') {
+        for (const id of Object.keys(json.loom.plans)) {
+          const savedPlan = json.loom.plans[id];
+          installPlan(savedPlan, id);
+        }
+      }
+      let activeId = typeof json.loom.activePlanId === 'string'
+        ? json.loom.activePlanId : null;
+      if (json.loom.plan && typeof json.loom.plan === 'object') {
+        const legacyId = typeof json.loom.plan.id === 'string'
+          ? json.loom.plan.id : 'loom-legacy-plan';
+        installPlan(json.loom.plan, legacyId);
+        if (!activeId) activeId = legacyId;
+      }
+      const canonicalActiveId = activeId
+        ? (planAliases.get(activeId) || (project.loom.plans[activeId] ? activeId : null))
+        : null;
+      if (canonicalActiveId && project.loom.plans[canonicalActiveId]) {
+        project.loom.activePlanId = canonicalActiveId;
+        project.loom.plan = project.loom.plans[canonicalActiveId];
+      }
+    }
+    // Scene lanes were restored before the registry. Rewrite every persisted
+    // reference through the canonical-id map; a dangling/forged reference is
+    // quarantined instead of being allowed to name unrelated content. This
+    // also clears stale lane references when an old document has no Loom block.
+    for (const scene of machine.scenes) {
+      const lane = scene && scene.loomLane;
+      if (!lane || typeof lane.planId !== 'string') continue;
+      const canonicalId = planAliases.get(lane.planId)
+        || (project.loom.plans[lane.planId] ? lane.planId : null);
+      lane.planId = canonicalId;
+    }
   }
 
   for (const key of Object.keys(project.assets)) delete project.assets[key];

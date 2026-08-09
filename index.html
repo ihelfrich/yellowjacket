@@ -13,6 +13,7 @@
 <link rel="modulepreload" href="js/audio-engine.js">
 <link rel="modulepreload" href="js/render/peaks.js">
 <link rel="modulepreload" href="js/waveform.js">
+<link rel="modulepreload" href="js/render/spectrogram-gpu.js">
 <link rel="modulepreload" href="js/spectrogram.js">
 <link rel="modulepreload" href="js/transcribe.js">
 <link rel="modulepreload" href="js/transcript-ui.js">
@@ -22,6 +23,7 @@
 <link rel="modulepreload" href="js/dsp/deess.js">
 <link rel="modulepreload" href="js/dsp/gate.js">
 <link rel="modulepreload" href="js/dsp/compressor.js">
+<link rel="modulepreload" href="js/dsp/truepeak.js">
 <link rel="modulepreload" href="js/dsp/limiter.js">
 <link rel="modulepreload" href="js/dsp/loudness.js">
 <link rel="modulepreload" href="js/dsp/loudnorm.js">
@@ -30,16 +32,61 @@
 <link rel="modulepreload" href="js/machine/cliprefs.js">
 <link rel="modulepreload" href="js/machine/slice-ui.js">
 <link rel="modulepreload" href="js/export.js">
+<link rel="modulepreload" href="js/fft.js">
+<link rel="modulepreload" href="js/dsp/resample.js">
+<link rel="modulepreload" href="js/dsp/stretch.js">
+<link rel="modulepreload" href="js/dsp/space.js">
+<link rel="modulepreload" href="js/loom/schedule.js">
 <link rel="modulepreload" href="js/machine/compile.js">
+<link rel="modulepreload" href="js/performance/compile.js">
 <link rel="modulepreload" href="js/machine/sequencer.js">
 <link rel="modulepreload" href="js/machine/pattern-ui.js">
-<link rel="modulepreload" href="js/machine/keybed.js">
-<link rel="modulepreload" href="js/app/project-store.js">
-<link rel="modulepreload" href="js/app/project-bundle.js">
+<link rel="modulepreload" href="js/machine/song-ui.js">
+<link rel="modulepreload" href="js/machine/cliplist-ui.js">
+<link rel="modulepreload" href="js/analysis/constellation.js">
+<link rel="modulepreload" href="js/machine/constellation-ui.js">
+<link rel="modulepreload" href="js/machine/voicecurve-ui.js">
+<link rel="modulepreload" href="js/machine/voice-ui.js">
+<link rel="modulepreload" href="js/machine/crate-ui.js">
+<link rel="modulepreload" href="js/machine/synth-ui.js">
+<link rel="modulepreload" href="js/machine/modal-ui.js">
+<link rel="modulepreload" href="js/machine/pads-ui.js">
+<link rel="modulepreload" href="js/machine/kit-ui.js">
+<link rel="modulepreload" href="js/machine/drum-dsp.js">
+<link rel="modulepreload" href="js/machine/kits.js">
+<link rel="modulepreload" href="js/app/firstrun-ui.js">
 <link rel="modulepreload" href="js/app/command-deck.js">
+<link rel="modulepreload" href="js/machine/synth.js">
+<link rel="modulepreload" href="js/machine/keybed.js">
+<link rel="modulepreload" href="js/app/pipeline-ui.js">
+<link rel="modulepreload" href="js/studio/model.js">
+<link rel="modulepreload" href="js/app/project-store.js">
+<link rel="modulepreload" href="js/studio/compile.js">
+<link rel="modulepreload" href="js/loom/identity.js">
+<link rel="modulepreload" href="js/loom/compile.js">
 <link rel="modulepreload" href="js/app/bench-controller.js">
+<link rel="modulepreload" href="js/app/fingerprint.js">
 <link rel="modulepreload" href="js/app/source-controller.js">
+<link rel="modulepreload" href="js/app/project-bundle.js">
+<link rel="modulepreload" href="js/export/op1patch.js">
+<link rel="modulepreload" href="js/app/crate.js">
+<link rel="modulepreload" href="js/analysis/modal.js">
 <link rel="modulepreload" href="js/machine/controller.js">
+<link rel="modulepreload" href="js/app/repair-panel.js">
+<link rel="modulepreload" href="js/app/repair-controller.js">
+<link rel="modulepreload" href="js/midi/wire.js">
+<link rel="modulepreload" href="js/midi/clock.js">
+<link rel="modulepreload" href="js/app/wire-controller.js">
+<link rel="modulepreload" href="js/app/persist.js">
+<link rel="modulepreload" href="js/app/persist-controller.js">
+<link rel="modulepreload" href="js/studio/view.js">
+<link rel="modulepreload" href="js/studio/engine.js">
+<link rel="modulepreload" href="js/studio/midi.js">
+<link rel="modulepreload" href="js/studio/controller.js">
+<link rel="modulepreload" href="js/loom/view.js">
+<link rel="modulepreload" href="js/loom/engine.js">
+<link rel="modulepreload" href="js/loom/capture.js">
+<link rel="modulepreload" href="js/loom/controller.js">
 <link rel="modulepreload" href="js/main.js">
 <link rel="stylesheet" href="css/yj.css">
 </head>
@@ -49,7 +96,7 @@
   <div class="yj-mark">
     <span class="yj-mark-name">YELLOWJACKET</span>
     <span class="yj-mark-bar" aria-hidden="true"></span>
-    <span class="yj-mark-sub">AUDIO BENCH</span>
+    <span class="yj-mark-sub">VIRTUAL PRODUCTION STUDIO</span>
   </div>
   <div class="yj-transport">
     <button id="btnRtz" class="yj-btn" title="Return to zero (Home)">&#9198;</button>
@@ -75,6 +122,8 @@
   <button id="tabBtn-signal" class="yj-tab-btn" data-tab="signal" role="tab" aria-controls="tab-signal" aria-selected="false" tabindex="-1">SIGNAL</button>
   <button id="tabBtn-rack" class="yj-tab-btn" data-tab="rack" role="tab" aria-controls="tab-rack" aria-selected="false" tabindex="-1">RACK</button>
   <button id="tabBtn-machine" class="yj-tab-btn" data-tab="machine" role="tab" aria-controls="tab-machine" aria-selected="false" tabindex="-1">MACHINE</button>
+  <button id="tabBtn-studio" class="yj-tab-btn" data-tab="studio" role="tab" aria-controls="tab-studio" aria-selected="false" tabindex="-1">STUDIO</button>
+  <button id="tabBtn-loom" class="yj-tab-btn" data-tab="loom" role="tab" aria-controls="tab-loom" aria-selected="false" tabindex="-1">LOOM</button>
 </nav>
 
 <div id="pipelineHost"></div>
@@ -129,7 +178,7 @@
             <button class="yj-btn" id="btnExpVtt" disabled>VTT</button>
             <button class="yj-btn" id="btnExpJson" disabled>JSON</button>
           </div>
-          <button class="yj-btn" id="btnLift" disabled title="Send the selected words to the MACHINE as a clip">LIFT TO MACHINE</button>
+          <button class="yj-btn" id="btnLift" disabled title="Select kept words in the transcript, then load them into LOOM">WEAVE WORDS</button>
         </div>
       </aside>
     </div>
@@ -253,6 +302,7 @@
     </div>
     <div id="mstate-pattern" class="yj-mstate">
       <div class="yj-panel yj-grow" data-label="MACHINE / PATTERN">
+        <div id="kitHost" class="yj-kit-host"></div>
         <div id="patternHost" class="yj-pattern-host"></div>
         <div id="voiceHost" class="yj-voice-host" hidden></div>
       </div>
@@ -266,7 +316,7 @@
     <div id="mstate-song" class="yj-mstate">
       <div class="yj-panel yj-grow" data-label="MACHINE / SONG">
         <div id="songHost"></div>
-        <p class="yj-canvas-note">Chain scenes into an arrangement. Every pass rolls the same seeded dice, so RENDER prints exactly the song you heard.</p>
+        <p class="yj-canvas-note">Chain scenes into an arrangement. RENDER replays the same seeded decisions, lets started voices and Space tails finish, then applies the offline master.</p>
       </div>
     </div>
     <div id="mstate-crate" class="yj-mstate">
@@ -314,6 +364,16 @@
     </div>
   </section>
 
+  <!-- ============ STUDIO ============ -->
+  <section id="tab-studio" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-studio" aria-hidden="true">
+    <div id="studioHost" class="yj-studio-host"></div>
+  </section>
+
+  <!-- ============ LOOM ============ -->
+  <section id="tab-loom" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-loom" aria-hidden="true">
+    <div id="loomHost" class="yj-loom-host"></div>
+  </section>
+
 </main>
 
 <div id="firstRunHost"></div>
@@ -330,6 +390,7 @@
     </div>
     <button id="btnOpen2" class="yj-btn">OR PICK YOUR OWN</button>
     <button id="btnProjectOpen2" class="yj-btn">OPEN A .YJKT PROJECT</button>
+    <button id="btnOpenDrums" class="yj-btn yj-btn-primary">START WITH 808S</button>
     <button id="btnOpenSynth" class="yj-btn">MAKE A SOUND WITHOUT AUDIO</button>
     <div class="yj-urlrow">
       <input type="url" id="urlInput" class="yj-urlinput" placeholder="or paste a URL · direct audio link, podcast enclosure, archive.org" spellcheck="false">

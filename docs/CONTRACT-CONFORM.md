@@ -111,6 +111,14 @@ this as a determinism break, and it is one. The alternative is exporting
 clipped audio from a bench that measures true peak to 0.1 dB, which is worse.
 The guarantee to state accurately is: the same compiled event stream produces
 the same audio up to the master stage. Do not claim bit-identity for renders.
+Limiter failure is a print failure: the export must abort rather than emit an
+unlimited WAV or report a ceiling that was not applied.
+
+The musical grid still ends at the compiler's `totalSec`. Offline allocation
+extends only audio already started inside that grid: the dry voice through its
+release/stop pad, the complete enabled plate impulse, and delay repeats through
+the last repeat at or above the declared -80 dB amplitude floor. No Machine or
+Loom occurrence may begin in this tail. Reported artifact duration includes it.
 
 ## 5. Acceptance
 
@@ -123,4 +131,5 @@ fields.
 Browser: a 2 s harvested loop assigned to a track with fitSteps 16 locks to
 the bar at 100 bpm and at 140 bpm without changing pitch; sends audibly
 place a dry slice in a room; a rendered song with fits and sends completes
-and its duration still equals totalSec. Existing 63 harness cases stay green.
+and reports its musical-grid and tail durations separately. Existing harness
+cases stay green.

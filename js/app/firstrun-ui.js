@@ -6,7 +6,7 @@
 // seen exactly once.
 //
 // Pure view. show() / hide() / setVisible(bool). Emits 'start' {path} where
-// path is 'kit' | 'clean' | 'synth', and 'dismiss' {}. The view hides itself on
+// path is 'drums' | 'kit' | 'clean' | 'synth' | 'project', and 'dismiss' {}. The view hides itself on
 // any of those gestures; the caller owns the dismissed flag and should persist
 // it on BOTH events, since taking a path also means never showing this again.
 
@@ -69,6 +69,11 @@ const STYLE = `
 // register as the rest of the bench: what happens, not how good it is.
 const PATHS = [
   {
+    path: 'drums',
+    name: 'START WITH AN 808 KIT',
+    note: 'Generate eight precision drum voices at 96 kHz, write a playable groove, then shape, sequence, arrange, and bounce it here.',
+  },
+  {
     path: 'kit',
     name: 'CHOP A RECORD INTO A KIT',
     note: 'Load a track, press HARVEST, and the bench mines the whole thing for kicks, snares, hats, and chops you can play.',
@@ -76,12 +81,12 @@ const PATHS = [
   {
     path: 'clean',
     name: 'CLEAN UP A RECORDING',
-    note: 'Load a voice recording, transcribe it, delete the words you do not want, then paint the remaining noise off the spectrogram.',
+    note: 'Transcribe a voice recording, edit it by word, or weave selected words into a traceable performance over the drum machine.',
   },
   {
     path: 'synth',
-    name: 'WRITE A SOUND AS MATHS',
-    note: 'Type a formula into the SYNTH panel and hear the sample it makes, with no audio loaded at all.',
+    name: 'BUILD A MULTI-INSTRUMENT LOOP',
+    note: 'Open six polyphonic synths, design their voices, write chords and notes, then bounce a stereo WAV — no source audio needed.',
   },
   {
     path: 'project',
@@ -147,11 +152,12 @@ export class FirstRunView extends EventTarget {
     copy.className = 'yj-firstrun-copy';
     const lede = document.createElement('p');
     lede.className = 'yj-firstrun-lede';
-    lede.textContent = 'This is an audio bench that runs entirely in this browser tab.';
+    lede.textContent = 'This is a virtual production studio and audio bench that runs entirely in this browser tab.';
     const what = document.createElement('p');
     what.textContent = 'It transcribes speech, so you can cut a recording by deleting words from the transcript. '
       + 'Noise and coughs come out by painting over them on the spectrogram. '
-      + 'The MACHINE bench chops a record into a drum kit, sequences that kit across eight tracks, and prints kits an OP-Z reads.';
+      + 'MACHINE builds precision factory drums or chops records into eight-track kits; STUDIO adds six melodic synth instruments, chords, mixing, and stereo bounce. '
+      + 'LOOM turns selected words into a scene instrument without losing their source trace.';
     const limits = document.createElement('p');
     limits.textContent = 'Nothing you load leaves this machine, because there is no server to send it to. '
       + 'Everything runs on your own hardware, so a long file takes real time. Save a .yjkt project when the whole bench needs to travel with you.';

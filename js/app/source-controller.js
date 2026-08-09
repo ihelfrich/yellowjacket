@@ -2,6 +2,7 @@
 // pipeline, generation tokens. Moved from main.js in the STRUCTURE refactor.
 
 import { buildPeakPyramid } from '../render/peaks.js';
+import { fingerprintId, sha256Hex } from './fingerprint.js';
 
 export const DEMO_TRACK = Object.freeze({
   path: 'assets/demo/zane-little-sparks.mp3',
@@ -77,6 +78,14 @@ export function initSourceController(ctx) {
     // Keep the encoded bytes for persistence and RESTORE: decodeAudioData detaches
     // its argument in some engines, so the copy must happen before decode.
     const sourceBytes = ab.slice(0);
+    let sourceHash = null;
+    try {
+      sourceHash = fingerprintId(await sha256Hex(sourceBytes));
+    } catch (error) { /* handled by the identity fault below */ }
+    if (!sourceHash) {
+      statusFault('SOURCE IDENTITY FAULT · SHA-256 IS REQUIRED FOR SEMANTIC LINEAGE');
+      return;
+    }
     try {
       await engine.load(ab);
     } catch (e) {
@@ -88,13 +97,21 @@ export function initSourceController(ctx) {
       r.generation++;
       p.fileName = name;
       p.words = null;
+      if (p.transcript && Array.isArray(p.transcript.gapCuts)) p.transcript.gapCuts.length = 0;
       p.clips.length = 0;   // in place: references are held elsewhere
+      // Immutable armed plans survive a source swap and become visibly offline.
+      // Only the controller-local active draft is cleared.
+      if (p.loom) {
+        p.loom.plan = null;
+        p.loom.activePlanId = null;
+      }
       r.buffer = engine.buffer;
       r.mono = engine.mono;
       r.sampleRate = engine.sampleRate;
       r.renderedBuffer = null;
       r.analysis = null;
       r.sourceBytes = sourceBytes;
+      r.sourceHash = sourceHash;
       // One pyramid, shared by every view that draws this source.
       r.peaks = buildPeakPyramid(r.mono);
     });
@@ -137,13 +154,19 @@ export function initSourceController(ctx) {
       r.generation++;
       p.fileName = null;
       p.words = null;
+      if (p.transcript && Array.isArray(p.transcript.gapCuts)) p.transcript.gapCuts.length = 0;
       p.clips.length = 0;
+      if (p.loom) {
+        p.loom.plan = null;
+        p.loom.activePlanId = null;
+      }
       r.buffer = null;
       r.mono = null;
       r.sampleRate = 0;
       r.renderedBuffer = null;
       r.analysis = null;
       r.sourceBytes = null;
+      r.sourceHash = null;
       r.peaks = null;
     });
     $('roDur').textContent = fmtTime(0);

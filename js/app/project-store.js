@@ -2,6 +2,8 @@
 // The document is what OPFS persistence will save; runtime holds AudioBuffers,
 // decoded PCM, derived analysis, and generation tokens — never serialized.
 
+import { createStudio } from '../studio/model.js';
+
 let assetCounter = 0;
 
 export function createVoice() {
@@ -35,6 +37,7 @@ export function createTrack() {
     duckSource: -1,        // -1 off; else index of the track whose hits duck this one
     duckDb: 12,
     choke: false,          // mono track: each hit fades the previous voice
+    chokeGroup: 0,         // 0 off; matching 1..4 tracks choke one another (e.g. hats)
     sendVerb: 0,           // 0..1 into the plate bus (CONTRACT-CONFORM space rack)
     sendDelay: 0,          // 0..1 into the tempo-synced delay bus
   };
@@ -59,6 +62,17 @@ export function createScene(i) {
     swing: 50,
     // Deterministic per-scene seed so probability locks compile identically live and offline.
     seed: ((i + 1) * 0x9e3779b9) >>> 0,
+    drums: { kitId: null, grooveId: null, variation: 0 },
+    // A Semantic Take is a ninth, non-destructive performance lane. It holds
+    // only a reference to an immutable Loom plan; source PCM stays in runtime.
+    loomLane: {
+      planId: null,
+      enabled: true,
+      gainDb: -9,
+      pan: 0,
+      repeatSteps: 16,
+      startStep: 0,
+    },
     tracks: Array.from({ length: 8 }, createTrack),
   };
 }
@@ -87,6 +101,10 @@ export function createMachine() {
       set(v) { this.scenes[this.activeScene].swing = v; },
       enumerable: false,
     },
+    drums: {
+      get() { return this.scenes[this.activeScene].drums; },
+      enumerable: false,
+    },
   });
   return m;
 }
@@ -101,6 +119,15 @@ export function createWire() {
   };
 }
 
+export function createLoom() {
+  return {
+    weaveCount: 0,
+    plan: null,             // compatibility alias for the active immutable plan
+    activePlanId: null,
+    plans: {},              // id -> immutable JSON-only source × gesture binding
+  };
+}
+
 export function createProject(chainDefaults) {
   return {
     // No formatVersion here on purpose: the serialized format is stamped by
@@ -108,11 +135,14 @@ export function createProject(chainDefaults) {
     // live object read 1 forever and invited a maintainer to bump the wrong one.
     fileName: null,
     words: null,
+    transcript: { gapCuts: [] },
     chain: chainDefaults,
     clips: [],
     assets: {},            // id -> {id, kind, label, sampleRate, frames}; pcm lives on runtime refs
     machine: createMachine(),
+    studio: createStudio(), // six polyphonic melodic parts; WebAudio lives in studio/engine.js
     wire: createWire(),
+    loom: createLoom(),     // semantic source/MIDI provenance and render map
   };
 }
 
@@ -140,6 +170,7 @@ export class ProjectStore extends EventTarget {
       repairs: [],           // spectral repair stack, see CONTRACT-BRUSH.md
       original: null,        // {buffer, mono} captured before the first repair
       sourceBytes: null,     // encoded source as loaded, for persistence + restore
+      sourceHash: null,      // SHA-256 of encoded bytes; semantic-lineage identity
     };
     this.revision = 0;   // bumped per mutation; rides in the change event
     // Undo history: every mutation already funnels through update(), so one

@@ -79,6 +79,28 @@ const STYLE = `
 .yj-pattern-val-duck { width: 30px; }
 .yj-pattern-len { width: 52px; flex-shrink: 0; padding: 3px 4px; font-size: 10px; }
 .yj-pattern-duck { width: 52px; flex-shrink: 0; padding: 3px 4px; font-size: 10px; }
+.yj-pattern-loom { display: flex; align-items: center; gap: 4px; min-width: 980px; padding: 6px 0; border-top: 1px solid var(--yj-line); border-bottom: 1px solid var(--yj-line); background: var(--yj-panel); }
+.yj-pattern-loom.is-offline { border-color: rgba(255,92,69,.36); }
+.yj-pattern-loom-id { width: 158px; flex: 0 0 158px; min-width: 0; display: grid; grid-template-columns: 7px minmax(0,1fr); gap: 3px 7px; align-items: center; }
+.yj-pattern-loom-led { width: 6px; height: 6px; background: var(--yj-amber-dim); grid-row: 1 / span 2; }
+.yj-pattern-loom-led.is-online { background: var(--yj-nominal); }
+.yj-pattern-loom-led.is-offline { background: var(--yj-fault); }
+.yj-pattern-loom-title { color: var(--yj-yellow); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
+.yj-pattern-loom-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--yj-ink-dim); font: 8px/1.2 var(--f-mono); }
+.yj-pattern-loom-events { display: flex; flex: 1 1 0; gap: 4px; min-width: 320px; }
+.yj-pattern-loom-event { position: relative; flex: 1 1 0; min-width: 16px; max-width: 30px; height: 25px; padding: 0 1px; border: 1px solid var(--yj-line); background: var(--yj-well); color: var(--yj-amber-dim); font: 8px/1 var(--f-mono); overflow: hidden; text-overflow: ellipsis; }
+.yj-pattern-loom-event:nth-child(4n+1) { border-color: var(--yj-line-hi); }
+.yj-pattern-loom-event.is-on { color: var(--yj-yellow); border-color: var(--yj-amber-dim); background: var(--yj-select); cursor: pointer; }
+.yj-pattern-loom-event.is-collision { color: var(--yj-bg); background: var(--yj-yellow); border-color: var(--yj-yellow); font-weight: 700; }
+.yj-pattern-loom-event.is-selected { outline: 1px solid var(--yj-yellow-hi); outline-offset: 1px; }
+.yj-pattern-loom-event.is-now { border-color: var(--yj-yellow-hi); box-shadow: inset 0 -2px 0 var(--yj-yellow-hi); }
+.yj-pattern-loom-event:focus-visible { outline: 1px solid var(--yj-yellow); outline-offset: 2px; }
+.yj-pattern-loom-controls { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-left: auto; flex-shrink: 0; white-space: nowrap; }
+.yj-pattern-loom-controls .yj-btn { padding: 5px 6px; font-size: 8px; }
+.yj-pattern-loom-toggle { min-width: 34px; }
+.yj-pattern-loom-gain { width: 58px; }
+.yj-pattern-loom-gainval { width: 39px; color: var(--yj-ink-dim); font: 8px/1 var(--f-mono); text-align: right; }
+.yj-pattern-loom-state { color: var(--yj-ink-dim); font: 8px/1 var(--f-mono); }
 .yj-insp { height: 122px; flex-shrink: 0; box-sizing: border-box; background: var(--yj-panel); border: 1px solid var(--yj-line); border-radius: 2px; padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
 .yj-insp.is-closed { justify-content: center; }
 .yj-insp-empty { display: none; font-size: 10px; letter-spacing: 0.08em; color: var(--yj-ink-dim); text-align: center; }
@@ -110,6 +132,8 @@ export class PatternView extends EventTarget {
   // click on a track's sample-name well = assign, Alt+click = cleartrack
   // (stated in the well's title text). SONG slice adds: 'voiceopen' {track}
   // from the per-row [V] button (the integrator opens the VOICE drawer).
+  // A Semantic Take adds one compact, non-editing lane above the eight tracks:
+  // 'loomtoggle', 'loomgain', 'loomtrace', 'loomopen', and 'loomprint'.
   constructor(host) {
     super();
     this.host = host;
@@ -120,6 +144,9 @@ export class PatternView extends EventTarget {
     this._running = false;
     this._rows = [];
     this._cols = Array.from({ length: COLS }, () => []);
+    this._loom = { lane: null, plan: null, online: false, sceneLabel: '' };
+    this._loomPrintBusy = false;
+    this._loomSelectedEventId = null;
     this._hold = null;              // pending hold-to-inspect gesture
     this._holdConsumed = false;     // swallows the click after a fired hold
     this._docKey = null;            // document listeners live only while the
@@ -133,6 +160,8 @@ export class PatternView extends EventTarget {
     this._bar = this._buildBar();
     const grid = document.createElement('div');
     grid.className = 'yj-pattern-grid';
+    this._loomRow = this._buildLoomLane();
+    grid.appendChild(this._loomRow.root);
     for (let i = 0; i < ROWS; i++) grid.appendChild(this._buildRow(i));
     host.appendChild(grid);
     this._grid = grid;
@@ -151,6 +180,20 @@ export class PatternView extends EventTarget {
     this._syncScenes();
     for (let i = 0; i < ROWS; i++) this._syncRow(i);
     if (this._insp.open) this._syncInspector();   // closes itself if the step is gone
+  }
+
+  setLoomLane({ lane = null, plan = null, online = false, sceneLabel = '' } = {}) {
+    this._loom = { lane, plan, online: !!online, sceneLabel: String(sceneLabel || '') };
+    const events = plan && Array.isArray(plan.events) ? plan.events : [];
+    if (!events.some((event) => event && event.id === this._loomSelectedEventId)) {
+      this._loomSelectedEventId = null;
+    }
+    this._syncLoomLane();
+  }
+
+  setLoomPrintBusy(busy) {
+    this._loomPrintBusy = !!busy;
+    this._syncLoomLane();
   }
 
   setPlayhead(step) {
@@ -378,6 +421,203 @@ export class PatternView extends EventTarget {
     well.parentElement.insertBefore(input, well);
     input.focus();
     input.select();
+  }
+
+  // ---------- semantic take lane ----------
+
+  _buildLoomLane() {
+    const root = document.createElement('section');
+    root.className = 'yj-pattern-loom';
+    root.setAttribute('aria-label', 'Loom lane');
+
+    const identity = document.createElement('div');
+    identity.className = 'yj-pattern-loom-id';
+    const led = document.createElement('span');
+    led.className = 'yj-pattern-loom-led';
+    led.setAttribute('aria-hidden', 'true');
+    const title = document.createElement('span');
+    title.className = 'yj-pattern-loom-title';
+    title.textContent = 'LOOM LANE';
+    const source = document.createElement('span');
+    source.className = 'yj-pattern-loom-source';
+    source.textContent = 'NO SEMANTIC TAKE ARMED';
+    identity.append(led, title, source);
+
+    const events = document.createElement('div');
+    events.className = 'yj-pattern-loom-events';
+    events.setAttribute('role', 'group');
+    events.setAttribute('aria-label', 'Loom events grouped by step');
+    const cells = [];
+    for (let step = 0; step < COLS; step++) {
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'yj-pattern-loom-event';
+      cell.textContent = '·';
+      cell.disabled = true;
+      cell.addEventListener('click', () => this._selectLoomCell(step));
+      events.appendChild(cell);
+      cells.push(cell);
+      this._cols[step].push(cell);
+    }
+
+    const controls = document.createElement('div');
+    controls.className = 'yj-pattern-loom-controls';
+    const state = document.createElement('span');
+    state.className = 'yj-pattern-loom-state';
+    state.textContent = 'NO TAKE';
+    state.setAttribute('role', 'status');
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'yj-btn yj-pattern-loom-toggle';
+    toggle.textContent = 'OFF';
+    toggle.title = 'Enable or bypass this Loom lane';
+    toggle.addEventListener('click', () => {
+      const lane = this._loom.lane;
+      if (lane) this._emit('loomtoggle', { enabled: lane.enabled === false });
+    });
+
+    const gain = document.createElement('input');
+    gain.type = 'range';
+    gain.className = 'yj-pattern-loom-gain';
+    gain.min = '-48';
+    gain.max = '6';
+    gain.step = '0.5';
+    gain.value = '0';
+    gain.setAttribute('aria-label', 'Loom lane gain');
+    gain.title = 'Loom lane gain, dB';
+    const gainVal = document.createElement('span');
+    gainVal.className = 'yj-pattern-loom-gainval';
+    gainVal.textContent = '0.0 dB';
+    gain.addEventListener('input', () => {
+      const gainDb = Number(gain.value);
+      gainVal.textContent = this._fmtDb(gainDb);
+      this._emit('loomgain', { gainDb });
+    });
+
+    const trace = document.createElement('button');
+    trace.type = 'button';
+    trace.className = 'yj-btn';
+    trace.textContent = 'TRACE';
+    trace.title = 'Inspect the selected Loom event and its source provenance';
+    trace.addEventListener('click', () => {
+      const event = this._selectedLoomEvent();
+      if (event) this._emit('loomtrace', { id: event.id });
+    });
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'yj-btn';
+    edit.textContent = 'EDIT';
+    edit.title = 'Open this semantic take in Loom';
+    edit.addEventListener('click', () => {
+      const plan = this._loom.plan;
+      this._emit('loomopen', { planId: plan && plan.id || null });
+    });
+
+    const print = document.createElement('button');
+    print.type = 'button';
+    print.className = 'yj-btn';
+    print.textContent = 'PRINT 24-BIT';
+    print.title = 'Render this Loom lane as a 24-bit WAV';
+    print.addEventListener('click', () => this._emit('loomprint', {}));
+
+    controls.append(state, toggle, gain, gainVal, trace, edit, print);
+    root.append(identity, events, controls);
+    return { root, led, source, cells, state, toggle, gain, gainVal, trace, edit, print, groups: [] };
+  }
+
+  _loomStep(event) {
+    const raw = event && Number.isFinite(Number(event.gridStep))
+      ? Number(event.gridStep)
+      : event && Number.isFinite(Number(event.stepIndex))
+        ? Number(event.stepIndex)
+      : Number(event && event.gesture && event.gesture.eventRef && event.gesture.eventRef.stepIndex);
+    if (!Number.isFinite(raw)) return null;
+    return ((Math.floor(raw) % COLS) + COLS) % COLS;
+  }
+
+  _loomEventLabel(event) {
+    const source = event && event.source;
+    const gesture = event && event.gesture;
+    return String((source && source.label) || (gesture && gesture.note) || 'EVENT').toUpperCase();
+  }
+
+  _selectedLoomEvent() {
+    const plan = this._loom.plan;
+    const events = plan && Array.isArray(plan.events) ? plan.events : [];
+    return events.find((event) => event && event.id === this._loomSelectedEventId)
+      || events.find((event) => event && event.id) || null;
+  }
+
+  _selectLoomCell(step) {
+    const group = this._loomRow.groups[step] || [];
+    if (!group.length) return;
+    const at = group.findIndex((event) => event && event.id === this._loomSelectedEventId);
+    const event = group[(at + 1) % group.length];
+    this._loomSelectedEventId = event && event.id || null;
+    this._syncLoomLane();
+  }
+
+  _syncLoomLane() {
+    const row = this._loomRow;
+    if (!row) return;
+    const { lane, plan, online, sceneLabel } = this._loom;
+    const events = plan && Array.isArray(plan.events) ? plan.events.filter(Boolean) : [];
+    const sourceLabel = plan && ((plan.source && plan.source.name) || plan.materialLabel);
+    const gestureLabel = plan && plan.gesture && plan.gesture.label;
+    const identity = [sourceLabel || 'SOURCE', gestureLabel || 'GESTURE'].join(' × ').toUpperCase();
+    row.source.textContent = plan ? identity : 'NO SEMANTIC TAKE ARMED';
+    row.source.title = plan ? identity : '';
+    row.led.classList.toggle('is-online', !!plan && online);
+    row.led.classList.toggle('is-offline', !!plan && !online);
+    row.root.classList.toggle('is-offline', !!plan && !online);
+
+    const groups = Array.from({ length: COLS }, () => []);
+    for (const event of events) {
+      const step = this._loomStep(event);
+      if (step != null) groups[step].push(event);
+    }
+    row.groups = groups;
+    row.cells.forEach((cell, step) => {
+      const group = groups[step];
+      const selected = group.some((event) => event && event.id === this._loomSelectedEventId);
+      cell.disabled = group.length === 0;
+      cell.classList.toggle('is-on', group.length > 0);
+      cell.classList.toggle('is-collision', group.length > 1);
+      cell.classList.toggle('is-selected', selected);
+      cell.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      cell.textContent = group.length > 1 ? '×' + group.length
+        : (group.length ? this._loomEventLabel(group[0]).slice(0, 3) : '·');
+      const labels = group.map((event) => this._loomEventLabel(event)).join(', ');
+      cell.title = group.length > 1
+        ? 'Step ' + (step + 1) + ': ' + group.length + ' events — ' + labels + '. Click cycles the selected event.'
+        : (group.length ? 'Step ' + (step + 1) + ': ' + labels : 'Step ' + (step + 1) + ': no Loom event');
+      cell.setAttribute('aria-label', cell.title);
+    });
+
+    const hasLane = !!(lane && plan && (!lane.planId || lane.planId === plan.id));
+    const enabled = hasLane && lane.enabled !== false;
+    const gainDb = hasLane && Number.isFinite(Number(lane.gainDb)) ? Number(lane.gainDb) : 0;
+    row.toggle.disabled = !hasLane;
+    row.toggle.textContent = enabled ? 'ON' : 'OFF';
+    row.toggle.classList.toggle('is-active', enabled);
+    row.toggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    row.gain.disabled = !hasLane;
+    row.gain.value = String(gainDb);
+    row.gainVal.textContent = this._fmtDb(gainDb);
+    row.trace.disabled = !events.some((event) => event && event.id);
+    row.edit.disabled = false;
+    row.print.disabled = this._loomPrintBusy || !hasLane || !online;
+    row.print.textContent = this._loomPrintBusy ? 'PRINTING…' : 'PRINT 24-BIT';
+    row.print.title = !online && hasLane
+      ? 'Source audio is offline; reconnect it before printing'
+      : (this._loomPrintBusy ? 'Rendering 24-bit audio and source lineage'
+        : 'Render this Loom lane as a 24-bit WAV');
+    const place = sceneLabel ? String(sceneLabel).toUpperCase() + ' · ' : '';
+    row.state.textContent = plan
+      ? place + events.length + (events.length === 1 ? ' EVENT · ' : ' EVENTS · ') + (online ? 'ONLINE' : 'OFFLINE')
+      : 'NO TAKE';
   }
 
   // ---------- grid rows ----------
@@ -910,7 +1150,9 @@ export class PatternView extends EventTarget {
       const hasSteps = !!(sc && sc.tracks && sc.tracks.some(
         (t) => t && t.steps && Array.prototype.some.call(t.steps, (v) => v),
       ));
-      b.classList.toggle('has-dot', hasSteps);
+      const hasLoom = !!(sc && sc.loomLane && typeof sc.loomLane.planId === 'string'
+        && sc.loomLane.planId);
+      b.classList.toggle('has-dot', hasSteps || hasLoom);
     });
   }
 

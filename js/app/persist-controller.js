@@ -32,16 +32,29 @@ export function initPersistController(ctx) {
 
   const n = (count, word) => count + ' ' + word + (count === 1 ? '' : 'S');
 
+  function sessionLabel(json) {
+    if (json && json.fileName) return String(json.fileName);
+    const machine = json && json.machine;
+    const scenes = machine && Array.isArray(machine.scenes) ? machine.scenes : [];
+    const active = machine && Number.isInteger(machine.activeScene) ? machine.activeScene : 0;
+    const drums = scenes[active] && scenes[active].drums || machine && machine.drums;
+    if (drums && drums.kitId) return String(drums.kitId).toUpperCase() + ' SESSION';
+    return 'SOURCE-FREE SESSION';
+  }
+
   function projectSummary(json) {
     const scenes = json.machine && Array.isArray(json.machine.scenes) ? json.machine.scenes : [];
     const instruments = json.assets && typeof json.assets === 'object' ? Object.keys(json.assets).length : 0;
     const liveScenes = scenes.filter((scene) => scene && Array.isArray(scene.tracks)
       && scene.tracks.some((track) => track && Array.isArray(track.steps) && track.steps.some(Boolean))).length;
+    const takes = json.loom && json.loom.plans && typeof json.loom.plans === 'object'
+      ? Object.keys(json.loom.plans).length : 0;
     const bits = [];
     if (json.words && json.words.length) bits.push(n(json.words.length, 'WORD'));
     if (json.repairs && json.repairs.length) bits.push(n(json.repairs.length, 'REPAIR'));
     if (instruments) bits.push(n(instruments, 'INSTRUMENT'));
     if (liveScenes) bits.push(n(liveScenes, 'SCENE'));
+    if (takes) bits.push(n(takes, 'SEMANTIC TAKE'));
     return bits.length ? bits.join(' · ') : 'SOURCE ONLY';
   }
 
@@ -121,13 +134,16 @@ export function initPersistController(ctx) {
           const scenes = json.machine && json.machine.scenes ? json.machine.scenes : [];
           const liveScenes = scenes.filter((s) => s && s.tracks
             && s.tracks.some((t) => t && t.steps && t.steps.some((v) => v))).length;
-          const sessionName = json.fileName || 'SYNTH SESSION';
+          const takes = json.loom && json.loom.plans && typeof json.loom.plans === 'object'
+            ? Object.keys(json.loom.plans).length : 0;
+          const sessionName = sessionLabel(json);
           const bits = ['LAST SESSION · ' + String(sessionName).toUpperCase()];
           if (json.words && json.words.length) bits.push(n(json.words.length, 'WORD'));
           if (json.repairs && json.repairs.length) bits.push(n(json.repairs.length, 'REPAIR'));
           const instruments = json.assets ? Object.keys(json.assets).length : 0;
           if (instruments) bits.push(n(instruments, 'INSTRUMENT'));
           if (liveScenes) bits.push(n(liveScenes, 'SCENE'));
+          if (takes) bits.push(n(takes, 'SEMANTIC TAKE'));
           bits.push(timeAgo(json.savedAt || Date.now()));
           $('resumeInfo').textContent = bits.join(' · ');
           $('resumePanel').hidden = false;
@@ -336,15 +352,24 @@ export function initPersistController(ctx) {
   // applySnapshot deliberately nulls track.sample (PCM normally arrives from
   // disk afterwards). For undo the audio never left memory, so it is captured
   // by asset id and re-attached, or an undo would silently empty the kit.
-  store.attachHistory(
-    () => snapshotDoc(P, R),
-    (doc) => {
-      const pcm = new Map();
-      for (const scene of P.machine.scenes) {
-        for (const track of scene.tracks) {
-          if (track.sampleId && track.sample) pcm.set(track.sampleId, track.sample);
-        }
+  const historyPcm = new WeakMap();
+  function takeHistorySnapshot() {
+    const doc = snapshotDoc(P, R);
+    const pcm = new Map();
+    for (const scene of P.machine.scenes) {
+      for (const track of scene.tracks) {
+        if (track.sampleId && track.sample) pcm.set(track.sampleId, track.sample);
       }
+    }
+    // Weakly keyed by the exact history document: PCM is held only as long as
+    // that undo/redo entry is. References are shared, never copied.
+    historyPcm.set(doc, pcm);
+    return doc;
+  }
+  store.attachHistory(
+    takeHistorySnapshot,
+    (doc) => {
+      const pcm = historyPcm.get(doc) || new Map();
       const repairsBefore = JSON.stringify(R.repairs);
       applySnapshot(doc, { project: P, runtime: R });
       for (const scene of P.machine.scenes) {
@@ -447,7 +472,7 @@ export function initPersistController(ctx) {
         const crateTab = document.querySelector('.yj-substate-btn[data-mstate="crate"]');
         if (crateTab) crateTab.click();
       }
-      const parts = ['RESTORED · ' + String(json.fileName || 'SYNTH SESSION').toUpperCase()];
+      const parts = ['RESTORED · ' + sessionLabel(json).toUpperCase()];
       if (R.repairs.length) parts.push(n(R.repairs.length, 'REPAIR'));
       status(parts.join(' · '));
       restoreFailed = false;
