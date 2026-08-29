@@ -1,6 +1,6 @@
-Copyright (c) 2026 Ian Helfrich · https://ihelfrich.github.io
+Copyright (c) 2026 Ian Helfrich · https://ianhelfrich.com
 
-Required Notice: Copyright Ian Helfrich (https://ihelfrich.github.io).
+Required Notice: Copyright Ian Helfrich (https://ianhelfrich.com).
 Noncommercial use is licensed under the terms below. Commercial use of any
 kind requires a separate license from the copyright holder:
 ianthelfrich@gmail.com
