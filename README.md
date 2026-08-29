@@ -1,6 +1,6 @@
 # Yellowjacket
 
-By [Ian Helfrich](https://ianhelfrich.com).
+By [Ian Helfrich](https://ihelfrich.github.io).
 
 An audio bench that runs entirely in your browser. Drop in a recording and Yellowjacket
 transcribes it on your own hardware, lets you cut the audio by deleting words from the
@@ -324,4 +324,4 @@ requires a separate license from the author. Write to ianthelfrich@gmail.com.
 
 The bundled Archivo and IBM Plex Mono fonts remain under their own SIL Open
 Font License. Whisper models load from their upstream sources under their own
-licenses. Built by [Ian Helfrich](https://ianhelfrich.com).
+licenses. Built by [Ian Helfrich](https://ihelfrich.github.io).
