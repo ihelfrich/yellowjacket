@@ -4,7 +4,13 @@
     {
       "name": "yellowjacket",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8642", "--directory", "/Users/ian/Projects/yellowjacket"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8642",
+        "--directory",
+        "/Users/ian/Developer/yellowjacket"
+      ],
       "port": 8642
     }
   ]

@@ -18,12 +18,14 @@ performance without losing where any sound came from.
 Live at **[ihelfrich.github.io/yellowjacket](https://ihelfrich.github.io/yellowjacket/)**.
 
 It is a static page. There is no server to upload to. The only things fetched over the
-network are the page itself and, on first use, the Whisper model weights from Hugging
-Face's CDN; the browser caches those, so the second session works on a plane. Your audio
+network are the page itself, on first use the Whisper model weights from Hugging
+Face's CDN, and any FIELD recording you choose to stream from archive.org; the browser
+caches the first two, so the second session works on a plane. Your audio
 never leaves the machine. If that claim sounds like marketing, open the network tab and
 watch it stay empty while you work.
 
-Audio gets in four ways: load the bundled demo, drop a file, pick one, or paste a URL. The
+Audio gets in five ways: load the bundled demo, open a FIELD recording, drop a file,
+pick one, or paste a URL. The
 demo is **Sparks** by Zane Little, a 2:40 electronic pop track released under
 [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/); its vocals, transients,
 and tonal sections exercise every bench without asking a first-time visitor to find a
@@ -33,6 +35,19 @@ YouTube and SoundCloud don't allow that, and no static page can change it; the t
 that claim to are servers doing the ripping for you. Paste one of those links anyway and
 Yellowjacket writes you the yt-dlp command with your URL already in it, so the rip
 happens on your machine and the file lands back on the bench.
+
+**FIELD** is a curated shelf of nine public-domain field recordings — a nightingale at
+midnight, Berlin songbirds against the rush-hour roar, ocean waves booming through the
+lava caves of Pico Island, surf at Cox's Bazar, a Somerset thunderstorm, thunder through
+rain, a small brook, spring peepers in the dark, and a Sevilla street marathon under
+church bells. Each one streams from archive.org (which serves audio with CORS headers,
+so a static page can fetch it) and lands on the bench like any other source. The point
+is not background ambience: load the dawn chorus and the spectrogram shows every bird as
+its own drawn line, the surf as a slow broadband heartbeat, the storm as a wall. SLICE a
+wave-crash into the sample machine, LOOM a birdsong phrase onto a MIDI gesture, and a
+place you've stood becomes something you can play. Every entry is CC0 or Public Domain
+Mark, checked by hand at its archive.org item page, so nothing you make from these owes
+anyone attribution.
 
 ## Why this exists
 

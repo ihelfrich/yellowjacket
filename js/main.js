@@ -32,6 +32,7 @@ import { PipelineView, deriveStages } from './app/pipeline-ui.js';
 import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
 import { initSourceController } from './app/source-controller.js';
+import { initFieldLibrary } from './app/field-library.js';
 import { initMachineController } from './machine/controller.js';
 import { RepairPanel } from './app/repair-panel.js';
 import { initRepairController } from './app/repair-controller.js';
@@ -173,6 +174,8 @@ const CONTROLLERS = [
   ['repair', initRepairController],
   ['wire', initWireController],
   ['source', initSourceController],
+  // field renders into the drop zone and calls api.loadFromUrl, registered by source above.
+  ['field', initFieldLibrary],
   ['studio', initStudioController],
   ['loom', initLoomController],
   // persist is last on purpose: restore needs every api registered above it.
@@ -298,6 +301,7 @@ const commandDefs = [
   { id: 'open-audio', group: 'SOURCE', label: 'OPEN AUDIO', note: 'WAV, MP3, M4A, OGG, or FLAC', keywords: 'file source import', button: 'btnOpen', run: () => $('btnOpen').click() },
   { id: 'open-url', group: 'SOURCE', label: 'OPEN URL', note: 'Fetch a direct audio link', keywords: 'podcast archive download', button: 'btnOpenUrl', run: () => $('btnOpenUrl').click() },
   { id: 'load-demo', group: 'SOURCE', label: 'LOAD DEMO SONG', note: 'Open the bundled CC0 track', keywords: 'sparks example tour', button: 'btnLoadDemo', run: () => $('btnLoadDemo').click() },
+  { id: 'field-library', group: 'SOURCE', label: 'OPEN A FIELD RECORDING', note: 'Public-domain nature and city soundscapes, streamed from archive.org', keywords: 'nature birds ocean waves rain thunder storm crickets frogs city street soundscape field', run: () => $('dropZone').classList.remove('is-hidden') },
   { id: 'transcribe', group: 'SOURCE', label: 'TRANSCRIBE', note: 'Run Whisper locally on the loaded source', keywords: 'speech words captions ai', button: 'btnTranscribe', reason: 'LOAD AUDIO FIRST', run: () => { jump('transcript'); $('btnTranscribe').click(); } },
   { id: 'measure', group: 'TOOLS', label: 'MEASURE LOUDNESS', note: 'Run the BS.1770 measurement stack', keywords: 'lufs true peak rms crest', button: 'btnMeasure', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnMeasure').click(); } },
   { id: 'harvest', group: 'TOOLS', label: 'HARVEST AUTO-KIT', note: 'Mine the source for a diverse labeled kit', keywords: 'kick snare hat bass vocal chops', button: 'btnHarvest', reason: 'WAIT FOR THE BEATMAP', run: () => { jump('machine', 'slice'); $('btnHarvest').click(); } },

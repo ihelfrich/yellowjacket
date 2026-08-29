@@ -276,7 +276,10 @@ export function initSourceController(ctx) {
     $('ripHelp').hidden = false;
   }
 
-  async function loadFromUrl(raw) {
+  // displayName overrides the filename derived from the URL path — the FIELD
+  // library passes a human name for archive files named things like
+  // 2403220817rushhourroar….mp3.
+  async function loadFromUrl(raw, displayName) {
     const s = (raw || '').trim();
     if (!s) return;
     let u;
@@ -340,7 +343,7 @@ export function initSourceController(ctx) {
       } else {
         ab = await resp.arrayBuffer();
       }
-      const name = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || u.hostname);
+      const name = displayName || decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || u.hostname);
       await loadArrayBuffer(ab, name);
     } catch (e) {
       // A TypeError here is almost always CORS: the host never opted its files in.
@@ -408,6 +411,7 @@ export function initSourceController(ctx) {
   }
 
   ctx.api.loadArrayBuffer = loadArrayBuffer;
+  ctx.api.loadFromUrl = loadFromUrl;
   ctx.api.clearSource = clearSource;
   ctx.api.openFile = openFile;
   ctx.api.runAnalysis = runAnalysis;

@@ -625,6 +625,38 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-demo-note strong { color: var(--yj-ink); }
 .yj-demo-note a { color: var(--yj-amber); }
 
+/* FIELD: the public-domain field-recording shelf inside the drop zone */
+.yj-field { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 640px; }
+.yj-field-head {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.14em; color: var(--yj-ink);
+}
+.yj-field-note {
+  font-family: var(--f-mono); font-size: 10px; line-height: 1.5;
+  letter-spacing: 0.03em; color: var(--yj-ink-dim);
+}
+.yj-field-note a { color: var(--yj-amber); }
+.yj-field-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; width: 100%;
+}
+.yj-field-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: var(--yj-well);
+  border: 1px solid var(--yj-line);
+  border-radius: 2px;
+  padding: 7px 9px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--f-mono);
+}
+.yj-field-btn:hover { border-color: var(--yj-yellow); }
+.yj-field-kind { font-size: 8.5px; letter-spacing: 0.16em; color: var(--yj-amber); }
+.yj-field-title { font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; color: var(--yj-ink); }
+.yj-field-meta { font-size: 9.5px; letter-spacing: 0.03em; color: var(--yj-ink-dim); }
+@media (max-width: 720px) {
+  .yj-field-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
 .yj-urlrow { display: flex; gap: 6px; width: 100%; max-width: 560px; }
 .yj-urlinput {
   flex: 1;

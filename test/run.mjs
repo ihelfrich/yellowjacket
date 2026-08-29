@@ -22,6 +22,7 @@ import {
 } from '../js/app/persist.js';
 import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
 import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
+import { FIELD_RECORDINGS, fieldLicenseUrl } from '../js/app/field-library.js';
 import { Engine } from '../js/audio-engine.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
@@ -936,6 +937,32 @@ const lifecycleCases = [
     assert.equal(existsSync(new URL('../' + DEMO_TRACK.path, import.meta.url)), true);
     assert.match(provenance, /CC0 1\.0 Universal/);
     assert.match(provenance, /bc025c6956d88245e7a1bf139ec3e69829fa09f0ec4461af5691e5d77428e27c/);
+  },
+  async function fieldLibraryIsWellFormedAndDiscoverable() {
+    // Manifest integrity: every recording is a complete, uniquely-identified,
+    // hand-license-checked archive.org stream. A malformed entry would render
+    // a dead button on the drop zone with no console error to explain it.
+    const ids = new Set();
+    assert.ok(FIELD_RECORDINGS.length >= 8, 'a real shelf, not a stub');
+    for (const rec of FIELD_RECORDINGS) {
+      assert.ok(rec.id && !ids.has(rec.id), 'unique id: ' + rec.id);
+      ids.add(rec.id);
+      for (const key of ['title', 'place', 'kind', 'dur', 'url', 'source', 'license']) {
+        assert.ok(rec[key], rec.id + ' has ' + key);
+      }
+      assert.match(rec.url, /^https:\/\/archive\.org\/download\//, rec.id + ' streams from archive.org');
+      assert.match(rec.source, /^https:\/\/archive\.org\/details\//, rec.id + ' cites its item page');
+      assert.ok(rec.url.slice('https://archive.org/download/'.length)
+        .startsWith(rec.source.slice('https://archive.org/details/'.length) + '/'),
+        rec.id + ' url lives under its source item');
+      assert.match(rec.dur, /^\d+:\d\d$/, rec.id + ' duration reads as M:SS');
+      assert.ok(fieldLicenseUrl(rec.license), rec.id + ' license tag resolves to a deed URL');
+    }
+    // Discoverable: the drop zone hosts it, the worker precaches the module.
+    const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const worker = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
+    assert.match(index, /id="fieldLibrary"/);
+    assert.match(worker, /js\/app\/field-library\.js/);
   },
 ];
 
