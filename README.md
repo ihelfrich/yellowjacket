@@ -80,14 +80,6 @@ preview instantly during playback (the player just skips them) and apply with sh
 crossfades on render. Export the transcript as TXT, SRT, VTT, or JSON, with caption
 timings recomputed against the edited audio.
 
-HARVEST seats what it finds. It mines the whole recording for a diverse, labelled
-kit and then loads the eight machine tracks with it — kick and snare first, the
-other roles behind them, and the best of whatever is left backfilling the tracks
-a source could not fill. A frog chorus has no hi-hats; it still comes back as a
-playable kit rather than a list you have to place by hand. Tracks that already
-hold a sound are left alone, so a second harvest adds to a kit instead of
-overwriting it.
-
 **SIGNAL** is the microscope: waveform stacked over spectrogram with a shared zoom. The
 measurement rail runs the ITU-R BS.1770-5 loudness stack: gated integrated LUFS, short-term
 and momentary maxima, sample peak, an estimated true peak, RMS, crest factor, DC offset,
@@ -196,7 +188,13 @@ harmonic and sustained it is, then fills a 24-slot kit under per-role quotas
 with a diversity rule that spreads the picks across the song. Sustained
 material gets its own sweep, because a held pad or a riser never produces the
 onset spike a drum does. On a seven-minute record it returns twenty-four
-labeled slices drawn from eighty-nine percent of the runtime.
+labeled slices drawn from eighty-nine percent of the runtime. It then
+seats them: the eight machine tracks are loaded straight from the harvest, kick
+and snare first, the other roles behind them, and the best of whatever is left
+backfilling the tracks a source could not fill. A frog chorus has no hi-hats; it
+still comes back as a kit you can play rather than a list you have to place by
+hand. Tracks that already hold a sound are left alone, so a second harvest adds
+to a kit instead of overwriting one.
 
 Every track's sample is an editable VOICE: trim its start and end on a
 waveform, pitch it up to two octaves either way, shape attack and release,
