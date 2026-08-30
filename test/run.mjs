@@ -25,6 +25,8 @@ import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source
 import { FIELD_RECORDINGS, fieldLicenseUrl } from '../js/app/field-library.js';
 import { sniffSampleRate, planDecodeRate, probeContainer } from '../js/dsp/native-rate.js';
 import { parseSmf, smfToStudio } from '../js/midi/smf.js';
+import { encodeWav, encodeWavWithStats } from '../js/export.js';
+import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
@@ -3607,7 +3609,128 @@ const smfCases = [
   },
 ];
 
+// ---------- output resolution (AUDIT-RESOLUTION 2 and 3) ----------
+
+// A buffer shaped like an AudioBuffer, including a sample above full scale —
+// the case that separates float export from integer export.
+function fakeBuffer(channels, sampleRate = 96000) {
+  return {
+    numberOfChannels: channels.length,
+    length: channels[0].length,
+    sampleRate,
+    getChannelData: (i) => channels[i],
+  };
+}
+
+async function wavHeader(blob) {
+  const dv = new DataView(await blob.arrayBuffer());
+  const ascii = (o, n) => String.fromCharCode(...Array.from({ length: n }, (_, i) => dv.getUint8(o + i)));
+  return {
+    dv,
+    riff: ascii(0, 4),
+    wave: ascii(8, 4),
+    fmtSize: dv.getUint32(16, true),
+    formatCode: dv.getUint16(20, true),
+    channels: dv.getUint16(22, true),
+    sampleRate: dv.getUint32(24, true),
+    bits: dv.getUint16(34, true),
+  };
+}
+
+// Walks the chunk list rather than assuming 'data' sits at 36, because the
+// float header legally carries cbSize and a 'fact' chunk ahead of it.
+async function wavSamples(blob) {
+  const dv = new DataView(await blob.arrayBuffer());
+  const ascii = (o, n) => String.fromCharCode(...Array.from({ length: n }, (_, i) => dv.getUint8(o + i)));
+  const bits = dv.getUint16(34, true);
+  let at = 12;
+  while (at + 8 <= dv.byteLength) {
+    const id = ascii(at, 4);
+    const size = dv.getUint32(at + 4, true);
+    if (id === 'data') {
+      const out = [];
+      for (let o = at + 8; o + bits / 8 <= at + 8 + size; o += bits / 8) {
+        out.push(bits === 32 ? dv.getFloat32(o, true) : dv.getInt16(o, true) / 0x7FFF);
+      }
+      return out;
+    }
+    at += 8 + size + (size % 2);
+  }
+  return [];
+}
+
+const wavExportCases = [
+  async function writesIeeeFloatFormatCodeForThirtyTwoBit() {
+    // Format code 1 means integer PCM. A 32-bit stream tagged 1 is read as
+    // garbage by every DAW, so the code itself is the load-bearing assertion.
+    const buf = fakeBuffer([Float32Array.from([0, 0.5, -0.5])]);
+    const head = await wavHeader(encodeWav(buf, 32));
+    assert.equal(head.formatCode, 3, 'WAVE_FORMAT_IEEE_FLOAT');
+    assert.equal(head.bits, 32);
+    assert.equal(head.riff, 'RIFF');
+    assert.equal(head.wave, 'WAVE');
+  },
+  async function floatHeaderCarriesCbSizeAndFactChunk() {
+    // Non-PCM formats require cbSize; the fact chunk carries the frame count.
+    const buf = fakeBuffer([Float32Array.from([0, 0.25])]);
+    const head = await wavHeader(encodeWav(buf, 32));
+    assert.equal(head.fmtSize, 18, 'fmt grows by cbSize for non-PCM');
+    const dv = head.dv;
+    const ascii = (o, n) => String.fromCharCode(...Array.from({ length: n }, (_, i) => dv.getUint8(o + i)));
+    assert.equal(ascii(38, 4), 'fact', 'fact chunk follows fmt');
+    assert.equal(dv.getUint32(46, true), 2, 'fact states the frame count');
+  },
+  async function floatKeepsSamplesAboveFullScale() {
+    // The reason float export exists: an over survives instead of being
+    // flattened to 1.0, so a hot bounce can still be pulled back down.
+    const buf = fakeBuffer([Float32Array.from([1.5, -1.25, 0.5])]);
+    const got = await wavSamples(encodeWav(buf, 32));
+    assert.equal(got[0], 1.5, 'over preserved exactly');
+    assert.equal(got[1], -1.25);
+    assert.equal(got[2], 0.5);
+  },
+  async function integerExportStillClampsOvers() {
+    const buf = fakeBuffer([Float32Array.from([1.5, -1.25])]);
+    const got = await wavSamples(encodeWav(buf, 16));
+    assert.ok(got[0] <= 1.0001, '16-bit still clamps');
+    assert.ok(got[1] >= -1.0001);
+  },
+  async function floatExportNeverDithers() {
+    // Dither exists to decorrelate quantization error. Float has none to hide.
+    const buf = fakeBuffer([Float32Array.from([0.1, 0.2, 0.3])]);
+    const { stats } = encodeWavWithStats(buf, 32);
+    assert.equal(stats.dither, 'none');
+  },
+  async function floatExportStillReportsOvers() {
+    const buf = fakeBuffer([Float32Array.from([1.5, 0.2])]);
+    const { stats } = encodeWavWithStats(buf, 32);
+    assert.equal(stats.clippedSamples, 1, 'counted, even though not clamped');
+  },
+  async function exportPreservesTheSourceSampleRate() {
+    // A 192 kHz session must not be written out as 48 kHz.
+    const buf = fakeBuffer([Float32Array.from([0, 0.1])], 192000);
+    assert.equal((await wavHeader(encodeWav(buf, 32))).sampleRate, 192000);
+    assert.equal((await wavHeader(encodeWav(buf, 24))).sampleRate, 192000);
+  },
+  function studioBounceFollowsTheSessionRate() {
+    // Hardcoding 48000 threw away a 96 kHz session on the way out.
+    assert.equal(bounceSampleRate(96000), 96000);
+    assert.equal(bounceSampleRate(192000), 192000);
+  },
+  function studioBounceFallsBackWhenNoSourceIsLoaded() {
+    // STUDIO works with no recording at all; 48 kHz stays the source-free default.
+    assert.equal(bounceSampleRate(0), 48000);
+    assert.equal(bounceSampleRate(null), 48000);
+    assert.equal(bounceSampleRate(undefined), 48000);
+  },
+  function studioBounceNeverGoesBelowTheDefault() {
+    // A 22 kHz voice memo should not drag the instrument bounce down with it.
+    assert.equal(bounceSampleRate(22050), 48000);
+  },
+];
+
 const groups = [
+  ['wav export', wavExportCases],
   ['native rate', nativeRateCases],
   ['midi file import', smfCases],
   ['BS.1770', loudnessCases],

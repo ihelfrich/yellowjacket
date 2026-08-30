@@ -466,14 +466,21 @@ export function initBenchController(ctx) {
     const name = (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '') + '.bench.' + bits + '.wav';
     const { blob, stats } = encodeWavWithStats(buf, bits);
     download(blob, name, 'audio/wav');
-    if (stats.clippedSamples > 0) {
+    const rate = Math.round((buf && buf.sampleRate ? buf.sampleRate : 0) / 1000);
+    if (stats.clippedSamples > 0 && bits !== 32) {
       statusFault('EXPORTED WITH ' + stats.clippedSamples + ' OVERS · peak ' + stats.peakDb.toFixed(2) + ' dBFS — pull the limiter in.');
+    } else if (bits === 32) {
+      // Float keeps overs instead of clamping them, so an over is information
+      // rather than damage: report it without calling it a fault.
+      status('EXPORTED 32-BIT FLOAT · ' + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS'
+        + (stats.clippedSamples > 0 ? ' · ' + stats.clippedSamples + ' OVERS KEPT' : ''));
     } else {
-      status('EXPORTED · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS · DITHER ' + stats.dither.toUpperCase());
+      status('EXPORTED · ' + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS · DITHER ' + stats.dither.toUpperCase());
     }
   }
   $('btnWav16').addEventListener('click', () => exportWav(16));
   $('btnWav24').addEventListener('click', () => exportWav(24));
+  $('btnWav32').addEventListener('click', () => exportWav(32));
 
   // ---------- per-source reset (called by source-controller after decode) ----------
   function resetForSource(hasSource = true) {
@@ -485,7 +492,7 @@ export function initBenchController(ctx) {
     transcript.setWords([]);
     $('transcriptHint').hidden = false;
     $('transcriptHost').prepend($('transcriptHint'));
-    for (const id of ['btnTranscribe', 'btnMeasure', 'btnRender', 'btnWav16', 'btnWav24']) $(id).disabled = !hasSource;
+    for (const id of ['btnTranscribe', 'btnMeasure', 'btnRender', 'btnWav16', 'btnWav24', 'btnWav32']) $(id).disabled = !hasSource;
     for (const id of ['btnCutFillers', 'btnCutDeadAir', 'btnRestoreAll', 'btnExpTxt', 'btnExpSrt', 'btnExpVtt', 'btnExpJson']) $(id).disabled = true;
     refreshWeaveWordsButton();
     $('roFillers').textContent = '—';

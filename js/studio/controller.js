@@ -3,6 +3,7 @@
 import { applyInstrumentPreset, generateStudioIdea, normalizeStep, transformStudioBar } from './model.js';
 import { studioMidiFile } from './midi.js';
 import { parseSmf, smfToStudio } from '../midi/smf.js';
+import { bounceSampleRate } from './engine.js';
 import { encodeWav, download } from '../export.js';
 
 export function initStudioController(ctx) {
@@ -83,11 +84,16 @@ export function initStudioController(ctx) {
   });
   view.addEventListener('bounce', async () => {
     try {
-      status('STUDIO · BOUNCING 48 kHz STEREO…', true);
+      // The bounce follows the loaded session rather than a fixed 48 kHz, so a
+      // 96 kHz session does not lose half its resolution on the way out.
+      studioEngine.sessionRate = store.runtime.sampleRate || 0;
+      const rate = bounceSampleRate(studioEngine.sessionRate);
+      status('STUDIO · BOUNCING ' + Math.round(rate / 1000) + ' kHz STEREO…', true);
       const buffer = await studioEngine.render();
       const base = String(store.project.fileName || 'yellowjacket-studio').replace(/\.[^.]+$/, '').replace(/[^a-z0-9_-]+/gi, '-');
       download(encodeWav(buffer, 24), base + '.studio.wav', 'audio/wav');
-      status('STUDIO BOUNCE · ' + buffer.duration.toFixed(2) + 's · 24-BIT WAV');
+      status('STUDIO BOUNCE · ' + buffer.duration.toFixed(2) + 's · 24-BIT · '
+        + Math.round(buffer.sampleRate / 1000) + ' kHz');
     } catch (error) {
       statusFault('STUDIO BOUNCE FAULT · ' + (error && error.message ? error.message : error));
     }

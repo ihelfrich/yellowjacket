@@ -105,7 +105,10 @@ The **RACK** stacks the repair chain in signal order: high-pass, de-hum (mains f
 plus harmonics), spectral denoise, de-esser, four-band EQ, gate, compressor, lookahead
 limiter, and loudness normalization to a LUFS target (-16 for podcasts is the default).
 Every module has a power switch and a few honest parameters. Render, then A/B the result
-against the original before exporting WAV at 16 or 24 bit.
+against the original before exporting WAV at 16, 24, or 32-bit float — at the session's own
+sample rate, so a 96 kHz load is still 96 kHz on the way out. The float export writes a
+spec-correct IEEE header and keeps samples above full scale instead of clamping them, so a
+hot bounce can still be pulled back down in whatever you open it with next.
 
 **STUDIO** is the melodic production layer: six independent polyphonic instruments with
 eight starting architectures (sub, bass, keys, pluck, pad, lead, organ, and glass). Each

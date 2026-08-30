@@ -49,7 +49,8 @@ export function encodeWav(buffer, bitDepth = 16) {
 // stats.clippedSamples counts PRE-quantization overs (|s| > 1); the encoded
 // stream still clamps them. stats.peakDb is the pre-quantization sample peak.
 export function encodeWavWithStats(buffer, bitDepth = 16, opts = {}) {
-  const bits = bitDepth === 24 ? 24 : 16;
+  const bits = bitDepth === 32 ? 32 : bitDepth === 24 ? 24 : 16;
+  const isFloat = bits === 32;
   const srcChannels = buffer && buffer.numberOfChannels ? buffer.numberOfChannels : 0;
   const channels = Math.max(1, srcChannels);
   const frames = srcChannels ? buffer.length : 0;
@@ -57,30 +58,61 @@ export function encodeWavWithStats(buffer, bitDepth = 16, opts = {}) {
   const bytesPer = bits / 8;
   const blockAlign = channels * bytesPer;
   const dataSize = frames * blockAlign;
-  const dither = resolveDither(bits, sampleRate, opts.dither);
+  // Float carries no quantization error, so there is nothing for dither to
+  // decorrelate. resolveDither is only consulted for the integer depths.
+  const dither = isFloat ? 'none' : resolveDither(bits, sampleRate, opts.dither);
 
-  const ab = new ArrayBuffer(44 + dataSize);
+  // A non-PCM format must declare cbSize, and a 'fact' chunk states the frame
+  // count. 16-byte-fmt float files are common and mostly readable, but the
+  // spec-correct header costs 14 bytes and removes the doubt entirely.
+  const fmtSize = isFloat ? 18 : 16;
+  const factSize = isFloat ? 12 : 0;
+  const headerSize = 20 + fmtSize + factSize + 8;
+  const ab = new ArrayBuffer(headerSize + dataSize);
   const dv = new DataView(ab);
   writeAscii(dv, 0, 'RIFF');
-  dv.setUint32(4, 36 + dataSize, true);
+  dv.setUint32(4, headerSize - 8 + dataSize, true);
   writeAscii(dv, 8, 'WAVE');
   writeAscii(dv, 12, 'fmt ');
-  dv.setUint32(16, 16, true);           // fmt chunk size
-  dv.setUint16(20, 1, true);            // PCM
+  dv.setUint32(16, fmtSize, true);
+  dv.setUint16(20, isFloat ? 3 : 1, true);   // 3 = WAVE_FORMAT_IEEE_FLOAT
   dv.setUint16(22, channels, true);
   dv.setUint32(24, sampleRate, true);
   dv.setUint32(28, sampleRate * blockAlign, true);
   dv.setUint16(32, blockAlign, true);
   dv.setUint16(34, bits, true);
-  writeAscii(dv, 36, 'data');
-  dv.setUint32(40, dataSize, true);
+  let at = 36;
+  if (isFloat) {
+    dv.setUint16(at, 0, true);               // cbSize: no extension follows
+    at += 2;
+    writeAscii(dv, at, 'fact');
+    dv.setUint32(at + 4, 4, true);
+    dv.setUint32(at + 8, frames, true);
+    at += 12;
+  }
+  writeAscii(dv, at, 'data');
+  dv.setUint32(at + 4, dataSize, true);
 
   const chans = [];
   for (let c = 0; c < srcChannels; c++) chans.push(buffer.getChannelData(c));
   let peak = 0;
   let clipped = 0;
-  let off = 44;
-  if (bits === 16) {
+  let off = headerSize;
+  if (isFloat) {
+    // No clamp: preserving overs is the entire reason to export float, so a
+    // hot bounce can still be pulled back down in the next tool. Overs are
+    // still counted, because the meter should say so.
+    for (let f = 0; f < frames; f++) {
+      for (let c = 0; c < srcChannels; c++) {
+        const s = chans[c][f];
+        const a = s < 0 ? -s : s;
+        if (a > peak) peak = a;
+        if (a > 1) clipped++;
+        dv.setFloat32(off, s, true);
+        off += 4;
+      }
+    }
+  } else if (bits === 16) {
     const rand = mulberry32(DITHER_SEED);
     const tpdf = dither !== 'none';
     const shaped = dither === 'shaped';

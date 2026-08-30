@@ -4,11 +4,14 @@ Measured 2026-08-29 against two goals: handle the highest-resolution audio files
 and be a versatile bench for making music from found sounds, chopped songs,
 existing audio, and MIDI files. Every claim below was executed, not inferred.
 
-> **Status, same day.** Items 1 and 4 are FIXED and verified in the running app.
-> A 96 kHz file now loads at 96 kHz (status bar reads `96.0k`), and a 30 kHz tone
-> that used to vanish now measures −8 dBFS, level with the audible tone. A `.mid`
-> dropped on the bench fills STUDIO's parts and carries its tempo. Items 2, 3, and
-> 5 stand as written.
+> **Status, same day.** Items 1, 2, 3, and 4 are FIXED and verified in the running
+> app. A 96 kHz file loads at 96 kHz (status bar reads `96.0k`) and a 30 kHz tone
+> that used to vanish measures −8 dBFS, level with the audible tone. A `.mid`
+> dropped on the bench fills STUDIO's parts and carries its tempo. Export offers
+> 32-bit float with a spec-correct IEEE header, and a 96 kHz session exports at
+> 96 kHz. The STUDIO bounce follows the session rate instead of a hardcoded 48000
+> (measured: `STUDIO BOUNCE · 24-BIT · 96 kHz`). **Only item 5 stands** — there is
+> still no arrangement surface where two sources are live as audio at once.
 
 ## 1. The input path silently halves high-resolution audio
 

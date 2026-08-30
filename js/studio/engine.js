@@ -3,6 +3,18 @@
 
 import { studioStepDuration, studioStepSeconds, chordNotes } from './model.js';
 
+// STUDIO_BOUNCE_DEFAULT is the source-free rate: with no recording loaded there
+// is no session rate to inherit, and 48 kHz is the right floor for synthesis.
+// A loaded 96 or 192 kHz source raises it so the bounce matches the session
+// rather than quietly downgrading it (docs/AUDIT-RESOLUTION.md section 2).
+export const STUDIO_BOUNCE_DEFAULT = 48000;
+
+export function bounceSampleRate(sessionRate) {
+  const rate = Number(sessionRate);
+  if (!Number.isFinite(rate) || rate <= STUDIO_BOUNCE_DEFAULT) return STUDIO_BOUNCE_DEFAULT;
+  return Math.round(rate);
+}
+
 const LOOKAHEAD = 0.16;
 const TICK_MS = 25;
 const START_DELAY = 0.04;
@@ -249,7 +261,7 @@ export class StudioEngine extends EventTarget {
     if (!this.studio) throw new Error('No Studio project');
     const Offline = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
     if (!Offline) throw new Error('OfflineAudioContext is unavailable');
-    const sampleRate = 48000;
+    const sampleRate = bounceSampleRate(this.sessionRate);
     const totalSteps = this.studio.bars * 16;
     const songSec = totalSteps * studioStepSeconds(this.studio.bpm);
     const ctx = new Offline(2, Math.ceil((songSec + 4) * sampleRate), sampleRate);
