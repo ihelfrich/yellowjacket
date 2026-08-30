@@ -15,10 +15,39 @@
 const MIN_RATE = 4000;
 const MAX_RATE = 768000;
 
-// Decoded audio is Float32, and the peak pyramid and analysis copies ride on top
-// of it. A native-rate decode that would blow past this is worse than a
-// downgrade the user is told about.
-const DECODE_BUDGET_BYTES = 1024 * 1024 * 1024;
+// A native-rate decode that would blow past this is worse than a downgrade the
+// user is told about. The figure is compared against the FULL retained
+// footprint, not the decoded buffer alone — see decodedFootprintBytes.
+//
+// 768 MB, not a round gigabyte, because this ceiling covers the SOURCE only.
+// The same tab still has to hold the spectrogram's STFT matrix, a second full
+// buffer once RENDER runs, and whatever CRATE has loaded. Spending the whole
+// practical budget on the source and then dying at the first render is a worse
+// outcome than decoding ten minutes of 96 kHz at 48 kHz and saying so.
+const DECODE_BUDGET_BYTES = 768 * 1024 * 1024;
+
+// The peak pyramid holds a min and a max Float32 per block, at three block
+// sizes, over the mono samples: 2 x 4 bytes x (1/64 + 1/512 + 1/4096) per frame.
+const PEAK_BYTES_PER_FRAME = 8 * (1 / 64 + 1 / 512 + 1 / 4096);
+
+/**
+ * Bytes a loaded source keeps alive. Loading retains four allocations, and
+ * budgeting only the first one under-counts by roughly half:
+ *   - the decoded AudioBuffer   (frames x channels x 4)
+ *   - the mono mixdown          (frames x 4)
+ *   - the peak pyramid          (~0.14 x frames)
+ *   - the encoded bytes, held for persistence and RESTORE
+ * The encoded copy does not shrink when the decode rate does, but it is part of
+ * the pressure the decision has to survive, so it counts.
+ */
+export function decodedFootprintBytes({ rate, seconds, channels = 2, encodedBytes = 0 } = {}) {
+  const secs = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const hz = Number.isFinite(rate) && rate > 0 ? rate : 0;
+  const chans = Math.max(1, Math.round(channels) || 1);
+  const frames = secs * hz;
+  const encoded = Number.isFinite(encodedBytes) && encodedBytes > 0 ? encodedBytes : 0;
+  return frames * chans * 4 + frames * 4 + frames * PEAK_BYTES_PER_FRAME + encoded;
+}
 
 function asBytes(input) {
   if (input instanceof Uint8Array) return input;
@@ -146,14 +175,16 @@ export function probeContainer(input) {
  * can say plainly when a file was not kept at its own resolution, rather than
  * silently halving it the way the default path did.
  */
-export function planDecodeRate({ nativeRate, seconds, channels = 2, contextRate = 48000 } = {}) {
+export function planDecodeRate({
+  nativeRate, seconds, channels = 2, contextRate = 48000, encodedBytes = 0,
+} = {}) {
   const native = plausible(nativeRate);
   if (!native) return { rate: contextRate, downgraded: false, reason: null };
   if (native <= contextRate) return { rate: native, downgraded: false, reason: null };
 
-  const chans = Math.max(1, Math.round(channels) || 1);
-  const secs = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
-  const bytes = secs * native * chans * 4;
+  const bytes = decodedFootprintBytes({
+    rate: native, seconds, channels, encodedBytes,
+  });
   if (bytes > DECODE_BUDGET_BYTES) {
     return {
       rate: contextRate,

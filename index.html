@@ -461,13 +461,22 @@ if ('serviceWorker' in navigator && location.hostname !== 'localhost' && locatio
       const bar = document.getElementById('updateBar');
       if (!bar || !bar.hidden) return;
       bar.hidden = false;
+      // Wire once per page, not once per offer. NOT NOW re-hides the bar, so a
+      // later statechange would otherwise stack a second RELOAD handler on the
+      // same button and post SKIP_WAITING twice.
+      if (bar.dataset.wired) return;
+      bar.dataset.wired = '1';
       document.getElementById('btnUpdate').addEventListener('click', () => {
+        // Ask whichever worker is waiting NOW rather than the one captured when
+        // the bar was first wired: a second build can land while it is dismissed.
+        const pending = reg.waiting || worker;
+        if (!pending) { bar.hidden = true; return; }
         // Reload only after the new worker is actually in charge, so the fresh
         // page is served a consistent set rather than a mix of both builds.
         navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
-        worker.postMessage({ type: 'SKIP_WAITING' });
-      }, { once: true });
-      document.getElementById('btnUpdateLater').addEventListener('click', () => { bar.hidden = true; }, { once: true });
+        pending.postMessage({ type: 'SKIP_WAITING' });
+      });
+      document.getElementById('btnUpdateLater').addEventListener('click', () => { bar.hidden = true; });
     }
     if (reg.waiting) offer(reg.waiting);
     reg.addEventListener('updatefound', () => {

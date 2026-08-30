@@ -464,7 +464,22 @@ export function initBenchController(ctx) {
       buf = cuts.length ? spliceCuts(R.buffer, cuts) : R.buffer;
     }
     const name = (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '') + '.bench.' + bits + '.wav';
-    const { blob, stats } = encodeWavWithStats(buf, bits);
+    // The whole file is built as one ArrayBuffer. Since the 48 kHz decode cap
+    // was lifted and float was added, that single allocation can reach hundreds
+    // of megabytes, and a RangeError inside a click handler would leave no
+    // status and no file — the button would simply look dead.
+    let blob;
+    let stats;
+    try {
+      ({ blob, stats } = encodeWavWithStats(buf, bits));
+    } catch (error) {
+      const mb = buf && buf.length
+        ? Math.round((buf.length * buf.numberOfChannels * (bits / 8)) / 1048576)
+        : 0;
+      statusFault('EXPORT FAULT · this render needs about ' + mb + ' MB in one block, '
+        + 'which the browser refused. Export a shorter selection or a lower bit depth.');
+      return;
+    }
     download(blob, name, 'audio/wav');
     const rate = Math.round((buf && buf.sampleRate ? buf.sampleRate : 0) / 1000);
     if (stats.clippedSamples > 0 && bits !== 32) {

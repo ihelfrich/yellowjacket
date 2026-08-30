@@ -23,7 +23,9 @@ import {
 import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
 import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
 import { FIELD_RECORDINGS, fieldLicenseUrl } from '../js/app/field-library.js';
-import { sniffSampleRate, planDecodeRate, probeContainer } from '../js/dsp/native-rate.js';
+import {
+  sniffSampleRate, planDecodeRate, probeContainer, decodedFootprintBytes,
+} from '../js/dsp/native-rate.js';
 import { parseSmf, smfToStudio } from '../js/midi/smf.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
@@ -3441,6 +3443,71 @@ const nativeRateCases = [
     const ok = planDecodeRate({ nativeRate: 96000, seconds: 60, channels: 2 });
     assert.equal(ok.rate, 96000);
     assert.equal(ok.downgraded, false);
+  },
+  async function exportReportsAllocationFailureInsteadOfDyingSilently() {
+    // encodeWavWithStats allocates the whole file as one ArrayBuffer. Ten
+    // minutes of 192 kHz stereo float is ~921 MB in a single allocation — only
+    // possible since the 48 kHz decode cap was removed and 32-bit float added.
+    // A RangeError inside a click handler leaves no status and no download, so
+    // the button simply appears dead.
+    const bench = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');
+    const start = bench.indexOf('function exportWav(');
+    assert.ok(start >= 0, 'exportWav exists');
+    const body = bench.slice(start, bench.indexOf('\n  }', start));
+    assert.match(body, /try\s*\{/, 'the encode is guarded');
+    assert.match(body, /catch/, 'and the failure is reported');
+  },
+  async function nativeDecodeAttemptLeavesTheFallbackSomethingToDecode() {
+    // decodeAudioData detaches its input even when it REJECTS — verified in
+    // Chrome: byteLength is 0 after an EncodingError. So attempting the
+    // native-rate decode on the caller's ArrayBuffer destroys it, and the
+    // `if (!buffer) buffer = await ctx.decodeAudioData(arrayBuffer)` fallback
+    // is handed zero bytes and throws. A file that decodes fine at 48 kHz
+    // would fail to load at all. The attempt must run on a copy.
+    const engine = await readFile(new URL('../js/audio-engine.js', import.meta.url), 'utf8');
+    const offlineDecode = engine.match(/offline\.decodeAudioData\(([^)]*)\)/);
+    assert.ok(offlineDecode, 'the native-rate decode exists');
+    assert.match(offlineDecode[1], /\.slice\(/,
+      'native-rate decode must run on a copy, or the fallback gets detached bytes');
+  },
+  function footprintCountsEverythingALoadRetains() {
+    // A load keeps FOUR allocations alive, not one: the decoded buffer, the mono
+    // mixdown, the peak pyramid, and the encoded bytes held for persistence and
+    // RESTORE. Budgeting only the decoded buffer under-counts by roughly half.
+    const f = decodedFootprintBytes({ rate: 48000, seconds: 10, channels: 2, encodedBytes: 0 });
+    const frames = 48000 * 10;
+    const decoded = frames * 2 * 4;
+    const mono = frames * 4;
+    // 2 arrays x 4 bytes per block at 64/512/4096 samples.
+    const peaks = frames * 8 * (1 / 64 + 1 / 512 + 1 / 4096);
+    assert.ok(Math.abs(f - (decoded + mono + peaks)) < 1024, 'all three in-memory copies');
+    assert.ok(f > decoded * 1.4, 'materially larger than the decoded buffer alone');
+  },
+  function footprintIncludesTheRetainedEncodedFile() {
+    const without = decodedFootprintBytes({ rate: 48000, seconds: 10, channels: 2, encodedBytes: 0 });
+    const with5MB = decodedFootprintBytes({ rate: 48000, seconds: 10, channels: 2, encodedBytes: 5e6 });
+    assert.equal(with5MB - without, 5e6, 'sourceBytes is held for the life of the session');
+  },
+  function highResolutionLoadThatUsedToSlipThroughNowDowngrades() {
+    // Ten minutes of 96 kHz 24-bit stereo. The decoded buffer alone is ~461 MB,
+    // which passed the old check; the real retained footprint is over 1 GB.
+    // This is the bug the audit's own fix introduced by removing the 48 kHz cap.
+    const seconds = 600, rate = 96000, channels = 2;
+    const encodedBytes = rate * seconds * channels * 3;   // 24-bit source
+    const decodedOnly = rate * seconds * channels * 4;
+    assert.ok(decodedOnly < 1024 * 1024 * 1024, 'the decoded buffer alone looks affordable');
+    const plan = planDecodeRate({ nativeRate: rate, seconds, channels, encodedBytes, contextRate: 48000 });
+    assert.equal(plan.downgraded, true, 'the true footprint does not fit');
+    assert.equal(plan.rate, 48000);
+    assert.match(plan.reason, /GB/, 'says how much it would have needed');
+  },
+  function aShortHighResolutionLoadIsStillKeptAtFullRate() {
+    // The budget must not become so conservative that it defeats the feature.
+    const plan = planDecodeRate({
+      nativeRate: 192000, seconds: 120, channels: 2, encodedBytes: 192000 * 120 * 2 * 3, contextRate: 48000,
+    });
+    assert.equal(plan.downgraded, false, 'two minutes at 192 kHz still fits');
+    assert.equal(plan.rate, 192000);
   },
   function decodePlanFallsBackWhenNativeRateWouldExhaustMemory() {
     // A 3-hour 192 kHz stereo file is ~8 GB decoded. Native rate must yield.

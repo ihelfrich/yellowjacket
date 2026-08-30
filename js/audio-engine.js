@@ -43,6 +43,9 @@ export class Engine extends EventTarget {
       seconds: probe.seconds,
       channels: probe.channels,
       contextRate: ctx.sampleRate,
+      // The caller keeps these bytes for persistence and RESTORE, so they are
+      // part of what the load costs even though decoding cannot shrink them.
+      encodedBytes: arrayBuffer && arrayBuffer.byteLength ? arrayBuffer.byteLength : 0,
     });
     let buffer = null;
     if (plan.rate > ctx.sampleRate && probe.seconds > 0) {
@@ -51,7 +54,11 @@ export class Engine extends EventTarget {
         const offline = new OfflineAudioContext(
           Math.max(1, probe.channels || 2), frames, plan.rate,
         );
-        buffer = await offline.decodeAudioData(arrayBuffer);
+        // On a COPY, deliberately. decodeAudioData detaches its input even when
+        // it rejects, so decoding the caller's buffer here would leave the
+        // fallback below with zero bytes and turn a recoverable native-rate
+        // failure into a file that will not load at all.
+        buffer = await offline.decodeAudioData(arrayBuffer.slice(0));
       } catch (error) {
         buffer = null;   // fall through to the context decode below
       }
