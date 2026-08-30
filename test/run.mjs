@@ -3756,6 +3756,17 @@ const updateSafetyCases = [
     const calls = sw.match(/skipWaiting\s*\(/g) || [];
     assert.equal(calls.length, 1, 'exactly one skipWaiting call, in the message handler');
   },
+  async function precacheBypassesTheHttpCache() {
+    // cache.addAll() issues ordinary fetches, which the browser may satisfy from
+    // its own HTTP cache — pinning a PREVIOUS build's file into the NEW version's
+    // cache, permanently, until someone bumps VERSION again. Observed live: v37
+    // shipped a corrected css/yj.css, curl saw one rule, and the browser saw the
+    // superseded two-rule copy. Requesting with cache:'reload' forces the network.
+    const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
+    const install = sw.slice(sw.indexOf("self.addEventListener('install'"));
+    const body = install.slice(0, install.indexOf('self.addEventListener(', 20));
+    assert.match(body, /cache:\s*'reload'/, 'precache must bypass the HTTP cache');
+  },
   async function serviceWorkerStillActivatesOnUserRequest() {
     // Waiting forever is not the goal: the page offers a reload, and this is
     // the channel that honours it.

@@ -3,7 +3,7 @@
 // Cross-origin requests (CDN transformers.js, HF model shards) are never intercepted;
 // they manage their own caching. Scope-relative URLs keep this working under
 // the /yellowjacket/ GitHub Pages subpath.
-const VERSION = 'yj-v37';
+const VERSION = 'yj-v38';
 
 const PRECACHE = [
   'js/app/persist.js',
@@ -121,9 +121,20 @@ const PRECACHE = [
 // Instead the new worker installs, precaches, and waits. The page notices it,
 // offers a reload, and only then sends SKIP_WAITING. An update lands when the
 // person says so, or on their next natural visit.
+
+// cache:'reload' is load-bearing, not decoration. A plain addAll() issues
+// ordinary fetches, which the browser is free to satisfy from its own HTTP
+// cache — so a freshly deployed build can precache the PREVIOUS build's files
+// and pin them under the new version key until someone bumps VERSION again.
+// This was observed live: v37 shipped a corrected css/yj.css, a direct request
+// returned the new file, and the page was served the superseded one from the
+// v37 cache. Forcing the network on install is the only way the version key
+// means what it says.
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(VERSION).then((cache) => cache.addAll(PRECACHE))
+    caches.open(VERSION).then((cache) => cache.addAll(
+      PRECACHE.map((url) => new Request(url, { cache: 'reload' }))
+    ))
   );
 });
 
