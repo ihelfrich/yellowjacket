@@ -968,6 +968,19 @@ const lifecycleCases = [
     assert.match(index, /id="fieldLibrary"/);
     assert.match(worker, /js\/app\/field-library\.js/);
   },
+  async function fieldLibraryStaysReachableOnceAudioIsLoaded() {
+    // The shelf lives inside #dropZone, which is hidden the moment a source
+    // loads. Without a control in the persistent chrome the whole library
+    // silently disappears for the rest of the session — which is exactly what
+    // happened. The button must sit OUTSIDE the drop zone, not within it.
+    const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const button = index.indexOf('id="btnField"');
+    const dropZone = index.indexOf('id="dropZone"');
+    assert.ok(button >= 0, 'a persistent FIELD control exists');
+    assert.ok(dropZone >= 0, 'drop zone still exists');
+    assert.ok(button < dropZone,
+      'the FIELD control must live in the header, not inside the overlay it reopens');
+  },
 ];
 
 // ---------- op1 patch (CONTRACT-WIRE) ----------

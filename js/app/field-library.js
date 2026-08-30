@@ -117,6 +117,18 @@ export function initFieldLibrary(ctx) {
   const host = $('fieldLibrary');
   if (!host) return;
 
+  // The shelf is rendered inside the drop zone, which hides itself as soon as a
+  // source loads. Without this the whole library becomes unreachable for the
+  // rest of the session, so the header keeps a way back to it.
+  function reveal() {
+    $('dropZone').classList.remove('is-hidden');
+    const first = host.querySelector('.yj-field-btn');
+    if (first) first.focus();
+  }
+  const opener = $('btnField');
+  if (opener) opener.addEventListener('click', reveal);
+  ctx.api.revealFieldLibrary = reveal;
+
   const grid = document.createElement('div');
   grid.className = 'yj-field-grid';
   for (const rec of FIELD_RECORDINGS) {
