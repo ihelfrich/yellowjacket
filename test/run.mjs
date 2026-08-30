@@ -44,7 +44,9 @@ import { fitModal, synthModal } from '../js/analysis/modal.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
-import { harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS } from '../js/analysis/harvest.js';
+import {
+  harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS, planKitAssignment,
+} from '../js/analysis/harvest.js';
 import { project2d, standardize, axisLabel } from '../js/analysis/constellation.js';
 import { stretchSamples, stretchMode } from '../js/dsp/stretch.js';
 import { plateImpulse, delayTimeFor, dampingCoeff } from '../js/dsp/space.js';
@@ -3873,7 +3875,72 @@ const updateSafetyCases = [
   },
 ];
 
+// ---------- auto-kit assignment ----------
+//
+// HARVEST labels and scores 24 slices by role and then leaves all eight tracks
+// empty, so a harvested source is not playable until eight separate manual
+// assignments have been made. Driving the real app end to end on a field
+// recording is what surfaced it: the kit said KICK 3 SNARE 3 TONE 13 and every
+// track still read EMPTY.
+
+const clip = (id, tag, score, start = 0) => ({ id, tag, score, start, end: start + 0.2 });
+
+const autoKitCases = [
+  function fillsOneTrackPerRoleInPlayingOrder() {
+    const clips = [
+      clip('a', 'snare', 0.5), clip('b', 'kick', 0.5), clip('c', 'hat', 0.5), clip('d', 'bass', 0.5),
+    ];
+    const plan = planKitAssignment(clips, 8);
+    assert.equal(plan.length, 8, 'one slot per machine track');
+    assert.equal(plan[0], 'b', 'kick first');
+    assert.equal(plan[1], 'a', 'then snare');
+    assert.equal(plan[2], 'c', 'then hat');
+    assert.equal(plan[3], 'd', 'then bass');
+  },
+  function picksTheBestScoringClipWithinARole() {
+    const clips = [clip('weak', 'kick', 0.1), clip('strong', 'kick', 0.9), clip('mid', 'kick', 0.5)];
+    assert.equal(planKitAssignment(clips, 8)[0], 'strong');
+  },
+  function neverAssignsTheSameClipTwice() {
+    // A source with one usable slice must not fill all eight tracks with it.
+    const plan = planKitAssignment([clip('only', 'kick', 0.9)], 8);
+    assert.equal(plan.filter((id) => id === 'only').length, 1);
+    assert.equal(plan.filter(Boolean).length, 1);
+  },
+  function backfillsEmptyRolesFromWhateverIsLeft() {
+    // The frog recording produced no HAT and no CRASH but thirteen TONE slices.
+    // Leaving those tracks empty would waste most of the harvest.
+    const clips = [
+      clip('k', 'kick', 0.9), clip('t1', 'tone', 0.8), clip('t2', 'tone', 0.7),
+      clip('t3', 'tone', 0.6), clip('t4', 'tone', 0.5),
+    ];
+    const plan = planKitAssignment(clips, 8);
+    assert.equal(plan.filter(Boolean).length, 5, 'every usable slice placed');
+    assert.equal(new Set(plan.filter(Boolean)).size, 5, 'and each placed once');
+  },
+  function leavesTrailingSlotsEmptyRatherThanRepeating() {
+    const plan = planKitAssignment([clip('a', 'kick', 0.5), clip('b', 'snare', 0.5)], 8);
+    assert.equal(plan.filter(Boolean).length, 2);
+    assert.equal(plan[7], null);
+  },
+  function survivesAnEmptyOrJunkHarvest() {
+    assert.deepEqual(planKitAssignment([], 8), Array(8).fill(null));
+    assert.deepEqual(planKitAssignment(null, 8), Array(8).fill(null));
+    const junk = planKitAssignment([{ id: 'x' }, null, { tag: 'kick' }], 8);
+    assert.equal(junk.filter(Boolean).length, 1, 'a clip without an id cannot be placed');
+  },
+  function respectsTracksThatAlreadyHoldASound() {
+    // Re-harvesting must not silently destroy a kit the user has built.
+    const clips = [clip('k', 'kick', 0.9), clip('s', 'snare', 0.8)];
+    const plan = planKitAssignment(clips, 8, [true, false, false, false, false, false, false, false]);
+    assert.equal(plan[0], null, 'occupied track untouched');
+    assert.equal(plan[1], 'k', 'best pick goes to the first free track');
+    assert.equal(plan[2], 's');
+  },
+];
+
 const groups = [
+  ['auto kit', autoKitCases],
   ['update safety', updateSafetyCases],
   ['wav export', wavExportCases],
   ['native rate', nativeRateCases],

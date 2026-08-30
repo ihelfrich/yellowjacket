@@ -11,6 +11,7 @@ import { patternLoopSteps, normalizeVoice } from './compile.js';
 import { CrateStore } from '../app/crate.js';
 import { renderFormula } from './synth.js';
 import { fitModal, synthModal } from '../analysis/modal.js';
+import { planKitAssignment } from '../analysis/harvest.js';
 import {
   FACTORY_KITS, drumAssetId, getFactoryKit, grooveFor, renderFactoryKit,
 } from './kits.js';
@@ -465,6 +466,55 @@ export function initMachineController(ctx) {
     });
     patternView.setMachine(P.machine);
   });
+  // Cut one clip's samples out of the loaded source, shaped for a machine track.
+  // Returns null when the clip cannot be cut (zero length, or no source).
+  function sliceForTrack(clip) {
+    const buf = R.buffer;
+    if (!clip || !buf) return null;
+    const s = Math.max(0, Math.floor(clip.start * buf.sampleRate));
+    let n = Math.min(buf.length, Math.ceil(clip.end * buf.sampleRate)) - s;
+    if (n <= 0) return null;
+    const cap = MAX_TRACK_SAMPLE_SEC * buf.sampleRate;
+    const trimmed = n > cap;
+    if (trimmed) n = cap;
+    const channels = [];
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      channels.push(buf.getChannelData(c).slice(s, s + n));
+    }
+    return { channels, frames: n, sampleRate: buf.sampleRate, trimmed };
+  }
+
+  // Seat a whole harvest at once. One store.update, so the whole kit is a single
+  // undo step rather than eight.
+  function assignHarvestToTracks(clips, occupied) {
+    if (!R.buffer) return 0;
+    const plan = planKitAssignment(clips, P.machine.tracks.length, occupied);
+    const byId = new Map((clips || []).map((c) => [c.id, c]));
+    const cut = [];
+    for (let track = 0; track < plan.length; track++) {
+      const clip = plan[track] ? byId.get(plan[track]) : null;
+      if (!clip) continue;
+      const slice = sliceForTrack(clip);
+      if (slice) cut.push({ track, clip, slice });
+    }
+    if (!cut.length) return 0;
+    store.update('machine', (p) => {
+      for (const { track, clip, slice } of cut) {
+        const label = clip.label || clip.tag;
+        const role = clip.tag ? String(clip.tag).toUpperCase() : undefined;
+        const id = registerAsset(p, {
+          kind: 'sample', label, sampleRate: slice.sampleRate, frames: slice.frames, role,
+        });
+        const t = p.machine.tracks[track];
+        t.sampleId = id;
+        t.sample = { channels: slice.channels, sampleRate: slice.sampleRate, label, role };
+      }
+    });
+    for (const { track } of cut) sequencer.bumpTrack(track);
+    patternView.setMachine(P.machine);
+    return cut.length;
+  }
+
   patternView.addEventListener('assign', (e) => {
     const clip = sliceView.selectedClip;
     if (!clip || !R.buffer) {
@@ -912,11 +962,18 @@ export function initMachineController(ctx) {
         }
       });
       refreshClips();
+      // Labelling slices and then leaving every track empty made a harvested
+      // recording unplayable until eight manual assignments had been made.
+      // Free tracks are filled here; occupied ones are left alone, so this adds
+      // to a kit rather than overwriting one.
+      const occupied = P.machine.tracks.map((t) => !!t.sample);
+      const seated = assignHarvestToTracks(P.clips, occupied);
       const roles = {};
       for (const pick of picks) roles[pick.role] = (roles[pick.role] || 0) + 1;
       const spread = picks[picks.length - 1].t0 - picks[0].t0;
       status('HARVEST · ' + picks.length + ' SLICES ACROSS ' + spread.toFixed(0) + 'S · '
-        + Object.keys(roles).map((r) => r + ' ' + roles[r]).join(' '));
+        + Object.keys(roles).map((r) => r + ' ' + roles[r]).join(' ')
+        + (seated ? ' · ' + seated + ' ON TRACKS, READY TO PLAY' : ''));
     };
     harvestWorker.onerror = () => {
       btn.disabled = false;

@@ -85,6 +85,66 @@ export const ROLES = Object.freeze(Object.keys(QUOTAS));
 export const ROLE_QUOTAS = QUOTAS;
 export const HARVEST_MAX_PICKS = MAX_PICKS;
 
+// The order a kit is laid out on the eight machine tracks. Kick and snare first
+// because that is what a person reaches for; the colour roles fill in behind.
+const KIT_ROLE_ORDER = Object.freeze(['kick', 'snare', 'hat', 'bass', 'tone', 'vox', 'fx', 'crash']);
+
+/**
+ * Choose which harvested clip belongs on each machine track.
+ *
+ * HARVEST already labels every slice with a role and scores it, but it stopped
+ * short of putting them anywhere, so a harvested recording was not playable
+ * until eight manual assignments had been made. Returns an array of clip ids
+ * (or null) the length of trackCount.
+ *
+ * `occupied[i]` marks tracks that already hold a sound; those are never
+ * targeted, so re-harvesting adds to a kit instead of overwriting it.
+ */
+export function planKitAssignment(clips, trackCount = 8, occupied = []) {
+  const plan = new Array(trackCount).fill(null);
+  const usable = (Array.isArray(clips) ? clips : [])
+    .filter((c) => c && typeof c === 'object' && c.id)
+    .map((c) => ({
+      id: c.id,
+      role: typeof c.tag === 'string' ? c.tag.toLowerCase() : '',
+      score: Number.isFinite(c.score) ? c.score : 0,
+    }));
+  if (!usable.length) return plan;
+
+  const taken = new Set();
+  const bestOf = (role) => usable
+    .filter((c) => c.role === role && !taken.has(c.id))
+    .sort((a, b) => b.score - a.score)[0] || null;
+
+  const freeSlots = [];
+  for (let i = 0; i < trackCount; i++) if (!occupied[i]) freeSlots.push(i);
+
+  // First pass: the canonical role for each free track, in kit order.
+  let slotAt = 0;
+  for (const role of KIT_ROLE_ORDER) {
+    if (slotAt >= freeSlots.length) break;
+    const pick = bestOf(role);
+    if (!pick) continue;
+    plan[freeSlots[slotAt]] = pick.id;
+    taken.add(pick.id);
+    slotAt++;
+  }
+
+  // Second pass: a source rarely yields all eight roles (a frog chorus has no
+  // hats). Rather than leave those tracks silent, backfill with the best of
+  // whatever the harvest actually found.
+  const leftovers = usable
+    .filter((c) => !taken.has(c.id))
+    .sort((a, b) => b.score - a.score);
+  for (const pick of leftovers) {
+    if (slotAt >= freeSlots.length) break;
+    plan[freeSlots[slotAt]] = pick.id;
+    taken.add(pick.id);
+    slotAt++;
+  }
+  return plan;
+}
+
 const EPS = 1e-20;
 
 let specFft = null;

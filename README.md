@@ -80,6 +80,14 @@ preview instantly during playback (the player just skips them) and apply with sh
 crossfades on render. Export the transcript as TXT, SRT, VTT, or JSON, with caption
 timings recomputed against the edited audio.
 
+HARVEST seats what it finds. It mines the whole recording for a diverse, labelled
+kit and then loads the eight machine tracks with it — kick and snare first, the
+other roles behind them, and the best of whatever is left backfilling the tracks
+a source could not fill. A frog chorus has no hi-hats; it still comes back as a
+playable kit rather than a list you have to place by hand. Tracks that already
+hold a sound are left alone, so a second harvest adds to a kit instead of
+overwriting it.
+
 **SIGNAL** is the microscope: waveform stacked over spectrogram with a shared zoom. The
 measurement rail runs the ITU-R BS.1770-5 loudness stack: gated integrated LUFS, short-term
 and momentary maxima, sample peak, an estimated true peak, RMS, crest factor, DC offset,
