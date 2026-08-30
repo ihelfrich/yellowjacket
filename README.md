@@ -25,7 +25,12 @@ never leaves the machine. If that claim sounds like marketing, open the network 
 watch it stay empty while you work.
 
 Audio gets in five ways: load the bundled demo, open a FIELD recording, drop a file,
-pick one, or paste a URL. The
+pick one, or paste a URL. Files are decoded **at their own sample rate**, up to 192 kHz:
+a browser normally resamples everything to the output device's rate on decode, which
+quietly halves a 96 kHz recording before you ever see it, so Yellowjacket decodes through
+a context built at the file's rate instead. That matters most for found sound — the
+ultrasonic detail in a field recording is exactly what becomes audible when you pitch it
+down. A `.mid` file dropped on the bench loads into STUDIO's six parts instead. The
 demo is **Sparks** by Zane Little, a 2:40 electronic pop track released under
 [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/); its vocals, transients,
 and tonal sections exercise every bench without asking a first-time visitor to find a
@@ -111,7 +116,9 @@ level, pan, mute, solo, plate reverb, and tempo delay; BOUNCE prints the whole l
 the same graph as a 48 kHz stereo, 24-bit WAV. Pick a key and scale and IDEA writes a
 deterministic six-part starting arrangement; SHIFT, INVERT, and DUPLICATE reshape bars,
 while MIDI OUT sends the tempo, swing, chords, velocities, gates, and six channels to a
-DAW. Studio edits participate in undo, autosave, and portable `.yjkt` projects without
+DAW. MIDI also comes back the other way: drop a Standard MIDI File and its tempo and notes
+land on the grid, quantized to sixteenths, filling only the parts the file actually
+carries and reporting anything that fell outside the four-bar window. Studio edits participate in undo, autosave, and portable `.yjkt` projects without
 needing a recording loaded first.
 
 **LOOM** is the semantic performance layer. Select kept transcript words and **WEAVE

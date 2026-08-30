@@ -41,6 +41,11 @@ export function initSourceController(ctx) {
       else statusFault('PROJECT OPEN FAULT · project loader is not ready');
       return;
     }
+    if (/\.midi?$/i.test(file && file.name || '')) {
+      if (ctx.api.importMidiFile) await ctx.api.importMidiFile(file);
+      else statusFault('MIDI FAULT · the studio is not ready');
+      return;
+    }
     if (!confirmSourceReplacement()) return;
     status(COPY.decoding, true);
     let ab;
@@ -128,7 +133,14 @@ export function initSourceController(ctx) {
     ctx.api.machineReset();
     if (ctx.api.repairReset) ctx.api.repairReset();
 
-    status(COPY.loaded);
+    const report = engine.decodeReport;
+    if (report && report.downgraded && report.reason) {
+      status('LOADED AT ' + Math.round(report.decodedRate / 1000) + ' kHz · ' + report.reason.toUpperCase());
+    } else if (report && report.nativeRate && report.decodedRate > 48000) {
+      status('LOADED AT ' + Math.round(report.decodedRate / 1000) + ' kHz · FULL RESOLUTION KEPT');
+    } else {
+      status(COPY.loaded);
+    }
     ctx.api.statusRight();
 
     $('specNote').textContent = COPY.computingSpec;

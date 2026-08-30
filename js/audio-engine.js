@@ -1,6 +1,8 @@
 // Yellowjacket — playback engine. Schedules one AudioBufferSourceNode per kept
 // segment so playback skips cut ranges; time is reported on the original timeline.
 
+import { probeContainer, planDecodeRate } from './dsp/native-rate.js';
+
 const SCHEDULE_DELAY = 0.03;      // s, shared start offset so segments align
 const MIN_SEG = 0.001;            // s, ignore slivers below this
 const TIME_INTERVAL = 1000 / 32;  // ms, ~30fps cadence for 'time' events
@@ -27,9 +29,40 @@ export class Engine extends EventTarget {
     this._lastEmit = 0;
   }
 
+  // decodeAudioData resamples to the context's rate, so a 96 or 192 kHz file
+  // would arrive already halved or quartered. When the container states a
+  // higher rate than the hardware context, decode through an
+  // OfflineAudioContext built at the file's own rate instead and keep every
+  // sample; playback resamples on the way out, which costs nothing here.
+  // `decodeReport` records what happened so the caller can say so out loud.
   async load(arrayBuffer) {
     const ctx = this._ensureCtx();
-    const buffer = await ctx.decodeAudioData(arrayBuffer);
+    const probe = probeContainer(arrayBuffer);
+    const plan = planDecodeRate({
+      nativeRate: probe.sampleRate,
+      seconds: probe.seconds,
+      channels: probe.channels,
+      contextRate: ctx.sampleRate,
+    });
+    let buffer = null;
+    if (plan.rate > ctx.sampleRate && probe.seconds > 0) {
+      try {
+        const frames = Math.max(1, Math.ceil(plan.rate * probe.seconds));
+        const offline = new OfflineAudioContext(
+          Math.max(1, probe.channels || 2), frames, plan.rate,
+        );
+        buffer = await offline.decodeAudioData(arrayBuffer);
+      } catch (error) {
+        buffer = null;   // fall through to the context decode below
+      }
+    }
+    if (!buffer) buffer = await ctx.decodeAudioData(arrayBuffer);
+    this.decodeReport = {
+      nativeRate: probe.sampleRate,
+      decodedRate: buffer.sampleRate,
+      downgraded: !!(probe.sampleRate && buffer.sampleRate < probe.sampleRate),
+      reason: plan.reason,
+    };
     this._haltPlayback();
     this._buffer = buffer;
     this._mono = mixdownMono(buffer);

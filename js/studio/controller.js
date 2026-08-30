@@ -2,6 +2,7 @@
 
 import { applyInstrumentPreset, generateStudioIdea, normalizeStep, transformStudioBar } from './model.js';
 import { studioMidiFile } from './midi.js';
+import { parseSmf, smfToStudio } from '../midi/smf.js';
 import { encodeWav, download } from '../export.js';
 
 export function initStudioController(ctx) {
@@ -109,6 +110,39 @@ export function initStudioController(ctx) {
     studioEngine.setStudio(studio);
     view.setStudio(studio);
   });
+
+  // A .mid dropped on the bench fills STUDIO's parts. Only the parts the file
+  // actually carries are overwritten: importing a two-part sketch should not
+  // silently erase four parts of existing work, and UNDO covers the rest.
+  ctx.api.importMidiFile = async (file) => {
+    let imported;
+    try {
+      imported = smfToStudio(parseSmf(new Uint8Array(await file.arrayBuffer())));
+    } catch (error) {
+      statusFault('MIDI FAULT · ' + (error && error.message ? error.message : 'unreadable file'));
+      return;
+    }
+    if (!imported.tracks.length) {
+      statusFault('MIDI FAULT · no notes in that file');
+      return;
+    }
+    edit('studio-midi-import', (s) => {
+      s.bpm = Math.max(40, Math.min(240, Math.round(imported.bpm) || 120));
+      s.bars = 4;
+      imported.tracks.forEach((part, index) => {
+        const track = s.tracks[index];
+        if (!track) return;
+        for (let step = 0; step < track.steps.length; step++) {
+          track.steps[step] = part.steps[step] ? normalizeStep(part.steps[step]) : null;
+        }
+        if (part.name) track.name = part.name.slice(0, 16);
+      });
+    });
+    const parts = imported.tracks.length;
+    status('MIDI IN · ' + parts + (parts === 1 ? ' PART' : ' PARTS')
+      + ' · ' + Math.round(imported.bpm) + ' BPM'
+      + (imported.dropped ? ' · ' + imported.dropped + ' NOTES PAST 4 BARS DROPPED' : ''));
+  };
 
   ctx.api.toggleStudio = () => studioEngine.toggle();
   ctx.api.stopStudio = () => studioEngine.stop();

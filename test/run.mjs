@@ -23,6 +23,8 @@ import {
 import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
 import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
 import { FIELD_RECORDINGS, fieldLicenseUrl } from '../js/app/field-library.js';
+import { sniffSampleRate, planDecodeRate, probeContainer } from '../js/dsp/native-rate.js';
+import { parseSmf, smfToStudio } from '../js/midi/smf.js';
 import { Engine } from '../js/audio-engine.js';
 import { deriveStages } from '../js/app/pipeline-ui.js';
 import { renderFormula, compileFormula, SYNTH_PRESETS } from '../js/machine/synth.js';
@@ -3351,7 +3353,263 @@ const performanceCases = [
   },
 ];
 
+// ---------- native-rate decode (AUDIT-RESOLUTION 1) ----------
+
+// Minimal RIFF/WAVE header. `extraChunk` inserts a chunk BEFORE 'fmt ' so the
+// parser is forced to walk the chunk list rather than assume a fixed offset.
+function wavBytes(rate, { extraChunk = null, channels = 1 } = {}) {
+  const pre = extraChunk ? 8 + extraChunk.length : 0;
+  const bytes = new Uint8Array(44 + pre);
+  const dv = new DataView(bytes.buffer);
+  const tag = (off, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  tag(0, 'RIFF'); dv.setUint32(4, bytes.length - 8, true); tag(8, 'WAVE');
+  let o = 12;
+  if (extraChunk) {
+    tag(o, 'LIST'); dv.setUint32(o + 4, extraChunk.length, true);
+    bytes.set(extraChunk, o + 8);
+    o += 8 + extraChunk.length;
+  }
+  tag(o, 'fmt '); dv.setUint32(o + 4, 16, true);
+  dv.setUint16(o + 8, 1, true); dv.setUint16(o + 10, channels, true);
+  dv.setUint32(o + 12, rate, true);
+  dv.setUint32(o + 16, rate * channels * 2, true);
+  dv.setUint16(o + 20, channels * 2, true); dv.setUint16(o + 22, 16, true);
+  tag(o + 24, 'data'); dv.setUint32(o + 28, 0, true);
+  return bytes;
+}
+
+// fLaC + STREAMINFO. Sample rate is 20 bits at bit offset 80 of the block body,
+// which is byte 10 — the packing this test exists to pin down.
+function flacBytes(rate) {
+  const bytes = new Uint8Array(4 + 4 + 34);
+  bytes.set([0x66, 0x4C, 0x61, 0x43], 0);      // 'fLaC'
+  bytes[4] = 0x80;                              // last-block flag | type 0 STREAMINFO
+  bytes[5] = 0; bytes[6] = 0; bytes[7] = 34;    // block length
+  const b = 8;
+  bytes[b + 10] = (rate >>> 12) & 0xFF;
+  bytes[b + 11] = (rate >>> 4) & 0xFF;
+  bytes[b + 12] = ((rate & 0x0F) << 4);
+  return bytes;
+}
+
+const nativeRateCases = [
+  function readsWavSampleRate() {
+    assert.equal(sniffSampleRate(wavBytes(96000)), 96000);
+    assert.equal(sniffSampleRate(wavBytes(192000)), 192000);
+    assert.equal(sniffSampleRate(wavBytes(44100)), 44100);
+  },
+  function walksPastChunksBeforeFmt() {
+    // A real-world WAV often carries LIST/bext before 'fmt '. Assuming offset 24
+    // would read metadata bytes as a sample rate.
+    const rate = sniffSampleRate(wavBytes(96000, { extraChunk: new Uint8Array(18).fill(0x41) }));
+    assert.equal(rate, 96000);
+  },
+  function readsFlacSampleRate() {
+    assert.equal(sniffSampleRate(flacBytes(96000)), 96000);
+    assert.equal(sniffSampleRate(flacBytes(48000)), 48000);
+  },
+  function returnsNullForUnknownContainers() {
+    // MP3 and friends top out at 48k, so the default context is already correct;
+    // null is the signal to take that path rather than a wrong guess.
+    assert.equal(sniffSampleRate(new Uint8Array([0xFF, 0xFB, 0x90, 0x00])), null, 'mp3 frame');
+    assert.equal(sniffSampleRate(new Uint8Array(4)), null, 'garbage');
+    assert.equal(sniffSampleRate(new Uint8Array(0)), null, 'empty');
+    assert.equal(sniffSampleRate(wavBytes(96000).slice(0, 20)), null, 'truncated before fmt');
+  },
+  function rejectsImplausibleRates() {
+    // A corrupt header must not push the decode context to an absurd rate.
+    assert.equal(sniffSampleRate(wavBytes(3)), null, 'below the sane floor');
+    assert.equal(sniffSampleRate(wavBytes(5000000)), null, 'above the sane ceiling');
+  },
+  function decodePlanKeepsNativeRateWithinMemoryBudget() {
+    // 96 kHz stereo for 60 s is ~46 MB of float — comfortably decodable.
+    const ok = planDecodeRate({ nativeRate: 96000, seconds: 60, channels: 2 });
+    assert.equal(ok.rate, 96000);
+    assert.equal(ok.downgraded, false);
+  },
+  function decodePlanFallsBackWhenNativeRateWouldExhaustMemory() {
+    // A 3-hour 192 kHz stereo file is ~8 GB decoded. Native rate must yield.
+    const big = planDecodeRate({ nativeRate: 192000, seconds: 10800, channels: 2, contextRate: 48000 });
+    assert.equal(big.downgraded, true);
+    assert.equal(big.rate, 48000, 'falls back to the context rate');
+    assert.ok(big.reason, 'says why, so the UI can tell the user');
+  },
+  function probesWavChannelsAndDuration() {
+    // The memory budget needs real seconds, and both containers carry an exact
+    // length — guessing from encoded byte count is wrong for FLAC by ~2x.
+    const bytes = wavBytes(96000, { channels: 2 });
+    const dv = new DataView(bytes.buffer);
+    dv.setUint32(40, 96000 * 2 * 2 * 3, true);   // 3 seconds of stereo 16-bit
+    const probe = probeContainer(bytes);
+    assert.equal(probe.sampleRate, 96000);
+    assert.equal(probe.channels, 2);
+    assert.equal(Math.round(probe.seconds), 3);
+  },
+  function probesFlacChannelsAndDuration() {
+    const bytes = flacBytes(96000);
+    bytes[8 + 12] |= 0x02;                        // channels-1 = 1, so stereo
+    const total = 96000 * 5;                      // 5 seconds
+    bytes[8 + 13] = (bytes[8 + 13] & 0xF0) | ((total / 4294967296) & 0x0F);
+    bytes[8 + 14] = (total >>> 24) & 0xFF;
+    bytes[8 + 15] = (total >>> 16) & 0xFF;
+    bytes[8 + 16] = (total >>> 8) & 0xFF;
+    bytes[8 + 17] = total & 0xFF;
+    const probe = probeContainer(bytes);
+    assert.equal(probe.sampleRate, 96000);
+    assert.equal(probe.channels, 2);
+    assert.equal(Math.round(probe.seconds), 5);
+  },
+  function probeReturnsNullsForUnknownContainers() {
+    const probe = probeContainer(new Uint8Array([0xFF, 0xFB, 0x90, 0x00]));
+    assert.equal(probe.sampleRate, null);
+    assert.equal(probe.seconds, 0, 'unknown length, so the budget cannot be computed');
+  },
+  function decodePlanUsesContextRateWhenNativeRateIsUnknown() {
+    const unknown = planDecodeRate({ nativeRate: null, seconds: 60, channels: 2, contextRate: 48000 });
+    assert.equal(unknown.rate, 48000);
+    assert.equal(unknown.downgraded, false, 'not a downgrade — nothing better was known');
+  },
+];
+
+// ---------- Standard MIDI File import (AUDIT-RESOLUTION 4) ----------
+
+function vlq(value) {
+  const out = [value & 0x7F];
+  let v = value >>> 7;
+  while (v > 0) { out.unshift((v & 0x7F) | 0x80); v >>>= 7; }
+  return out;
+}
+
+function smfBytes({ format = 0, division = 480, tracks = [[]] } = {}) {
+  const out = [];
+  const push = (...b) => out.push(...b);
+  const ascii = (s) => [...s].map((c) => c.charCodeAt(0));
+  const u32 = (n) => [(n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF];
+  const u16 = (n) => [(n >>> 8) & 0xFF, n & 0xFF];
+  push(...ascii('MThd'), ...u32(6), ...u16(format), ...u16(tracks.length), ...u16(division));
+  for (const events of tracks) {
+    const body = [...events, ...vlq(0), 0xFF, 0x2F, 0x00];
+    push(...ascii('MTrk'), ...u32(body.length), ...body);
+  }
+  return new Uint8Array(out);
+}
+
+const smfCases = [
+  function parsesHeaderAndOneNote() {
+    const bytes = smfBytes({ division: 480, tracks: [[
+      ...vlq(0), 0x90, 60, 100,
+      ...vlq(480), 0x80, 60, 0,
+    ]] });
+    const song = parseSmf(bytes);
+    assert.equal(song.division, 480);
+    assert.equal(song.format, 0);
+    assert.equal(song.tracks.length, 1);
+    const notes = song.tracks[0].notes;
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].note, 60);
+    assert.equal(notes[0].velocity, 100);
+    assert.equal(notes[0].startTicks, 0);
+    assert.equal(notes[0].durationTicks, 480, 'note-off closes the note');
+  },
+  function treatsZeroVelocityNoteOnAsNoteOff() {
+    // The single most common real-world encoding, and the one a naive parser
+    // turns into a note that never ends.
+    const bytes = smfBytes({ tracks: [[
+      ...vlq(0), 0x90, 64, 90,
+      ...vlq(240), 0x90, 64, 0,
+    ]] });
+    const notes = parseSmf(bytes).tracks[0].notes;
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].durationTicks, 240);
+  },
+  function honoursRunningStatus() {
+    // Status byte omitted on repeat — legal, ubiquitous, and silently
+    // misparsed as data by anything that does not implement it.
+    const bytes = smfBytes({ tracks: [[
+      ...vlq(0), 0x90, 60, 100,
+      ...vlq(0), 62, 100,
+      ...vlq(480), 0x80, 60, 0,
+      ...vlq(0), 62, 0,
+    ]] });
+    const notes = parseSmf(bytes).tracks[0].notes;
+    assert.equal(notes.length, 2, 'both notes recovered without a repeated status byte');
+    assert.deepEqual(notes.map((n) => n.note).sort((a, b) => a - b), [60, 62]);
+  },
+  function readsTempoAndSkipsSysex() {
+    const bytes = smfBytes({ tracks: [[
+      ...vlq(0), 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20,   // 500000 us/qn = 120 bpm
+      ...vlq(0), 0xF0, ...vlq(3), 0x7E, 0x7F, 0xF7,     // sysex, must not derail
+      ...vlq(0), 0x90, 60, 100,
+      ...vlq(96), 0x80, 60, 0,
+    ]] });
+    const song = parseSmf(bytes);
+    assert.equal(Math.round(song.bpm), 120);
+    assert.equal(song.tracks[0].notes.length, 1, 'sysex skipped by declared length');
+  },
+  function defaultsToOneTwentyBpmWithNoTempoMeta() {
+    const song = parseSmf(smfBytes({ tracks: [[...vlq(0), 0x90, 60, 100, ...vlq(48), 0x80, 60, 0]] }));
+    assert.equal(song.bpm, 120);
+  },
+  function keepsMultipleTracksSeparate() {
+    const track = (note) => [...vlq(0), 0x90, note, 100, ...vlq(480), 0x80, note, 0];
+    const song = parseSmf(smfBytes({ format: 1, tracks: [track(60), track(67)] }));
+    assert.equal(song.tracks.length, 2);
+    assert.equal(song.tracks[0].notes[0].note, 60);
+    assert.equal(song.tracks[1].notes[0].note, 67);
+  },
+  function rejectsNonMidiBytes() {
+    assert.throws(() => parseSmf(new Uint8Array([1, 2, 3, 4])), /MThd/i);
+    assert.throws(() => parseSmf(new Uint8Array(0)), /MThd/i);
+  },
+  function quantizesOntoStudioSixteenths() {
+    // 480 ticks per quarter means one sixteenth is 120 ticks. A note at tick 240
+    // is the third sixteenth, i.e. step index 2.
+    const bytes = smfBytes({ division: 480, tracks: [[
+      ...vlq(240), 0x90, 60, 127,
+      ...vlq(120), 0x80, 60, 0,
+    ]] });
+    const studio = smfToStudio(parseSmf(bytes));
+    const steps = studio.tracks[0].steps;
+    assert.equal(steps[2].note, 60, 'lands on step 2');
+    assert.equal(steps[0], null);
+    assert.ok(steps[2].velocity > 0.9, 'velocity 127 maps near 1.0');
+  },
+  function clampsToSixTracksAndSixtyFourSteps() {
+    const track = (note) => [...vlq(0), 0x90, note, 100, ...vlq(120), 0x80, note, 0];
+    const song = parseSmf(smfBytes({ format: 1, tracks: [60, 61, 62, 63, 64, 65, 66, 67].map(track) }));
+    const studio = smfToStudio(song);
+    assert.equal(studio.tracks.length, 6, 'STUDIO has six parts');
+    for (const t of studio.tracks) assert.equal(t.steps.length, 64, 'four bars of sixteenths');
+  },
+  function dropsNotesBeyondFourBars() {
+    // Bar five starts at tick 480*4*4 = 7680; nothing there can be represented.
+    const bytes = smfBytes({ division: 480, tracks: [[
+      ...vlq(7680), 0x90, 60, 100,
+      ...vlq(120), 0x80, 60, 0,
+    ]] });
+    const studio = smfToStudio(parseSmf(bytes));
+    assert.ok(studio.tracks[0].steps.every((s) => s === null), 'past the window, so not silently folded back');
+    assert.ok(studio.dropped > 0, 'reports what would not fit');
+  },
+  function carriesTempoIntoStudioBpm() {
+    const bytes = smfBytes({ tracks: [[
+      ...vlq(0), 0xFF, 0x51, 0x03, 0x09, 0x27, 0xC0,   // 600000 us/qn = 100 bpm
+      ...vlq(0), 0x90, 60, 100, ...vlq(120), 0x80, 60, 0,
+    ]] });
+    assert.equal(Math.round(smfToStudio(parseSmf(bytes)).bpm), 100);
+  },
+  function producesStepsStudioAccepts() {
+    // The real contract: whatever comes out must survive the model's own
+    // normalizer unchanged, or it cannot be loaded into a project.
+    const bytes = smfBytes({ tracks: [[...vlq(0), 0x90, 60, 100, ...vlq(240), 0x80, 60, 0]] });
+    const step = smfToStudio(parseSmf(bytes)).tracks[0].steps[0];
+    assert.deepEqual(normalizeStep(step), step, 'round-trips through normalizeStep');
+  },
+];
+
 const groups = [
+  ['native rate', nativeRateCases],
+  ['midi file import', smfCases],
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],
   ['pattern compiler', patternCases],
