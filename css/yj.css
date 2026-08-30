@@ -593,6 +593,29 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-ab .yj-btn:first-child { border-radius: 2px 0 0 2px; }
 .yj-ab .yj-btn:last-child { border-radius: 0 2px 2px 0; border-left: none; }
 
+/* ---------- update offer ---------- */
+/* Sits above the status bar, never over the benches: an update is an offer, not
+   an interruption. */
+.yj-update {
+  position: fixed;
+  left: 0; right: 0; bottom: 22px;
+  z-index: 45;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 8px 12px;
+  background: var(--yj-well);
+  border-top: 1px solid var(--yj-line-hi);
+  font-family: var(--f-mono);
+}
+.yj-update[hidden] { display: none; }
+.yj-update-text {
+  font-size: 10.5px; letter-spacing: 0.08em; color: var(--yj-ink-dim);
+}
+.yj-btn-compact { font-size: 10px; padding: 4px 10px; }
+@media (max-width: 720px) {
+  .yj-update { flex-wrap: wrap; }
+  .yj-update-text { flex-basis: 100%; text-align: center; }
+}
+
 /* ---------- drop zone ---------- */
 .yj-drop {
   position: fixed; inset: 0;

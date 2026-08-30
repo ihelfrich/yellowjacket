@@ -3729,7 +3729,61 @@ const wavExportCases = [
   },
 ];
 
+// ---------- update safety ----------
+//
+// The seven Workers are fetched lazily by `new Worker()` at first use, so they
+// resolve through whatever service worker controls the page AT THAT MOMENT, not
+// the one that served its modules. skipWaiting + clients.claim therefore hands a
+// running page a NEWER worker than its own code, while the activate handler
+// deletes the cache that page was still reading from. A bench holding an
+// unsaved session must never be reconfigured underneath itself.
+
+const updateSafetyCases = [
+  async function serviceWorkerDoesNotSeizeAlreadyOpenPages() {
+    const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
+    // Isolate the install listener alone: the message listener that follows it
+    // legitimately calls skipWaiting, so slicing to 'activate' would swallow it.
+    const start = sw.indexOf("self.addEventListener('install'");
+    assert.ok(start >= 0, 'install listener exists');
+    const next = sw.indexOf('self.addEventListener(', start + 20);
+    const install = sw.slice(start, next < 0 ? sw.length : next);
+    assert.doesNotMatch(install, /skipWaiting/,
+      'install must not take over pages running the previous build');
+    assert.doesNotMatch(sw, /clients\.claim\(\)/,
+      'claiming an open page swaps its lazily-fetched workers mid-session');
+    // Every skipWaiting CALL must be the request-driven one. Matching on the
+    // parentheses keeps prose about skipWaiting from counting as a call.
+    const calls = sw.match(/skipWaiting\s*\(/g) || [];
+    assert.equal(calls.length, 1, 'exactly one skipWaiting call, in the message handler');
+  },
+  async function serviceWorkerStillActivatesOnUserRequest() {
+    // Waiting forever is not the goal: the page offers a reload, and this is
+    // the channel that honours it.
+    const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
+    assert.match(sw, /addEventListener\('message'/, 'listens for the page');
+    assert.match(sw, /SKIP_WAITING/, 'honours an explicit request to take over');
+    assert.match(sw, /self\.skipWaiting\(\)/, 'skipWaiting still exists, but only on request');
+  },
+  async function oldCachesSurviveUntilTheOldPagesAreGone() {
+    // The delete sweep runs in activate, which — without skipWaiting — cannot
+    // run while a page from the previous version is still open.
+    const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
+    const activate = sw.slice(sw.indexOf("addEventListener('activate'"));
+    assert.match(activate, /caches\.delete/, 'still cleans up, just not underneath a live page');
+  },
+  async function thePageOffersAnUpdateInsteadOfApplyingItSilently() {
+    const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    assert.match(index, /updatefound/, 'notices a new build');
+    assert.match(index, /controllerchange/, 'reloads only once the new worker is in charge');
+    assert.match(index, /SKIP_WAITING/, 'the reload affordance asks the worker to take over');
+    // An unsaved audio session must not be discarded by an automatic reload.
+    assert.doesNotMatch(index, /updatefound[\s\S]{0,400}location\.reload\(\)/,
+      'no reload without the user asking for it');
+  },
+];
+
 const groups = [
+  ['update safety', updateSafetyCases],
   ['wav export', wavExportCases],
   ['native rate', nativeRateCases],
   ['midi file import', smfCases],

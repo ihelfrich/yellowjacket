@@ -3,7 +3,7 @@
 // Cross-origin requests (CDN transformers.js, HF model shards) are never intercepted;
 // they manage their own caching. Scope-relative URLs keep this working under
 // the /yellowjacket/ GitHub Pages subpath.
-const VERSION = 'yj-v35';
+const VERSION = 'yj-v36';
 
 const PRECACHE = [
   'js/app/persist.js',
@@ -107,14 +107,32 @@ const PRECACHE = [
   './workers/whisper-worker.js'
 ];
 
+// Deliberately NO skipWaiting here, and no clients.claim below.
+//
+// The seven Workers are created lazily by `new Worker()` the first time a bench
+// needs one, so they are fetched through whichever service worker controls the
+// page at that moment — not the one that served the page's modules. Taking over
+// an open tab would therefore hand a page running the previous build a worker
+// from the new one, and the cache sweep in activate would delete the cache that
+// page was still reading from. Yellowjacket holds an unsaved session with
+// decoded audio in memory, so being reconfigured underneath yourself is the
+// worst available outcome.
+//
+// Instead the new worker installs, precaches, and waits. The page notices it,
+// offers a reload, and only then sends SKIP_WAITING. An update lands when the
+// person says so, or on their next natural visit.
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(VERSION)
-      .then((cache) => cache.addAll(PRECACHE))
-      .then(() => self.skipWaiting())
+    caches.open(VERSION).then((cache) => cache.addAll(PRECACHE))
   );
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+// Reached only once every page from the previous version is gone, which is
+// exactly when its cache is safe to drop.
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
@@ -125,7 +143,6 @@ self.addEventListener('activate', (event) => {
           .filter((key) => key.startsWith('yj-') && key !== VERSION)
           .map((key) => caches.delete(key))
       ))
-      .then(() => self.clients.claim())
   );
 });
 

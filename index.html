@@ -432,6 +432,12 @@
   &middot; free for noncommercial use &middot; commercial licensing by arrangement
   &middot; <a href="https://github.com/ihelfrich/yellowjacket/blob/main/LICENSE.md" target="_blank" rel="noopener">license</a>
 </div>
+<div class="yj-update" id="updateBar" role="status" hidden>
+  <span class="yj-update-text">A NEW BUILD IS READY. YOUR SESSION IS UNTOUCHED UNTIL YOU RELOAD.</span>
+  <button id="btnUpdate" class="yj-btn yj-btn-primary yj-btn-compact">RELOAD</button>
+  <button id="btnUpdateLater" class="yj-btn yj-btn-compact">NOT NOW</button>
+</div>
+
 <footer class="yj-status">
   <div id="stLeft">IDLE</div>
   <div id="stRight">NO FILE</div>
@@ -442,8 +448,32 @@
 <script type="module" src="js/main.js"></script>
 <script>
 // Offline caching for the deployed site only; on localhost it would serve stale dev files.
+// A new build installs and WAITS rather than seizing this tab: the bench may be holding a
+// decoded recording and an unsaved session, and swapping its assets underneath it would
+// pair old page code with new lazily-fetched workers. The update is offered, never applied.
 if ('serviceWorker' in navigator && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-  navigator.serviceWorker.register('sw.js');
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    function offer(worker) {
+      // A worker reaching 'installed' with no existing controller is the FIRST
+      // install — nothing to update, and no reason to interrupt anyone.
+      if (!worker || worker.state !== 'installed' || !navigator.serviceWorker.controller) return;
+      const bar = document.getElementById('updateBar');
+      if (!bar || !bar.hidden) return;
+      bar.hidden = false;
+      document.getElementById('btnUpdate').addEventListener('click', () => {
+        // Reload only after the new worker is actually in charge, so the fresh
+        // page is served a consistent set rather than a mix of both builds.
+        navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+        worker.postMessage({ type: 'SKIP_WAITING' });
+      }, { once: true });
+      document.getElementById('btnUpdateLater').addEventListener('click', () => { bar.hidden = true; }, { once: true });
+    }
+    if (reg.waiting) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const installing = reg.installing;
+      if (installing) installing.addEventListener('statechange', () => offer(installing));
+    });
+  }).catch(() => { /* offline caching is a bonus, never a requirement */ });
 }
 </script>
 </body>

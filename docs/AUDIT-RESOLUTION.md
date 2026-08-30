@@ -105,3 +105,32 @@ crate first.
    than a hardcoded 48000.
 4. An arrangement surface for two live sources — real work, and the only item
    here that is a redesign rather than a repair.
+
+---
+
+## 6. A deploy reconfigured open tabs underneath them (fixed)
+
+Found while verifying the items above, and the cause of several "the feature is
+broken" readings that were nothing of the kind.
+
+`sw.js` called `self.skipWaiting()` on install and `self.clients.claim()` on
+activate, so a new build took control of tabs that were **already running the
+previous build's JavaScript**. That matters here specifically because all seven
+Workers are created lazily by `new Worker()` at first use — HARVEST, TRANSCRIBE,
+the spectrogram, denoise, repair, loudness, analysis. They are fetched when the
+bench first needs them, through whichever service worker controls the page *at
+that moment*. So an open tab could hand work to a worker from a build its own
+code had never seen. Worse, the activate handler then deleted the cache that
+same page was still reading from.
+
+The window is not theoretical: the bench holds decoded audio and an unsaved
+session, and the benches most likely to be reached late in a session are exactly
+the ones that spawn workers.
+
+The fix keeps the new worker waiting instead. It installs, precaches, and stops;
+the page notices it and offers a reload; only then does it receive
+`SKIP_WAITING` and take over, with the reload deferred until `controllerchange`
+so the fresh page gets one consistent set. Nothing reloads on its own, because
+an automatic reload would discard the session it was trying to protect. The
+cache sweep now runs only when every page from the old build is gone, which is
+precisely when its cache is safe to drop.
