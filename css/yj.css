@@ -610,7 +610,6 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-update-text {
   font-size: 10.5px; letter-spacing: 0.08em; color: var(--yj-ink-dim);
 }
-.yj-btn-compact { font-size: 10px; padding: 4px 10px; }
 @media (max-width: 720px) {
   .yj-update { flex-wrap: wrap; }
   .yj-update-text { flex-basis: 100%; text-align: center; }
