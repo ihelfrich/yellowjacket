@@ -801,6 +801,21 @@ const persistCases = [
       assert.deepEqual(new Uint8Array(again.bytes), new Uint8Array(f.bytes), 'f32 bytes bit-identical: ' + f.id);
     }
   },
+  function v2RestoreReconcilesAssetAllocationWithoutChangingTheWriter() {
+    // A v2 document has assets but no allocator. Restoring it must make the
+    // current legacy assignment path issue a2 rather than rejecting or reusing a1.
+    const source = createProject(persistChain());
+    assert.equal(registerAsset(source, { kind: 'sample', label: 'FIRST', sampleRate: 44100, frames: 1 }), 'a1');
+    const json = serializeProject(source, { repairs: [], sourceBytes: null }).json;
+    assert.equal(json.formatVersion, 2, 'this is the unchanged v2 writer');
+    assert.equal('allocators' in json, false, 'v2 does not write the new allocator field');
+    const restored = createProject(persistChain());
+    applySnapshot(json, { project: restored, runtime: { repairs: [], analysis: null, sourceBytes: null } });
+    assert.equal(restored.allocators.asset, 1, 'restored a1 advances the project-local allocator');
+    assert.equal(registerAsset(restored, { kind: 'sample', label: 'SECOND', sampleRate: 44100, frames: 1 }), 'a2');
+    assert.deepEqual(Object.keys(restored.assets), ['a1', 'a2'], 'the legacy path neither reuses nor scans down');
+    assert.equal(restored.assets.a2.id, 'a2');
+  },
   function applyMutatesInPlace() {
     const { p, r } = persistFixture();
     const { json } = serializeProject(p, r);

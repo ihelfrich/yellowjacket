@@ -565,6 +565,15 @@ export const projectStoreV3Cases = [
     assert.equal(allocateProjectId(second, 'asset'), 'a1', 'projects do not share allocation state');
   },
 
+  function legacyAssetMetadataCannotOverrideTheAllocatedRecordId() {
+    // Mutation caught: spreading caller metadata over the allocated identity,
+    // leaving an a1 map key whose record claims to be a999.
+    const project = createProject([]);
+    assert.equal(registerAsset(project, { id: 'a999', kind: 'sample' }), 'a1');
+    assert.equal(project.assets.a1.id, 'a1', 'record identity always equals its project key');
+    assert.equal(project.assets.a999, undefined, 'caller metadata cannot claim another asset slot');
+  },
+
   async function ownsOnlyVerifiedPreparedPcmAndHydratesDisposableTrackSamples() {
     // Mutation caught: accepting raw/unverified bytes, retaining caller/playback
     // storage, or allowing a stale allocator to replace existing PCM ownership.
@@ -607,6 +616,26 @@ export const projectStoreV3Cases = [
     await assert.rejects(registerPreparedAsset(store.project, store.runtime, replacement), RangeError,
       'a stale allocator cannot rewrite a1 with different bytes');
     assert.deepEqual(Array.from(owner.copyBytes()), Array.from(originalBytes), 'the original owner remains authoritative');
+  },
+
+  async function rejectsPcmBearingOrUnknownPreparedMetadataWithoutMutation() {
+    // Mutation caught: accepting JSON-shaped raw ownership into the serializable
+    // asset document, even though only the verified owner may hold PCM bytes.
+    const rejectedFields = [
+      ['channels', { channels: [[0, 0.5], [-0.5, 1]] }],
+      ['raw bytes', { bytes: [0, 0, 0, 0] }],
+      ['raw bytes alias', { rawBytes: [0, 0, 0, 0] }],
+      ['ownership', { ownership: { owner: 'untrusted' } }],
+    ];
+    for (const [label, extra] of rejectedFields) {
+      const store = new ProjectStore([]);
+      const prepared = await preparedStereoSample();
+      Object.assign(prepared.meta, extra);
+      await assert.rejects(registerPreparedAsset(store.project, store.runtime, prepared), TypeError, label);
+      assert.equal(store.project.allocators.asset, 0, label + ' leaves allocation unchanged');
+      assert.deepEqual(store.project.assets, {}, label + ' leaves metadata empty');
+      assert.equal(store.runtime.assetPcm.size, 0, label + ' installs no owner');
+    }
   },
 
   function noHistoryUpdatesNotifyWithoutChangingUndoOrRedo() {

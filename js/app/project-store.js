@@ -190,7 +190,7 @@ export function allocateProjectId(project, kind) {
 
 export function registerAsset(project, meta) {
   const id = allocateProjectId(project, 'asset');
-  project.assets[id] = { id, ...meta };
+  project.assets[id] = { ...meta, id };
   return id;
 }
 
@@ -204,12 +204,23 @@ function jsonMetadata(meta) {
   }
 }
 
+const PREPARED_ASSET_FIELDS = new Set([
+  'kind', 'label', 'sampleRate', 'channelCount', 'frames', 'payload', 'role', 'provenance',
+]);
+
+function isPreparedAssetMetadata(meta) {
+  if (!meta || Object.keys(meta).some((key) => !PREPARED_ASSET_FIELDS.has(key))) return false;
+  if (!meta.payload || typeof meta.payload !== 'object' || Array.isArray(meta.payload)) return false;
+  const payloadKeys = Object.keys(meta.payload);
+  return payloadKeys.length === 2 && payloadKeys.includes('byteLength') && payloadKeys.includes('sha256');
+}
+
 export async function registerPreparedAsset(project, runtime, prepared) {
   if (!runtime || !(runtime.assetPcm instanceof Map) || !prepared || typeof prepared !== 'object') {
     throw new TypeError('Prepared asset runtime is invalid');
   }
   const meta = jsonMetadata(prepared.meta);
-  if (!meta) throw new TypeError('Prepared asset metadata is invalid');
+  if (!isPreparedAssetMetadata(meta)) throw new TypeError('Prepared asset metadata is invalid');
   // Raw bytes remain outside the project until this asynchronous digest check
   // has produced a private CanonicalPcm owner.
   const { CanonicalPcm } = await import('./sample-payload.js');

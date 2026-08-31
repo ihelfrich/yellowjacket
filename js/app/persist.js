@@ -477,6 +477,20 @@ export function applySnapshot(json, { project, runtime }) {
       }
     }
   }
+  // Format v2 has no persisted allocators, but the current legacy assignment
+  // path already uses project-local asset IDs. Lift only a valid live counter
+  // above restored aN keys; allocation itself still rejects stale documents.
+  if (project.allocators && Number.isSafeInteger(project.allocators.asset)
+      && project.allocators.asset >= 0) {
+    let highest = 0;
+    for (const id of Object.keys(project.assets)) {
+      const match = /^a([1-9][0-9]*)$/.exec(id);
+      if (!match) continue;
+      const suffix = Number(match[1]);
+      if (Number.isSafeInteger(suffix)) highest = Math.max(highest, suffix);
+    }
+    project.allocators.asset = Math.max(project.allocators.asset, highest);
+  }
 
   runtime.repairs.length = 0;
   if (Array.isArray(json.repairs)) {
