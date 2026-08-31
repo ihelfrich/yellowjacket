@@ -113,7 +113,7 @@ function hydrateFacade(project, runtime, record, document, prepared) {
   runtime.peaks = prepared.peaks;
   runtime.generation++;
   runtime.original = null;
-  runtime.sourceBytes = prepared.bytes;
+  runtime.sourceBytes = prepared.bytes.slice();
   runtime.sourceHash = prepared.sourceId;
 }
 
@@ -265,7 +265,37 @@ function eventCallback(listener) {
   return null;
 }
 
-export class SourceSession {
+function captureOption(options) {
+  return typeof options === 'boolean' ? options : !!(options && options.capture);
+}
+
+function reportWithoutThrow(reporter, error) {
+  try {
+    const reported = reporter(error);
+    if (isThenable(reported)) Promise.resolve(reported).catch(NOOP);
+  } catch (reportingError) {
+    // Error reporting cannot become a second observer fault.
+  }
+}
+
+function observeThenable(result, reporter) {
+  try {
+    if (isThenable(result)) {
+      Promise.resolve(result).catch((error) => reportWithoutThrow(reporter, error));
+    }
+  } catch (error) {
+    reportWithoutThrow(reporter, error);
+  }
+}
+
+export class SourceSession extends EventTarget {
+  #requestToken = 0;
+  #currentHandle = null;
+  #preparedByHandle = new WeakMap();
+  #preparationLane = Promise.resolve();
+  #laneState = null;
+  #listenerRecords = [];
+
   constructor({
     store,
     engine,
@@ -275,9 +305,11 @@ export class SourceSession {
     clock = Date.now,
     stopTransport = NOOP,
     stopAudition = NOOP,
+    reportAsyncError = NOOP,
     hooks = {},
   } = {}) {
-    if (!store || !store.project || !store.runtime || typeof store.update !== 'function') {
+    super();
+    if (!store || !store.project || !store.runtime || typeof store.finalizeSourceNavigation !== 'function') {
       throw new TypeError('SourceSession requires a ProjectStore');
     }
     if (!engine || typeof engine.decode !== 'function' || typeof engine.install !== 'function'
@@ -295,45 +327,77 @@ export class SourceSession {
     this.clock = requireFunction(clock, 'clock');
     this.stopTransport = requireFunction(stopTransport, 'stopTransport');
     this.stopAudition = requireFunction(stopAudition, 'stopAudition');
+    this.reportAsyncError = requireFunction(reportAsyncError, 'reportAsyncError');
     this.hooks = { afterPrepare: NOOP };
     for (const name of COMMIT_HOOKS) this.hooks[name] = NOOP;
     for (const [name, callback] of Object.entries(hooks || {})) {
       if (!(name in this.hooks)) throw new TypeError('Unknown SourceSession hook: ' + name);
       this.hooks[name] = requireFunction(callback, name);
     }
-    this._requestToken = 0;
-    this._staged = null;
-    this._listeners = new Map();
   }
 
   addEventListener(type, listener, options = {}) {
     const callback = eventCallback(listener);
-    if (!callback) return;
-    let listeners = this._listeners.get(type);
-    if (!listeners) {
-      listeners = [];
-      this._listeners.set(type, listeners);
-    }
-    if (listeners.some((entry) => entry.listener === listener)) return;
-    listeners.push({ listener, callback, once: !!(options && options.once) });
-  }
-
-  removeEventListener(type, listener) {
-    const listeners = this._listeners.get(type);
-    if (!listeners) return;
-    this._listeners.set(type, listeners.filter((entry) => entry.listener !== listener));
-  }
-
-  _emit(type, detail) {
-    const event = { type, detail, target: this, currentTarget: this };
-    for (const entry of [...(this._listeners.get(type) || [])]) {
+    if (!callback) return super.addEventListener(type, listener, options);
+    const eventType = String(type);
+    const capture = captureOption(options);
+    if (this.#listenerRecords.some((entry) => entry.type === eventType
+        && entry.listener === listener && entry.capture === capture)) return;
+    const signal = typeof options === 'object' && options ? options.signal : null;
+    if (signal && signal.aborted) return;
+    const record = {
+      type: eventType,
+      listener,
+      capture,
+      once: !!(typeof options === 'object' && options && options.once),
+      wrapper: null,
+      signal,
+      abortCleanup: null,
+    };
+    record.wrapper = (event) => {
+      if (record.once) this.#forgetListener(record);
+      let result;
       try {
-        entry.callback(event);
+        result = callback(event);
       } catch (error) {
-        // Rendering/listener work observes a coherent commit and cannot roll it back.
+        reportWithoutThrow(this.reportAsyncError, error);
+        return;
       }
-      if (entry.once) this.removeEventListener(type, entry.listener);
+      observeThenable(result, this.reportAsyncError);
+    };
+    this.#listenerRecords.push(record);
+    if (signal) {
+      record.abortCleanup = () => this.#removeListenerRecord(record);
+      signal.addEventListener('abort', record.abortCleanup, { once: true });
     }
+    try {
+      super.addEventListener(eventType, record.wrapper, options);
+    } catch (error) {
+      this.#forgetListener(record);
+      throw error;
+    }
+  }
+
+  removeEventListener(type, listener, options = {}) {
+    const eventType = String(type);
+    const capture = captureOption(options);
+    const record = this.#listenerRecords.find((entry) => entry.type === eventType
+      && entry.listener === listener && entry.capture === capture);
+    if (!record) return super.removeEventListener(eventType, listener, options);
+    this.#removeListenerRecord(record, options);
+  }
+
+  #forgetListener(record) {
+    const index = this.#listenerRecords.indexOf(record);
+    if (index >= 0) this.#listenerRecords.splice(index, 1);
+    if (record.signal && record.abortCleanup) {
+      record.signal.removeEventListener('abort', record.abortCleanup);
+    }
+  }
+
+  #removeListenerRecord(record, options = record.capture) {
+    this.#forgetListener(record);
+    super.removeEventListener(record.type, record.wrapper, options);
   }
 
   projectActiveFacade() {
@@ -347,17 +411,18 @@ export class SourceSession {
     return document;
   }
 
-  _beginRequest() {
-    this._requestToken++;
-    this._staged = null;
-    return this._requestToken;
+  #beginRequest() {
+    this.#requestToken++;
+    if (this.#currentHandle) this.#preparedByHandle.delete(this.#currentHandle);
+    this.#currentHandle = null;
+    return this.#requestToken;
   }
 
-  _current(token) {
-    return token === this._requestToken;
+  #current(token) {
+    return token === this.#requestToken;
   }
 
-  _capture(sourceId, token) {
+  #capture(sourceId, token) {
     const { project, runtime } = this.store;
     const graph = validateSourceGraph(project);
     if (!graph.ok) throw new TypeError('source graph is invalid: ' + graph.issues.join(', '));
@@ -392,9 +457,9 @@ export class SourceSession {
     };
   }
 
-  _basisIsCurrent(prepared) {
+  #basisIsCurrent(prepared) {
     const { project, runtime } = this.store;
-    if (!this._current(prepared.token)
+    if (!this.#current(prepared.token)
         || this.store.revision !== prepared.revision
         || project.activeSourceId !== prepared.previousSourceId
         || runtime.facadeEpoch !== prepared.facadeEpoch
@@ -409,11 +474,14 @@ export class SourceSession {
     }
   }
 
-  async _prepareActivation(sourceId, token) {
-    const prepared = this._capture(sourceId, token);
+  async #prepareActivation(sourceId, token) {
+    if (!this.#current(token)) return null;
+    const prepared = this.#capture(sourceId, token);
+    this.#laneState = prepared;
+    let handle = null;
     try {
       const payload = await this.payloads.get(sourceId);
-      if (!this._current(token)) return null;
+      if (!this.#current(token)) return null;
       if (payload === null) throw new Error('source payload is unavailable');
       const bytes = copyPayloadBytes(payload);
       if (bytes.byteLength !== prepared.targetRecordRef.payload.byteLength) {
@@ -421,73 +489,96 @@ export class SourceSession {
       }
 
       const actualId = await sourceIdFor(bytes);
-      if (!this._current(token)) return null;
+      if (!this.#current(token)) return null;
       if (actualId !== sourceId) throw new TypeError('source payload digest does not match its source ID');
 
       const decodeInput = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       const decoded = await this.engine.decode(decodeInput);
-      if (!this._current(token)) return null;
+      if (!this.#current(token)) return null;
       validateClipRefs(this.store.project, sourceId, decoded);
 
       const peaks = await this.buildPeaks(decoded.mono);
-      if (!this._current(token)) return null;
+      if (!this.#current(token)) return null;
       Object.assign(prepared, { bytes, decoded, peaks });
 
-      await this.hooks.afterPrepare(prepared);
-      if (!this._current(token)) return null;
-      if (!this._basisIsCurrent(prepared)) return null;
-      this._staged = prepared;
-      return prepared;
+      await this.hooks.afterPrepare(Object.freeze({}));
+      if (!this.#current(token)) return null;
+      if (!this.#basisIsCurrent(prepared)) {
+        return null;
+      }
+      handle = Object.freeze({});
+      this.#preparedByHandle.set(handle, prepared);
+      this.#currentHandle = handle;
+      return handle;
     } catch (error) {
-      if (this._current(token)) this._staged = null;
+      if (handle) this.#preparedByHandle.delete(handle);
+      if (handle === this.#currentHandle) this.#currentHandle = null;
+      if (!this.#current(token)) return null;
       throw error;
+    } finally {
+      if (this.#laneState === prepared) this.#laneState = null;
     }
+  }
+
+  #queuePreparation(sourceId, token) {
+    const result = this.#preparationLane.then(() => this.#prepareActivation(sourceId, token));
+    this.#preparationLane = result.then(NOOP, NOOP);
+    return result;
   }
 
   prepareActivation(sourceId) {
-    const token = this._beginRequest();
-    return this._prepareActivation(sourceId, token);
+    const token = this.#beginRequest();
+    return this.#queuePreparation(sourceId, token);
   }
 
   async activate(sourceId) {
-    const token = this._beginRequest();
-    const prepared = await this._prepareActivation(sourceId, token);
-    if (!prepared || !this._current(token)) return false;
-    return this.commitActivation(prepared);
+    const token = this.#beginRequest();
+    const handle = await this.#queuePreparation(sourceId, token);
+    if (!handle || !this.#current(token)) return false;
+    return this.commitActivation(handle);
   }
 
-  commitActivation(prepared) {
-    if (!prepared || prepared !== this._staged || !this._basisIsCurrent(prepared)) {
-      if (prepared === this._staged) this._staged = null;
+  commitActivation(handle) {
+    const prepared = handle && this.#preparedByHandle.get(handle);
+    if (!prepared || handle !== this.#currentHandle || !this.#basisIsCurrent(prepared)) {
+      if (handle === this.#currentHandle) {
+        this.#preparedByHandle.delete(handle);
+        this.#currentHandle = null;
+      }
       return false;
     }
+    this.#preparedByHandle.delete(handle);
+    this.#currentHandle = null;
 
     let activatedAt;
     try {
-      this.store.update('source-navigation', (project, runtime) => {
-        if (!this._basisIsCurrent(prepared)) throw new Error('prepared activation became stale');
-        callSynchronous(this.stopTransport, 'stopTransport', prepared);
-        callSynchronous(this.stopAudition, 'stopAudition', prepared);
-        callSynchronous(this.hooks.beforeInstall, 'beforeInstall', prepared);
+      this.store.finalizeSourceNavigation((project, runtime) => {
+        if (!this.#basisIsCurrent(prepared)) throw new Error('prepared activation became stale');
+        callSynchronous(this.stopTransport, 'stopTransport', handle);
+        callSynchronous(this.stopAudition, 'stopAudition', handle);
+        callSynchronous(this.hooks.beforeInstall, 'beforeInstall', handle);
         if (this.engine.install(prepared.decoded) !== true) throw new Error('source install failed');
-        callSynchronous(this.hooks.afterInstall, 'afterInstall', prepared);
-        callSynchronous(this.hooks.beforeFacadeHydrate, 'beforeFacadeHydrate', prepared);
+        callSynchronous(this.hooks.afterInstall, 'afterInstall', handle);
+        callSynchronous(this.hooks.beforeFacadeHydrate, 'beforeFacadeHydrate', handle);
 
         const targetRecord = project.sources[prepared.sourceId];
         hydrateFacade(project, runtime, targetRecord, prepared.targetDocument, prepared);
-        callSynchronous(this.hooks.beforeRegistryPatch, 'beforeRegistryPatch', prepared);
+        callSynchronous(this.hooks.beforeRegistryPatch, 'beforeRegistryPatch', handle);
 
         if (prepared.previousSourceId === prepared.sourceId) {
-          targetRecord.document = prepared.priorProjection;
+          targetRecord.document = jsonCopy(prepared.priorProjection);
         } else {
-          project.sources[prepared.previousSourceId].document = prepared.priorProjection;
-          targetRecord.document = prepared.targetDocument;
+          project.sources[prepared.previousSourceId].document = jsonCopy(prepared.priorProjection);
+          targetRecord.document = jsonCopy(prepared.targetDocument);
         }
         project.activeSourceId = prepared.sourceId;
         runtime.facadeEpoch++;
-        activatedAt = callSynchronous(this.clock, 'clock', prepared);
-        callSynchronous(this.hooks.beforeActivateEvent, 'beforeActivateEvent', prepared);
-      }, { history: 'none' });
+        activatedAt = callSynchronous(this.clock, 'clock', handle);
+        if (typeof activatedAt !== 'number' || !Number.isFinite(activatedAt)) {
+          throw new TypeError('clock must return a finite number');
+        }
+        callSynchronous(this.hooks.beforeActivateEvent, 'beforeActivateEvent', handle);
+      });
     } catch (error) {
       const rollbackErrors = [];
       try {
@@ -503,26 +594,29 @@ export class SourceSession {
       this.store.project.activeSourceId = prepared.previousSourceId;
       this.store.runtime.facadeEpoch = prepared.facadeEpoch;
       this.store.revision = prepared.revision;
-      this._staged = null;
       if (rollbackErrors.length) {
         throw new AggregateError([error, ...rollbackErrors], 'source activation rollback failed');
       }
       throw error;
     }
 
-    this._staged = null;
-    const detail = {
+    const detail = Object.freeze({
       sourceId: prepared.sourceId,
       previousSourceId: prepared.previousSourceId,
       facadeEpoch: this.store.runtime.facadeEpoch,
       revision: this.store.revision,
       activatedAt,
-    };
-    this._emit('sourceactivated', detail);
+    });
+    this.dispatchEvent(new CustomEvent('sourceactivated', { detail }));
+    const command = Object.freeze({
+      sourceId: this.store.project.activeSourceId,
+      facadeEpoch: this.store.runtime.facadeEpoch,
+      revision: this.store.revision,
+    });
     try {
-      this.scheduleAfterActivation(detail);
+      observeThenable(this.scheduleAfterActivation(command), this.reportAsyncError);
     } catch (error) {
-      // Scheduling/rendering faults cannot fracture an already coherent commit.
+      reportWithoutThrow(this.reportAsyncError, error);
     }
     return true;
   }

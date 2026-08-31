@@ -645,6 +645,7 @@ class CredibleSessionEngine {
       [4, ['B', 4]],
     ]);
     this.decodeCalls = [];
+    this.decodedResults = [];
     this.installCalls = [];
     this.restoreCalls = [];
     this.decodeFault = null;
@@ -666,10 +667,11 @@ class CredibleSessionEngine {
   gateDecode(firstByte) {
     let enter;
     let release;
+    let reject;
     const entered = new Promise((resolve) => { enter = resolve; });
-    const waiting = new Promise((resolve) => { release = resolve; });
-    this._gates.set(firstByte, { enter, release, entered, waiting });
-    return { entered, release };
+    const waiting = new Promise((resolve, rejectWaiting) => { release = resolve; reject = rejectWaiting; });
+    this._gates.set(firstByte, { enter, release, reject, entered, waiting });
+    return { entered, release, reject };
   }
 
   async decode(arrayBuffer) {
@@ -684,7 +686,9 @@ class CredibleSessionEngine {
     if (this.decodeFault) throw this.decodeFault;
     const spec = this.sourceSpecs.get(bytes[0]);
     if (!spec) throw new Error('fixture cannot decode payload');
-    return decodedSessionSource(...spec);
+    const decoded = decodedSessionSource(...spec);
+    this.decodedResults.push(decoded);
+    return decoded;
   }
 
   install(source) {
@@ -776,6 +780,7 @@ async function sourceSessionFixture(options = {}) {
     stopTransport: options.stopTransport || (() => { stopCalls.push('transport'); }),
     stopAudition: options.stopAudition || (() => { stopCalls.push('audition'); }),
     clock: options.clock || (() => 1788134400999),
+    reportAsyncError: options.reportAsyncError,
     hooks: options.hooks,
   });
   const activationEvents = [];
@@ -889,7 +894,69 @@ function attachSmallHistory(store) {
   });
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function nextTurn() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function installLegacyMachineFixture(store) {
+  const track = store.project.machine.scenes[0].tracks[0];
+  const sample = {
+    channels: [Float32Array.of(0.25, -0.5, 0.75, -1)],
+    sampleRate: 48000,
+    label: 'HELD LEGACY SAMPLE',
+  };
+  const existingOwner = { sentinel: 'existing-asset-owner' };
+  track.sampleId = 'a1';
+  track.sample = sample;
+  store.runtime.assetPcm.set('a1', existingOwner);
+  return {
+    machine: store.project.machine,
+    track,
+    sample,
+    assetPcm: store.runtime.assetPcm,
+    entries: [...store.runtime.assetPcm],
+    existingOwner,
+  };
+}
+
+function assertLegacyMachineFixture(store, expected, label) {
+  assert.equal(store.project.machine, expected.machine, label + ' machine identity');
+  assert.equal(store.project.machine.scenes[0].tracks[0], expected.track, label + ' track identity');
+  assert.equal(expected.track.sample, expected.sample, label + ' sample identity');
+  assert.equal(store.runtime.assetPcm, expected.assetPcm, label + ' asset map identity');
+  assert.deepEqual([...store.runtime.assetPcm], expected.entries, label + ' asset map entries');
+  assert.equal(store.runtime.assetPcm.get('a1'), expected.existingOwner, label + ' asset owner identity');
+}
+
 export const sourceSessionCases = [
+  async function sourceNavigationFinalizerNeverReconcilesLegacyMachineOrAssetOwnership() {
+    const success = await sourceSessionFixture();
+    const successLegacy = installLegacyMachineFixture(success.store);
+    const successRevision = success.store.revision;
+    const changes = [];
+    success.store.addEventListener('change', (event) => changes.push(event.detail));
+    assert.equal(await success.session.activate(SOURCE_B), true);
+    assert.equal(success.store.revision, successRevision + 1, 'successful navigation advances exactly one revision');
+    assert.deepEqual(changes, [{ kind: 'source-navigation', revision: successRevision + 1 }],
+      'successful navigation emits exactly one dedicated store change');
+    assertLegacyMachineFixture(success.store, successLegacy, 'successful navigation');
+
+    const fault = new Error('late transaction fault');
+    const failed = await sourceSessionFixture({ hooks: { beforeActivateEvent: () => { throw fault; } } });
+    const failedLegacy = installLegacyMachineFixture(failed.store);
+    const failedBefore = activeState(failed);
+    await assert.rejects(failed.session.activate(SOURCE_B), fault);
+    assertActiveState(failed, failedBefore, 'legacy navigation fault');
+    assertLegacyMachineFixture(failed.store, failedLegacy, 'failed navigation');
+  },
+
   async function activeFacadeProjectionReplacesOnlyTheValidDocumentWithJsonSafeSourceFields() {
     const fixture = await sourceSessionFixture();
     const { store, session } = fixture;
@@ -994,7 +1061,6 @@ export const sourceSessionCases = [
     assert.equal(store.runtime.repairs.at(-1).id, 'repair-B-edit', 'B repair edit round-trips');
     assert.equal(engine.buffer.label, 'B', 'only the final active source remains installed');
     assert.deepEqual(engine.installCalls, ['B', 'A', 'B']);
-    assert.equal(session._staged, null, 'no decoded target remains staged after commit');
     assert.equal(activationEvents.length, 3, 'each coherent switch emits one event');
     assert.equal(scheduleCalls.length, 3, 'each coherent switch schedules once');
     assertGlobalState(store, global, 'round trip');
@@ -1014,10 +1080,8 @@ export const sourceSessionCases = [
 
     const preparedB = await session.prepareActivation(SOURCE_B);
 
-    assert.equal(preparedB.sourceId, SOURCE_B);
-    assert.equal(preparedB.decoded.buffer.label, 'B');
-    assert.equal(preparedB.peaks.label, 'peaks-B');
-    assert.equal(session._staged, preparedB, 'the prepared target is the sole staged decoded source');
+    assert.equal(Object.isFrozen(preparedB), true, 'prepare returns a frozen capability');
+    assert.deepEqual(Object.keys(preparedB), [], 'the capability exposes no canonical prepared state');
     assert.deepEqual(store.project, beforeProject, 'preparation mutates no project state');
     for (const [key, value] of Object.entries(beforeRuntime)) assert.equal(store.runtime[key], value, 'runtime ' + key + ' is untouched');
     const installed = engine.captureInstalled();
@@ -1029,14 +1093,13 @@ export const sourceSessionCases = [
     assert.deepEqual(fixture.scheduleCalls, []);
 
     const preparedA = await session.prepareActivation(SOURCE_A);
-    assert.equal(session._staged, preparedA, 'a newer prepare releases the prior staged target');
-    assert.equal(preparedA.sourceId, SOURCE_A);
+    assert.equal(Object.isFrozen(preparedA), true, 'a newer prepare returns another opaque capability');
+    assert.equal(session.commitActivation(preparedB), false, 'the older capability is stale');
 
     store.project.clips.push({ id: 'c-b-invalid', sourceId: SOURCE_B, start: 3.5, end: 4.5 });
     const engineBeforeFault = engine.captureInstalled();
     await assert.rejects(session.prepareActivation(SOURCE_B), /clip.*duration|range/i,
       'actual decoded duration rejects an out-of-range target ClipRef');
-    assert.equal(session._staged, null, 'rejected decoded data is quarantined');
     assert.equal(engine.installCalls.length, 0, 'invalid clips reject before install');
     for (const key of Object.keys(engineBeforeFault)) {
       assert.equal(engine.captureInstalled()[key], engineBeforeFault[key], 'clip fault preserves engine ' + key);
@@ -1076,7 +1139,6 @@ export const sourceSessionCases = [
       await assert.rejects(fixture.session.activate(SOURCE_B), pattern, label);
       assertActiveState(fixture, before, label);
       assert.equal(fixture.engine.installCalls.length, 0, label + ' installs nothing');
-      assert.equal(fixture.session._staged, null, label + ' retains no staged decode');
     }
 
     const lengthFixture = await sourceSessionFixture();
@@ -1093,15 +1155,16 @@ export const sourceSessionCases = [
     const lateA = session.activate(SOURCE_A);
     await gate.entered;
     const newerB = session.activate(SOURCE_B);
-    assert.equal(await newerB, true, 'the newer request commits');
+    await nextTurn();
+    assert.equal(engine.decodeCalls.length, 1, 'newer B waits for the non-cancellable A decode lane');
     gate.release();
     assert.equal(await lateA, false, 'the late request is stale rather than installed');
+    assert.equal(await newerB, true, 'the newer request commits after A releases');
     assert.equal(store.project.activeSourceId, SOURCE_B);
     assert.equal(engine.buffer.label, 'B');
     assert.deepEqual(engine.installCalls, ['B'], 'only B installs');
     assert.deepEqual(activationEvents.map((detail) => detail.sourceId), [SOURCE_B], 'only B emits');
     assert.deepEqual(scheduleCalls.map((detail) => detail.sourceId), [SOURCE_B], 'only B schedules');
-    assert.equal(session._staged, null, 'late A is released');
   },
 
   async function revisionAndDirectFacadeRacesDuringDecodeCannotOverwriteNewerActiveEdits() {
@@ -1151,7 +1214,6 @@ export const sourceSessionCases = [
       for (const key of Object.keys(before.engine)) {
         assert.equal(restoredCheckpoint[key], before.engine[key], hookName + ' restores exact engine ' + key);
       }
-      assert.equal(fixture.session._staged, null, hookName + ' releases staged B');
     }
 
     for (const callbackName of ['stopTransport', 'stopAudition']) {
@@ -1205,6 +1267,367 @@ export const sourceSessionCases = [
     await assert.rejects(asyncCommitHook.session.activate(SOURCE_B), /synchronous/i,
       'commit hooks cannot quietly defer work past the transaction');
     assertActiveState(asyncCommitHook, asyncBefore, 'async commit hook');
+  },
+
+  async function preparedCapabilitiesAreOpaqueAuthenticSingleUseAndCannotAliasCommittedState() {
+    class RetainingPayloadStore extends MemorySourcePayloadStore {
+      async get(id) {
+        const bytes = await super.get(id);
+        if (id === SOURCE_B) this.returnedB = bytes;
+        return bytes;
+      }
+    }
+    const payloads = new RetainingPayloadStore();
+    const fixture = await sourceSessionFixture({ payloads });
+    const { session, store } = fixture;
+    const handle = await session.prepareActivation(SOURCE_B);
+
+    assert.equal(Object.isFrozen(handle), true, 'prepared capability is immutable');
+    assert.deepEqual(Object.keys(handle), [], 'decoded data and checkpoints are not caller-visible');
+    assert.equal(Reflect.set(handle, 'targetDocument', { words: [{ text: 'forged' }] }), false,
+      'a caller cannot inject a target document');
+    assert.equal(session.commitActivation(Object.freeze({})), false, 'an unbranded object is rejected');
+    assert.equal(session.commitActivation(structuredClone(handle)), false, 'a cloned empty shape cannot forge the brand');
+
+    assert.equal(session.commitActivation(handle), true, 'the authentic current capability commits once');
+    const documentAfterCommit = structuredClone(store.project.sources[SOURCE_B].document);
+    const bytesAfterCommit = Array.from(store.runtime.sourceBytes);
+    payloads.returnedB[0] = 255;
+    Reflect.set(handle, 'bytes', Uint8Array.of(9, 9, 9, 9));
+    Reflect.set(handle, 'document', { words: [{ text: 'post-commit-forgery' }] });
+    assert.deepEqual(store.project.sources[SOURCE_B].document, documentAfterCommit,
+      'post-commit handle mutation cannot alias the active document');
+    assert.deepEqual(Array.from(store.runtime.sourceBytes), bytesAfterCommit,
+      'runtime owns bytes independently of payload and handle references');
+    assert.equal(session.commitActivation(handle), false, 'a consumed capability cannot commit twice');
+
+    const staleFixture = await sourceSessionFixture();
+    const staleB = await staleFixture.session.prepareActivation(SOURCE_B);
+    const currentA = await staleFixture.session.prepareActivation(SOURCE_A);
+    assert.equal(staleFixture.session.commitActivation(staleB), false, 'supersession invalidates the older brand');
+    assert.equal(staleFixture.session.commitActivation(currentA), true, 'the current brand remains authentic');
+  },
+
+  async function afterPrepareCannotReentrantlyCommitItsPrecommitHookArgument() {
+    let session = null;
+    let reentrantResult = null;
+    let hookArgument = null;
+    const fixture = await sourceSessionFixture({
+      hooks: {
+        afterPrepare: (argument) => {
+          hookArgument = argument;
+          reentrantResult = session.commitActivation(argument);
+        },
+      },
+    });
+    session = fixture.session;
+
+    const handle = await session.prepareActivation(SOURCE_B);
+
+    assert.equal(reentrantResult, false, 'the precommit hook view is not an authenticated capability');
+    assert.equal(Object.isFrozen(hookArgument), true);
+    assert.deepEqual(Object.keys(hookArgument), []);
+    assert.equal(fixture.store.project.activeSourceId, SOURCE_A, 'afterPrepare cannot commit during preparation');
+    assert.equal(session.commitActivation(handle), true, 'only the returned ready capability can commit');
+    assert.equal(fixture.store.project.activeSourceId, SOURCE_B);
+  },
+
+  async function noncancellableDecodePeaksAndAfterPrepareLaneOwnsAtMostOneTarget() {
+    const peakGate = deferred();
+    const peakEntered = deferred();
+    const peakOwners = new Set();
+    let maximumPeakOwners = 0;
+    const peakFixture = await sourceSessionFixture({
+      buildPeaks: (mono) => {
+        peakOwners.add(mono);
+        maximumPeakOwners = Math.max(maximumPeakOwners, peakOwners.size);
+        if (mono[0] === 0.25) {
+          peakEntered.resolve();
+          return peakGate.promise.finally(() => peakOwners.delete(mono));
+        }
+        peakOwners.delete(mono);
+        return { label: 'peaks-B', mono };
+      },
+    });
+    const olderPeakA = peakFixture.session.activate(SOURCE_A);
+    await peakEntered.promise;
+    const newerPeakB = peakFixture.session.activate(SOURCE_B);
+    await nextTurn();
+    assert.equal(peakFixture.engine.decodeCalls.length, 1,
+      'B decode waits while the non-cancellable A peaks lane owns decoded A');
+    assert.equal(peakFixture.engine.decodedResults[0].buffer.label, 'A');
+    assert.equal(maximumPeakOwners, 1, 'peaks reference accounting never owns two decoded targets');
+    peakGate.resolve({ label: 'peaks-A' });
+    assert.equal(await olderPeakA, false, 'superseded A is quarantined after peaks releases');
+    assert.equal(await newerPeakB, true, 'B proceeds after the older lane releases');
+    assert.deepEqual(peakFixture.engine.installCalls, ['B'], 'only B installs after deferred peaks');
+    assert.notEqual(peakFixture.engine.decodedResults[0], peakFixture.engine.decodedResults[1],
+      'the serialized requests decoded distinct target objects');
+
+    const hookGate = deferred();
+    const hookEntered = deferred();
+    let hookCalls = 0;
+    const hookFixture = await sourceSessionFixture({
+      hooks: {
+        afterPrepare: () => {
+          hookCalls++;
+          if (hookCalls === 1) {
+            hookEntered.resolve();
+            return hookGate.promise;
+          }
+          return undefined;
+        },
+      },
+    });
+    const olderHookA = hookFixture.session.activate(SOURCE_A);
+    await hookEntered.promise;
+    const newerHookB = hookFixture.session.activate(SOURCE_B);
+    await nextTurn();
+    assert.equal(hookFixture.engine.decodeCalls.length, 1,
+      'B decode waits while afterPrepare retains the older decoded target privately');
+    hookGate.resolve();
+    assert.equal(await olderHookA, false, 'superseded afterPrepare request is quarantined');
+    assert.equal(await newerHookB, true);
+    assert.deepEqual(hookFixture.engine.installCalls, ['B'], 'only B installs after deferred afterPrepare');
+
+    let poisonFirst = true;
+    const poisonFixture = await sourceSessionFixture({
+      buildPeaks: (mono) => {
+        if (poisonFirst) {
+          poisonFirst = false;
+          throw new Error('current peaks fault');
+        }
+        return { label: 'recovered-peaks', mono };
+      },
+    });
+    await assert.rejects(poisonFixture.session.activate(SOURCE_A), /current peaks fault/);
+    assert.equal(await poisonFixture.session.activate(SOURCE_B), true,
+      'a rejected lane cannot poison the next serialized request');
+  },
+
+  async function supersededAwaitedBoundaryRejectionsAreQuarantinedAtEveryStage() {
+    const scenarios = [
+      ['payload read', async () => {
+        const gate = deferred();
+        const entered = deferred();
+        class LateReadStore extends MemorySourcePayloadStore {
+          async get(id) {
+            if (id === SOURCE_B) {
+              entered.resolve();
+              return gate.promise;
+            }
+            return super.get(id);
+          }
+        }
+        return {
+          fixture: await sourceSessionFixture({ payloads: new LateReadStore() }),
+          entered: entered.promise,
+          fail: gate.reject,
+        };
+      }],
+      ['SHA-256', async () => {
+        class DirectReadStore extends MemorySourcePayloadStore {
+          async get(id) {
+            const bytes = this._entries.get(id);
+            return bytes ? bytes.slice() : null;
+          }
+        }
+        const fixture = await sourceSessionFixture({ payloads: new DirectReadStore() });
+        const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+        const originalCrypto = globalThis.crypto;
+        const gate = deferred();
+        const entered = deferred();
+        let first = true;
+        Object.defineProperty(globalThis, 'crypto', {
+          configurable: true,
+          enumerable: true,
+          value: {
+            subtle: {
+              digest(algorithm, input) {
+                if (first) {
+                  first = false;
+                  entered.resolve();
+                  return gate.promise;
+                }
+                return originalCrypto.subtle.digest(algorithm, input);
+              },
+            },
+          },
+        });
+        return {
+          fixture,
+          entered: entered.promise,
+          fail: gate.reject,
+          cleanup: () => Object.defineProperty(globalThis, 'crypto', originalDescriptor),
+        };
+      }],
+      ['decode', async () => {
+        const engine = new CredibleSessionEngine();
+        const gate = engine.gateDecode(4);
+        return {
+          fixture: await sourceSessionFixture({ engine }),
+          entered: gate.entered,
+          fail: gate.reject,
+        };
+      }],
+      ['peaks', async () => {
+        const gate = deferred();
+        const entered = deferred();
+        return {
+          fixture: await sourceSessionFixture({
+            buildPeaks: (mono) => {
+              if (mono[0] === 0.5) {
+                entered.resolve();
+                return gate.promise;
+              }
+              return { label: 'peaks-A', mono };
+            },
+          }),
+          entered: entered.promise,
+          fail: gate.reject,
+        };
+      }],
+      ['afterPrepare', async () => {
+        const gate = deferred();
+        const entered = deferred();
+        let first = true;
+        return {
+          fixture: await sourceSessionFixture({
+            hooks: {
+              afterPrepare: () => {
+                if (first) {
+                  first = false;
+                  entered.resolve();
+                  return gate.promise;
+                }
+                return undefined;
+              },
+            },
+          }),
+          entered: entered.promise,
+          fail: gate.reject,
+        };
+      }],
+    ];
+
+    for (const [label, makeScenario] of scenarios) {
+      const scenario = await makeScenario();
+      const fault = new Error('late ' + label + ' fault');
+      try {
+        const superseded = scenario.fixture.session.activate(SOURCE_B);
+        await scenario.entered;
+        const newer = scenario.fixture.session.activate(SOURCE_A);
+        scenario.fail(fault);
+        assert.equal(await superseded, false, label + ' rejection becomes a stale result');
+        assert.equal(await newer, true, label + ' rejection does not poison the newer request');
+        assert.equal(scenario.fixture.store.project.activeSourceId, SOURCE_A);
+        assert.deepEqual(scenario.fixture.engine.installCalls, ['A'], label + ' installs only the current request');
+      } finally {
+        if (scenario.cleanup) scenario.cleanup();
+      }
+    }
+  },
+
+  async function hooksReceiveOnlyAnOpaqueCapabilityAndCannotCorruptRollbackCheckpoints() {
+    const fault = new Error('opaque hook fault');
+    let hookArgument = null;
+    const fixture = await sourceSessionFixture({
+      hooks: {
+        beforeInstall: (argument) => {
+          hookArgument = argument;
+          Reflect.set(argument, 'facade', { words: [{ text: 'checkpoint-corrupted' }] });
+          Reflect.set(argument, 'engine', { buffer: null });
+          throw fault;
+        },
+      },
+    });
+    const before = activeState(fixture);
+
+    await assert.rejects(fixture.session.activate(SOURCE_B), fault);
+
+    assert.equal(Object.isFrozen(hookArgument), true, 'hook argument is immutable');
+    assert.deepEqual(Object.keys(hookArgument), [], 'hook receives no canonical checkpoint reference');
+    assertActiveState(fixture, before, 'opaque hook rollback');
+  },
+
+  async function nativeEventTargetIsolationFreezesDetailsAndReportsAsyncListenerAndSchedulerFaults() {
+    const reported = [];
+    const scheduled = [];
+    const schedulerFault = new Error('async scheduler fault');
+    const fixture = await sourceSessionFixture({
+      reportAsyncError: (error) => { reported.push(error); },
+      scheduleAfterActivation: (command) => {
+        scheduled.push(command);
+        return Promise.reject(schedulerFault);
+      },
+    });
+    const { session } = fixture;
+    assert.equal(session instanceof EventTarget, true, 'SourceSession is a genuine EventTarget');
+    assert.equal(typeof session.dispatchEvent, 'function', 'native dispatchEvent is available');
+
+    let probeDetail = null;
+    session.addEventListener('probe', (event) => { probeDetail = event.detail; });
+    const probe = Object.freeze({ value: 'native-event' });
+    assert.equal(session.dispatchEvent(new CustomEvent('probe', { detail: probe })), true);
+    assert.equal(probeDetail, probe, 'arbitrary native CustomEvents use the EventTarget surface');
+
+    const calls = [];
+    let listenerDetail = null;
+    const syncFault = new Error('mutating listener fault');
+    const asyncFault = new Error('async listener fault');
+    const mutating = (event) => {
+      calls.push('mutating');
+      listenerDetail = event.detail;
+      assert.equal(Object.isFrozen(event.detail), true, 'listener detail is immutable');
+      assert.equal(Object.values(event.detail).every((value) => value === null
+        || ['string', 'number', 'boolean'].includes(typeof value)), true,
+      'listener detail contains primitive values only');
+      Reflect.set(event.detail, 'sourceId', 'forged-by-listener');
+      throw syncFault;
+    };
+    const persistent = () => { calls.push('persistent'); };
+    const once = () => { calls.push('once'); };
+    const removed = () => { calls.push('removed'); };
+    const asyncListener = () => {
+      calls.push('async');
+      return Promise.reject(asyncFault);
+    };
+    const aborted = () => { calls.push('aborted'); };
+    const abortController = new AbortController();
+    session.addEventListener('sourceactivated', mutating);
+    session.addEventListener('sourceactivated', persistent);
+    session.addEventListener('sourceactivated', once, { once: true });
+    session.addEventListener('sourceactivated', removed);
+    session.removeEventListener('sourceactivated', removed);
+    session.addEventListener('sourceactivated', asyncListener);
+    session.addEventListener('sourceactivated', aborted, { signal: abortController.signal });
+    abortController.abort();
+
+    assert.equal(await session.activate(SOURCE_B), true, 'listener/scheduler faults do not roll back commit');
+    await nextTurn();
+    assert.deepEqual(calls, ['mutating', 'persistent', 'once', 'async'],
+      'multiple, once, removal, and abort-signal semantics match EventTarget');
+    assert.equal(scheduled.length, 1);
+    assert.equal(Object.isFrozen(scheduled[0]), true, 'scheduler receives a fresh immutable command');
+    assert.notEqual(scheduled[0], listenerDetail, 'listener detail is never reused as scheduler input');
+    assert.equal(scheduled[0].sourceId, SOURCE_B, 'listener mutation cannot forge scheduler source');
+    assert.equal(scheduled[0].revision, fixture.store.revision, 'scheduler command derives from committed revision');
+    assert.equal(scheduled[0].facadeEpoch, fixture.store.runtime.facadeEpoch,
+      'scheduler command derives from committed facade epoch');
+    assert.deepEqual(new Set(reported), new Set([syncFault, asyncFault, schedulerFault]),
+      'synchronous and asynchronous observer faults are routed to the reporter');
+
+    session.removeEventListener('sourceactivated', mutating);
+    session.removeEventListener('sourceactivated', asyncListener);
+    session.dispatchEvent(new CustomEvent('sourceactivated', { detail: Object.freeze({ sourceId: SOURCE_B }) }));
+    assert.deepEqual(calls, ['mutating', 'persistent', 'once', 'async', 'persistent'],
+      'persistent listener remains while once and removed listeners stay removed');
+
+    const invalidClock = await sourceSessionFixture({ clock: () => ({ forged: 'timestamp-object' }) });
+    const invalidClockBefore = activeState(invalidClock);
+    await assert.rejects(invalidClock.session.activate(SOURCE_B), /clock.*finite number/i,
+      'activation detail cannot contain a non-primitive clock result');
+    assertActiveState(invalidClock, invalidClockBefore, 'invalid activation clock');
   },
 
   async function successfulActivationEmitsOnceThenSchedulesAndPreservesUndoRedoStacks() {

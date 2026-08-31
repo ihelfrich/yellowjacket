@@ -486,6 +486,22 @@ export class ProjectStore extends EventTarget {
   undo() { return this._step(this._past, this._future); }
   redo() { return this._step(this._future, this._past); }
 
+  // Source activation is navigation over an already prepared transaction. Its
+  // finalizer must not reconcile legacy sample ownership or touch history: both
+  // are unrelated global state outside the source-session rollback checkpoint.
+  finalizeSourceNavigation(fn) {
+    if (typeof fn !== 'function') throw new TypeError('Source-navigation callback is invalid');
+    const result = fn(this.project, this.runtime);
+    if (result && (typeof result === 'object' || typeof result === 'function')
+        && typeof result.then === 'function') {
+      throw new TypeError('Source-navigation callback must be synchronous');
+    }
+    this.revision++;
+    this.dispatchEvent(new CustomEvent('change', {
+      detail: { kind: 'source-navigation', revision: this.revision },
+    }));
+  }
+
   _legacyOwner(assetId) {
     const tracks = this._tracksForAsset(assetId);
     const source = tracks.find((track) => track.sample);
