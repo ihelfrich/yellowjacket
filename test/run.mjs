@@ -38,7 +38,7 @@ import {
 } from '../js/machine/drum-dsp.js';
 import {
   FACTORY_KITS, drumAssetId, getFactoryKit, grooveFor, kitInstallPlan,
-  renderFactoryKit,
+  renderFactoryKit, starterGrooveForRoles,
 } from '../js/machine/kits.js';
 import { fitModal, synthModal } from '../js/analysis/modal.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
@@ -3992,7 +3992,62 @@ const kitLevelCases = [
   },
 ];
 
+// ---------- starter groove for a harvested kit ----------
+//
+// HARVEST seats eight tracks and reports READY TO PLAY, but the pattern is
+// empty, so pressing RUN produces silence. Measured on the live site right
+// after a harvest: stepsOn was 0. The factory grooves in kits.js are keyed to
+// hand-authored lanes per factory kit; a harvested kit only knows its roles.
+
+const grooveCases = [
+  function putsTheKickOnBeatsOneAndThreeOfEveryBar() {
+    const g = starterGrooveForRoles(['KICK']);
+    assert.equal(g[0].length, 64, 'four bars of sixteenths');
+    for (let bar = 0; bar < 4; bar++) {
+      assert.equal(g[0][bar * 16 + 0], 1, 'bar ' + bar + ' beat 1');
+      assert.equal(g[0][bar * 16 + 8], 1, 'bar ' + bar + ' beat 3');
+      assert.equal(g[0][bar * 16 + 1], 0, 'nothing on the sixteenth after the downbeat');
+    }
+  },
+  function putsTheSnareOnTheBackbeats() {
+    const g = starterGrooveForRoles(['SNARE']);
+    for (let bar = 0; bar < 4; bar++) {
+      assert.equal(g[0][bar * 16 + 4], 1, 'beat 2');
+      assert.equal(g[0][bar * 16 + 12], 1, 'beat 4');
+      assert.equal(g[0][bar * 16 + 0], 0, 'not on the downbeat');
+    }
+  },
+  function offsetsRepeatedRolesSoTheyInterlock() {
+    // A frog harvest seats several TONE tracks. Identical lanes would just
+    // stack them into one louder hit instead of making a pattern.
+    const g = starterGrooveForRoles(['TONE', 'TONE', 'TONE']);
+    assert.notDeepEqual(Array.from(g[0]), Array.from(g[1]), 'second tone differs');
+    assert.notDeepEqual(Array.from(g[1]), Array.from(g[2]), 'third tone differs');
+  },
+  function givesAnEmptyLaneToAnUnknownRole() {
+    const g = starterGrooveForRoles(['', null, 'NONSENSE']);
+    for (const lane of g) assert.equal(Array.from(lane).some(Boolean), false);
+  },
+  function isDeterministic() {
+    const roles = ['KICK', 'SNARE', 'BASS', 'TONE', 'VOX', 'FX', 'TONE', 'TONE'];
+    assert.deepEqual(
+      starterGrooveForRoles(roles).map((l) => Array.from(l)),
+      starterGrooveForRoles(roles).map((l) => Array.from(l)),
+    );
+  },
+  function makesRealNoiseForTheRolesAFrogHarvestActuallyYields() {
+    // The exact kit the live run produced. If this groove is silent, READY TO
+    // PLAY is still a lie.
+    const g = starterGrooveForRoles(['KICK', 'SNARE', 'BASS', 'TONE', 'VOX', 'FX', 'TONE', 'TONE']);
+    const total = g.reduce((n, lane) => n + Array.from(lane).filter(Boolean).length, 0);
+    assert.ok(total >= 16, 'a groove worth hearing, got ' + total + ' hits');
+    assert.ok(g.filter((lane) => Array.from(lane).some(Boolean)).length >= 4,
+      'several tracks participate');
+  },
+];
+
 const groups = [
+  ['starter groove', grooveCases],
   ['kit levelling', kitLevelCases],
   ['auto kit', autoKitCases],
   ['update safety', updateSafetyCases],

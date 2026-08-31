@@ -229,6 +229,56 @@ function rand(seed) {
   };
 }
 
+// A starter groove for a kit that has roles but no authored lanes — i.e. one
+// HARVEST just seated. Without it, HARVEST reports READY TO PLAY and RUN plays
+// silence, because seating samples does not write any steps.
+//
+// Lanes are given at sixteenth resolution within one bar and repeat across all
+// four. Kick and snare carry the pulse; everything tonal is deliberately sparse,
+// because harvested material is long and washy compared with a drum machine.
+const ROLE_LANES = Object.freeze({
+  kick:  [0, 8],
+  snare: [4, 12],
+  hat:   [2, 6, 10, 14],
+  bass:  [0, 10],
+  tone:  [6, 14],
+  vox:   [12],
+  fx:    [7],
+  crash: [0],
+});
+
+// A role that appears on more than one track (a frog harvest seats several
+// TONE slices) is rotated rather than duplicated, so the copies interlock
+// instead of stacking into one louder hit.
+const ROLE_ROTATION = 3;
+
+/**
+ * Steps for each track from its role alone. Returns one Uint8Array(64) per
+ * entry in `roles`; an unrecognised role gets a silent lane rather than a guess.
+ */
+export function starterGrooveForRoles(roles, opts = {}) {
+  const stepsPerBar = Math.max(1, Math.trunc(opts.stepsPerBar) || 16);
+  const bars = Math.max(1, Math.trunc(opts.bars) || 4);
+  const total = stepsPerBar * bars;
+  const list = Array.isArray(roles) ? roles : [];
+  const seen = new Map();
+  return list.map((role) => {
+    const lane = new Uint8Array(total);
+    const key = typeof role === 'string' ? role.toLowerCase() : '';
+    const hits = ROLE_LANES[key];
+    if (!hits) return lane;
+    const nth = seen.get(key) || 0;
+    seen.set(key, nth + 1);
+    const shift = nth * ROLE_ROTATION;
+    for (let bar = 0; bar < bars; bar++) {
+      for (const hit of hits) {
+        lane[bar * stepsPerBar + ((hit + shift) % stepsPerBar)] = 1;
+      }
+    }
+    return lane;
+  });
+}
+
 export function grooveFor(kitId, grooveId, variation = 0) {
   const kit = getFactoryKit(kitId);
   if (!kit) throw new RangeError('unknown factory kit "' + kitId + '"');

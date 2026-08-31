@@ -199,7 +199,13 @@ playable level on the way in, with the boost capped at 18 dB so a near-silent
 slice is not amplified into its own noise floor: the frog kit went from a -24
 dBFS render to -6 without clipping. A slice you assign by hand keeps whatever
 level it had, because that is a deliberate choice rather than a kit being
-built for you.
+built for you. And because seating samples writes no steps, HARVEST also
+lays down a starter groove keyed to the roles it found — kick and snare carry
+the pulse, tonal material stays sparse, and a role that lands on more than one
+track is rotated so the copies interlock instead of stacking. It writes only
+over a pattern that is entirely empty, so your own beat is never overwritten.
+Open a field recording, press HARVEST, press FREEZE: three clicks from a
+wetland at night to a mixed-level loop.
 
 Every track's sample is an editable VOICE: trim its start and end on a
 waveform, pitch it up to two octaves either way, shape attack and release,
