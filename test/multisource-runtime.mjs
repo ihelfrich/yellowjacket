@@ -18,11 +18,12 @@ class FakeOpfsStore {
   constructor() {
     this.files = new Map();
     this.failWrites = false;
+    this.failWriteNames = new Set();
     this.failReads = false;
   }
 
   async writeBytes(name, bytes) {
-    if (this.failWrites) {
+    if (this.failWrites || this.failWriteNames.has(name)) {
       const error = new Error('quota exhausted');
       error.name = 'QuotaExceededError';
       throw error;
@@ -288,6 +289,42 @@ export const sourcePayloadStoreCases = [
     const repository = new SourcePayloadRepository();
     await assert.rejects(repository.attachDurable({ put() {}, get() {} }), /complete interface/i,
       'repository attachment rejects a backend that cannot later list or remove');
+  },
+
+  async function partialInitialAttachmentBindsItsBackendUntilSameBackendRecovery() {
+    const memory = new MemorySourcePayloadStore();
+    const repository = new SourcePayloadRepository(memory);
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    await repository.put(SOURCE_B, PAYLOAD_B);
+    const firstOpfs = new FakeOpfsStore();
+    firstOpfs.failWriteNames.add('sources/c6d44cf418f610e3fe9e1d9294ff43def81c6cdcad6cbb1820cff48d3aa4355d.bin');
+    const first = new OpfsSourcePayloadStore(firstOpfs);
+    assert.deepEqual(await repository.attachDurable(first), { persistent: false, sessionOnly: true },
+      'a second-write failure leaves the initial attachment session-only');
+    assert.equal(repository.persistent, false, 'a partial durable write never claims persistence');
+    assert.equal(firstOpfs.files.has('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin'), true,
+      'the first payload really reached the first backend');
+    await assert.rejects(repository.attachDurable(new OpfsSourcePayloadStore(new FakeOpfsStore())), /different durable/i,
+      'a partial initial backend cannot be abandoned for a second backend');
+    firstOpfs.failWriteNames.clear();
+    assert.deepEqual(await repository.attachDurable(first), { persistent: true },
+      'the bound backend can retry the complete in-memory set');
+    assert.deepEqual(await repository.listIds(), [SOURCE_A, SOURCE_B], 'same-backend retry retains both payloads');
+    assert.deepEqual(Array.from(await repository.get(SOURCE_A)), [0, 1, 2, 3]);
+    assert.deepEqual(Array.from(await repository.get(SOURCE_B)), [4, 5, 6, 7]);
+  },
+
+  async function adapterListingRejectsKnownDisappearanceBeforeFreshAttachment() {
+    const opfs = new FakeOpfsStore();
+    const durable = new OpfsSourcePayloadStore(opfs);
+    await durable.put(SOURCE_A, PAYLOAD_A);
+    opfs.files.delete('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin');
+    await assert.rejects(durable.listIds(), PayloadCorruptionError,
+      'the adapter does not omit a known source that vanished underneath it');
+    const freshRepository = new SourcePayloadRepository();
+    await assert.rejects(freshRepository.attachDurable(durable), PayloadCorruptionError,
+      'fresh attachment through the same adapter propagates known disappearance');
+    assert.equal(freshRepository.persistent, false, 'known disappearance cannot produce a persistent empty repository');
   },
 ];
 

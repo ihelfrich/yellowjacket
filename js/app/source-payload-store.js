@@ -177,7 +177,8 @@ export class OpfsSourcePayloadStore {
   }
 
   async listIds() {
-    const ids = new Set(this._ids);
+    const knownIds = new Set(this._ids);
+    const ids = new Set(knownIds);
     for (const name of await this._opfs.listNames()) {
       const sourceId = sourceIdFromEntryName(name);
       if (sourceId) ids.add(sourceId);
@@ -185,7 +186,13 @@ export class OpfsSourcePayloadStore {
     const present = [];
     for (const sourceId of [...ids].sort()) {
       const bytes = await this.get(sourceId);
-      if (bytes !== null) present.push(sourceId);
+      if (bytes === null) {
+        if (knownIds.has(sourceId)) {
+          throw new PayloadCorruptionError('verified durable payload disappeared');
+        }
+      } else {
+        present.push(sourceId);
+      }
     }
     return present;
   }
@@ -222,6 +229,10 @@ export class SourcePayloadRepository {
     if (this._durable && this._durable !== durable) {
       throw new TypeError('a different durable backend is already attached');
     }
+    // Once this backend can receive a payload write, it remains the ownership
+    // candidate even if a later write fails. A distinct backend could otherwise
+    // orphan verified partial content without a retirement transaction.
+    if (!this._durable) this._durable = durable;
     this._persistent = false;
     const verified = new Set();
     let ids = [];
@@ -244,6 +255,7 @@ export class SourcePayloadRepository {
         const verifiedBytes = await verifiedStored(sourceId, durableBytes);
         if (memoryBytes !== null && !sameBytes(memoryBytes, verifiedBytes)) throw corruptionForDifference(sourceId);
         verified.add(sourceId);
+        this._durableIds.add(sourceId);
       }
     } catch (error) {
       this._persistent = false;
