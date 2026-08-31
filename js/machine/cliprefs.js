@@ -6,7 +6,10 @@
 // Keep the public page's static preload graph stable until Task 12 activates
 // these primitives. The allocator is still the one canonical project-store
 // implementation; this inactive module resolves it before exposing behavior.
-const { allocateProjectId } = await import('../app/project-store.js');
+const [{ allocateProjectId }, { SOURCE_ID_RE }] = await Promise.all([
+  import('../app/project-store.js'),
+  import('../app/source-registry.js'),
+]);
 
 const LABEL_MAX = 24;        // chars before the label is cut and ellipsized
 const FADE = 0.003;          // s, equal-power fade at clip edges (click guard)
@@ -67,9 +70,10 @@ function validTime(value) {
 function knownSource(project, sourceId) {
   return project && typeof project === 'object' && project.sources
     && typeof project.sources === 'object' && !Array.isArray(project.sources)
-    && typeof sourceId === 'string'
+    && typeof sourceId === 'string' && SOURCE_ID_RE.test(sourceId)
     && Object.prototype.hasOwnProperty.call(project.sources, sourceId)
-    && project.sources[sourceId] && typeof project.sources[sourceId] === 'object';
+    && project.sources[sourceId] && typeof project.sources[sourceId] === 'object'
+    && !Array.isArray(project.sources[sourceId]) && project.sources[sourceId].id === sourceId;
 }
 
 function validateSpan(start, end) {
@@ -92,41 +96,6 @@ function generatorCopy(generator) {
   return copy;
 }
 
-function buildClip(id, input) {
-  const clip = { id, sourceId: input.sourceId, start: input.start, end: input.end };
-  for (const key of ['tag', 'label']) {
-    if (input[key] !== undefined) {
-      if (typeof input[key] !== 'string') throw new TypeError(`Clip ${key} is invalid`);
-      clip[key] = input[key];
-    }
-  }
-  if (input.score !== undefined) {
-    if (!Number.isFinite(input.score)) throw new TypeError('Clip score is invalid');
-    clip.score = input.score;
-  }
-  if (input.features !== undefined) clip.features = jsonCopy(input.features, 'features');
-  if (input.createdAt !== undefined) {
-    if (!(input.createdAt === null || Number.isSafeInteger(input.createdAt))) {
-      throw new TypeError('Clip createdAt is invalid');
-    }
-    clip.createdAt = input.createdAt;
-  }
-  const generator = generatorCopy(input.generator);
-  if (generator) clip.generator = generator;
-  return clip;
-}
-
-function validateClipInput(project, input) {
-  if (!project || typeof project !== 'object' || !Array.isArray(project.clips)
-      || !input || typeof input !== 'object' || Array.isArray(input)
-      || !knownSource(project, input.sourceId)) {
-    throw new TypeError('Clip source is unknown');
-  }
-  validateSpan(input.start, input.end);
-  // Validate every annotation before the allocator can advance.
-  buildClip('preview', input);
-}
-
 function snapshotClipInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('Clip input is invalid');
@@ -143,14 +112,102 @@ function snapshotClipInput(input) {
   return snapshot;
 }
 
-export function createClipRef(project, input) {
+function finalizeClipInput(project, input) {
+  if (!project || typeof project !== 'object' || !Array.isArray(project.clips)) {
+    throw new TypeError('Clip project is invalid');
+  }
   const snapshot = snapshotClipInput(input);
-  validateClipInput(project, snapshot);
-  if (!Object.isExtensible(project.clips)) throw new TypeError('Clip Atlas cannot append');
-  const id = allocateProjectId(project, 'clip');
-  const clip = buildClip(id, snapshot);
-  project.clips.push(clip);
+  if (!knownSource(project, snapshot.sourceId)) throw new TypeError('Clip source is unknown');
+  validateSpan(snapshot.start, snapshot.end);
+  const clip = { sourceId: snapshot.sourceId, start: snapshot.start, end: snapshot.end };
+  for (const key of ['tag', 'label']) {
+    if (snapshot[key] !== undefined) {
+      if (typeof snapshot[key] !== 'string') throw new TypeError(`Clip ${key} is invalid`);
+      clip[key] = snapshot[key];
+    }
+  }
+  if (snapshot.score !== undefined) {
+    if (!Number.isFinite(snapshot.score)) throw new TypeError('Clip score is invalid');
+    clip.score = snapshot.score;
+  }
+  if (snapshot.features !== undefined) clip.features = jsonCopy(snapshot.features, 'features');
+  if (snapshot.createdAt !== undefined) {
+    if (!(snapshot.createdAt === null || (Number.isSafeInteger(snapshot.createdAt)
+        && Math.abs(snapshot.createdAt) <= 8.64e15))) {
+      throw new TypeError('Clip createdAt is invalid');
+    }
+    clip.createdAt = snapshot.createdAt;
+  }
+  const generator = generatorCopy(snapshot.generator);
+  if (generator) clip.generator = generator;
   return clip;
+}
+
+function clipWithId(id, finalized) {
+  return { id, ...finalized };
+}
+
+function rollbackClipCounter(project, before, issued) {
+  if (!issued) return;
+  if (!project.allocators || project.allocators.clip !== before + issued) {
+    throw new Error('Clip allocator changed during rollback');
+  }
+  project.allocators.clip = before;
+}
+
+function rollbackAppends(atlas, beforeLength, count, lengthDescriptor) {
+  for (let index = beforeLength; index < beforeLength + count; index++) {
+    if (!Reflect.deleteProperty(atlas, String(index))) {
+      throw new Error('Clip Atlas append rollback failed');
+    }
+  }
+  if (atlas.length !== beforeLength
+      && !Reflect.defineProperty(atlas, 'length', { ...lengthDescriptor, value: beforeLength })) {
+    throw new Error('Clip Atlas length rollback failed');
+  }
+}
+
+function appendFinalizedClips(project, finalizedClips, expectedIds = null) {
+  const atlas = project && project.clips;
+  if (!Array.isArray(atlas) || !Array.isArray(finalizedClips)) {
+    throw new TypeError('Clip Atlas append is invalid');
+  }
+  if (!finalizedClips.length) return [];
+  const beforeLength = atlas.length;
+  const lengthDescriptor = Reflect.getOwnPropertyDescriptor(atlas, 'length');
+  if (!lengthDescriptor || lengthDescriptor.writable === false || !Reflect.isExtensible(atlas)) {
+    throw new TypeError('Clip Atlas cannot append');
+  }
+  const beforeCounter = project.allocators && project.allocators.clip;
+  const clips = [];
+  let issued = 0;
+  try {
+    for (const finalized of finalizedClips) {
+      const id = allocateProjectId(project, 'clip');
+      issued++;
+      clips.push(clipWithId(id, finalized));
+    }
+    if (expectedIds && clips.some((clip, index) => clip.id !== expectedIds[index])) {
+      throw new Error('Clip allocation changed during preparation');
+    }
+    for (const clip of clips) atlas.push(clip);
+    return clips;
+  } catch (error) {
+    let rollbackError = null;
+    try {
+      rollbackAppends(atlas, beforeLength, clips.length, lengthDescriptor);
+      rollbackClipCounter(project, beforeCounter, issued);
+    } catch (caught) {
+      rollbackError = caught;
+    }
+    if (rollbackError) throw new AggregateError([error, rollbackError], 'Clip append and rollback failed');
+    throw error;
+  }
+}
+
+export function createClipRef(project, input) {
+  const finalized = finalizeClipInput(project, input);
+  return appendFinalizedClips(project, [finalized])[0];
 }
 
 export function wordsToClip(project, sourceId, words, i0, i1) {
@@ -192,7 +249,8 @@ export function clipReferences(project, clipId) {
     const provenance = asset && asset.provenance;
     if (!provenance || provenance.kind !== 'source-clip' || provenance.binding !== 'project'
         || provenance.clipId !== clipId) continue;
-    const id = typeof asset.id === 'string' && asset.id.length ? asset.id : key;
+    const match = typeof asset.id === 'string' && /^a([1-9][0-9]*)$/.exec(asset.id);
+    const id = match && Number.isSafeInteger(Number(match[1])) ? asset.id : key;
     if (!seen.has(id)) {
       seen.add(id);
       references.push(id);
@@ -220,14 +278,34 @@ export function replaceClipBounds(project, oldId, nextBounds) {
   }
   const references = clipReferences(project, oldId);
   if (references.length) return { kind: 'blocked', clipId: oldId, references };
-  const input = { ...jsonCopy(old, 'replacement'), start: nextBounds.start, end: nextBounds.end };
-  delete input.id;
-  validateClipInput(project, input);
-  const descriptor = Object.getOwnPropertyDescriptor(project.clips, String(index));
+  const input = snapshotClipInput(old);
+  input.start = nextBounds.start;
+  input.end = nextBounds.end;
+  const finalized = finalizeClipInput(project, input);
+  const descriptor = Reflect.getOwnPropertyDescriptor(project.clips, String(index));
   if (!descriptor || descriptor.writable === false) throw new TypeError('Clip Atlas cannot replace');
-  const replacement = buildClip(allocateProjectId(project, 'clip'), input);
-  project.clips[index] = replacement;
-  return { kind: 'replaced', oldId, clip: replacement };
+  const beforeCounter = project.allocators && project.allocators.clip;
+  let issued = 0;
+  try {
+    const replacement = clipWithId(allocateProjectId(project, 'clip'), finalized);
+    issued = 1;
+    if (!Reflect.set(project.clips, String(index), replacement)) {
+      throw new TypeError('Clip Atlas cannot replace');
+    }
+    return { kind: 'replaced', oldId, clip: replacement };
+  } catch (error) {
+    let rollbackError = null;
+    try {
+      if (!Reflect.defineProperty(project.clips, String(index), descriptor)) {
+        throw new Error('Clip Atlas replacement rollback failed');
+      }
+      rollbackClipCounter(project, beforeCounter, issued);
+    } catch (caught) {
+      rollbackError = caught;
+    }
+    if (rollbackError) throw new AggregateError([error, rollbackError], 'Clip replacement and rollback failed');
+    throw error;
+  }
 }
 
 function checkedProduct(a, b, label) {
@@ -313,23 +391,36 @@ export async function prepareClipAsset(project, clip, extraction, options = {}) 
       || !extraction.sourceSpan || !Array.isArray(extraction.transforms)) {
     throw new TypeError('Clip extraction preparation is invalid');
   }
-  const matches = Array.isArray(project && project.clips)
-    ? project.clips.filter((entry) => entry && entry.id === clip.id) : [];
-  if (matches.length !== 1 || matches[0].sourceId !== clip.sourceId
-      || matches[0].start !== clip.start || matches[0].end !== clip.end
-      || !knownSource(project, clip.sourceId)) throw new TypeError('Prepared clip is not project-bound');
+  // Everything caller-owned is detached before hashing yields. Metadata must
+  // describe the same snapshot as the owned PCM even if the caller mutates its
+  // clip, extraction, or options while the digest is pending.
+  const clipSnapshot = jsonCopy(clip, 'clip');
+  const sourceSpan = jsonCopy(extraction.sourceSpan, 'source span');
+  const frameInfo = jsonCopy(extraction.extraction, 'extraction metadata');
+  const extractionTransforms = jsonCopy(extraction.transforms, 'extraction transforms');
+  const optionSnapshot = jsonCopy(options, 'options');
+  if (!clipSnapshot || typeof clipSnapshot !== 'object' || Array.isArray(clipSnapshot)
+      || !sourceSpan || typeof sourceSpan !== 'object' || Array.isArray(sourceSpan)
+      || !frameInfo || typeof frameInfo !== 'object' || Array.isArray(frameInfo)
+      || !Array.isArray(extractionTransforms) || !optionSnapshot
+      || typeof optionSnapshot !== 'object' || Array.isArray(optionSnapshot)) {
+    throw new TypeError('Clip extraction preparation is invalid');
+  }
   const sample = copiedSample(extraction.sample);
-  const frameInfo = extraction.extraction;
+  const matches = Array.isArray(project && project.clips)
+    ? project.clips.filter((entry) => entry && entry.id === clipSnapshot.id) : [];
+  if (matches.length !== 1 || matches[0].sourceId !== clipSnapshot.sourceId
+      || matches[0].start !== clipSnapshot.start || matches[0].end !== clipSnapshot.end
+      || !knownSource(project, clipSnapshot.sourceId)) throw new TypeError('Prepared clip is not project-bound');
   if (frameInfo.sampleRate !== sample.sampleRate || frameInfo.channelCount !== sample.channelCount
       || frameInfo.endFrame - frameInfo.startFrame !== sample.frames
-      || extraction.sourceSpan.start !== clip.start || extraction.sourceSpan.end !== clip.end) {
+      || sourceSpan.start !== clipSnapshot.start || sourceSpan.end !== clipSnapshot.end) {
     throw new TypeError('Clip extraction metadata is inconsistent');
   }
-  const buffer = options.buffer === undefined ? 'original' : options.buffer;
+  const buffer = optionSnapshot.buffer === undefined ? 'original' : optionSnapshot.buffer;
   if (buffer !== 'original' && buffer !== 'repaired') throw new TypeError('Clip buffer selector is invalid');
-  const extractionTransforms = jsonCopy(extraction.transforms, 'extraction transforms');
-  const optionTransforms = options.transforms === undefined
-    ? [] : jsonCopy(options.transforms, 'transforms');
+  const optionTransforms = optionSnapshot.transforms === undefined
+    ? [] : optionSnapshot.transforms;
   if (!Array.isArray(extractionTransforms) || !Array.isArray(optionTransforms)) {
     throw new TypeError('Clip transforms are invalid');
   }
@@ -339,14 +430,14 @@ export async function prepareClipAsset(project, clip, extraction, options = {}) 
   }
   const transforms = [];
   if (buffer === 'repaired') {
-    if (!Array.isArray(options.repairStack) || !options.repairStack.length
-        || !options.repairStack.some((repair) => repair && repair.enabled === true)) {
+    if (!Array.isArray(optionSnapshot.repairStack) || !optionSnapshot.repairStack.length
+        || !optionSnapshot.repairStack.some((repair) => repair && repair.enabled === true)) {
       throw new TypeError('Repaired clip stack is invalid');
     }
     transforms.push({
       schemaVersion: 1,
       kind: 'spectral-repair-stack',
-      repairs: jsonCopy(options.repairStack, 'repair stack'),
+      repairs: optionSnapshot.repairStack,
     });
   }
   transforms.push(...extractionTransforms, ...optionTransforms);
@@ -355,8 +446,8 @@ export async function prepareClipAsset(project, clip, extraction, options = {}) 
   if (!described) throw new TypeError('Prepared PCM is invalid');
   const meta = {
     kind: 'sample',
-    label: options.label === undefined
-      ? (typeof clip.label === 'string' ? clip.label : 'SAMPLE') : options.label,
+    label: optionSnapshot.label === undefined
+      ? (typeof clipSnapshot.label === 'string' ? clipSnapshot.label : 'SAMPLE') : optionSnapshot.label,
     sampleRate: sample.sampleRate,
     channelCount: sample.channelCount,
     frames: sample.frames,
@@ -364,9 +455,9 @@ export async function prepareClipAsset(project, clip, extraction, options = {}) 
     provenance: {
       kind: 'source-clip',
       binding: 'project',
-      sourceId: clip.sourceId,
-      clipId: clip.id,
-      sourceSpan: { start: clip.start, end: clip.end },
+      sourceId: clipSnapshot.sourceId,
+      clipId: clipSnapshot.id,
+      sourceSpan: { start: clipSnapshot.start, end: clipSnapshot.end },
       extraction: {
         startFrame: frameInfo.startFrame,
         endFrame: frameInfo.endFrame,
@@ -378,9 +469,9 @@ export async function prepareClipAsset(project, clip, extraction, options = {}) 
     },
   };
   if (typeof meta.label !== 'string') throw new TypeError('Prepared label is invalid');
-  if (options.role !== undefined) {
-    if (typeof options.role !== 'string') throw new TypeError('Prepared role is invalid');
-    meta.role = options.role;
+  if (optionSnapshot.role !== undefined) {
+    if (typeof optionSnapshot.role !== 'string') throw new TypeError('Prepared role is invalid');
+    meta.role = optionSnapshot.role;
   }
   if (!validateAssetProvenance(project, meta).ok) {
     throw new TypeError('Prepared project provenance is invalid');
@@ -438,19 +529,24 @@ function applyGain(sample, gain) {
 }
 
 export async function prepareHarvestRun(project, decoded, picks, options = {}) {
-  if (!Array.isArray(picks)) throw new TypeError('HARVEST picks are invalid');
-  const sourceId = options.sourceId;
+  const pickSnapshots = jsonCopy(picks, 'HARVEST picks');
+  const optionSnapshot = jsonCopy(options, 'HARVEST options');
+  if (!Array.isArray(pickSnapshots) || !optionSnapshot
+      || typeof optionSnapshot !== 'object' || Array.isArray(optionSnapshot)) {
+    throw new TypeError('HARVEST picks are invalid');
+  }
+  const sourceId = optionSnapshot.sourceId;
   const generator = generatorCopy({
     kind: 'harvest',
-    version: options.generatorVersion === undefined ? 1 : options.generatorVersion,
-    runId: options.runId,
+    version: optionSnapshot.generatorVersion === undefined ? 1 : optionSnapshot.generatorVersion,
+    runId: optionSnapshot.runId,
   });
   if (generator.version !== 1 || !knownSource(project, sourceId)) {
     throw new TypeError('HARVEST generator is invalid');
   }
-  const inputs = picks.map((pick) => generatedInput(sourceId, pick, generator));
-  for (const input of inputs) validateClipInput(project, input);
-  const extractions = inputs.map((input) => extractClipAsset(decoded, input));
+  const inputs = pickSnapshots.map((pick) => generatedInput(sourceId, pick, generator));
+  const finalized = inputs.map((input) => finalizeClipInput(project, input));
+  const extractions = finalized.map((clip) => extractClipAsset(decoded, clip));
   for (const extraction of extractions) {
     for (const channel of extraction.sample.channels) {
       for (const value of channel) if (!Number.isFinite(value)) throw new TypeError('HARVEST PCM is invalid');
@@ -464,12 +560,13 @@ export async function prepareHarvestRun(project, decoded, picks, options = {}) {
     allocators: { ...project.allocators },
     clips: project.clips.slice(),
   };
-  const previewClips = inputs.map((input) => createClipRef(preview, input));
+  const previewClips = appendFinalizedClips(preview, finalized);
   const { peakOfChannels, kitGainFor } = await import('../analysis/harvest.js');
   const preparedAssets = [];
   for (let index = 0; index < previewClips.length; index++) {
     const extraction = extractions[index];
-    const computedGain = options.level === false ? 1 : kitGainFor(peakOfChannels(extraction.sample.channels));
+    const computedGain = optionSnapshot.level === false
+      ? 1 : kitGainFor(peakOfChannels(extraction.sample.channels));
     // PCM is Float32. A multiplier which rounds to unity cannot change the
     // authoritative samples and therefore is not a truthful transform.
     const gain = Math.fround(computedGain) === 1 ? 1 : computedGain;
@@ -481,8 +578,8 @@ export async function prepareHarvestRun(project, decoded, picks, options = {}) {
     preparedAssets.push(await prepareClipAsset(preview, previewClips[index], transformed, {
       label: previewClips[index].label,
       role: previewClips[index].tag,
-      buffer: options.buffer === undefined ? 'original' : options.buffer,
-      repairStack: options.repairStack === undefined ? [] : options.repairStack,
+      buffer: optionSnapshot.buffer === undefined ? 'original' : optionSnapshot.buffer,
+      repairStack: optionSnapshot.repairStack === undefined ? [] : optionSnapshot.repairStack,
       transforms: gainTransforms,
     }));
   }
@@ -490,11 +587,7 @@ export async function prepareHarvestRun(project, decoded, picks, options = {}) {
       || project.clips.some((clip, index) => clip !== startingClips[index])) {
     throw new Error('Project clips changed during HARVEST preparation');
   }
-  const clips = inputs.map((input, index) => {
-    const clip = createClipRef(project, input);
-    if (clip.id !== previewClips[index].id) throw new Error('HARVEST allocation changed during preparation');
-    return clip;
-  });
+  const clips = appendFinalizedClips(project, finalized, previewClips.map((clip) => clip.id));
   return { clips, preparedAssets, removeClipIds };
 }
 

@@ -5,11 +5,41 @@ const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
 const DESCRIPTOR_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_TRANSFORMS = 32;
 const MAX_TRANSFORM_BYTES = 64 * 1024;
+const PROJECT_PROVENANCE_KEYS = new Set([
+  'kind', 'binding', 'sourceId', 'clipId', 'sourceSpan', 'extraction', 'transforms',
+]);
+const EXTERNAL_PROVENANCE_KEYS = new Set(['kind', 'binding', 'descriptor', 'transforms']);
+const SOURCE_SPAN_KEYS = new Set(['start', 'end']);
+const EXTRACTION_KEYS = new Set([
+  'startFrame', 'endFrame', 'sampleRate', 'channelCount', 'buffer',
+]);
 const textEncoder = new TextEncoder();
 const verifiedConstruction = Symbol('verified CanonicalPcm');
 
 function isObject(value) {
   return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasExactKeys(value, expected) {
+  if (!isObject(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === expected.size && keys.every((key) => expected.has(key));
+}
+
+function isPlainObject(value) {
+  if (!isObject(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasPcmBearingField(value) {
+  if (Array.isArray(value)) return value.some(hasPcmBearingField);
+  if (!isPlainObject(value)) return false;
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'channels' || key === 'bytes' || key === 'rawBytes' || key === 'pcm') return true;
+    if (hasPcmBearingField(entry)) return true;
+  }
+  return false;
 }
 
 function isPositiveSafeInteger(value) {
@@ -274,6 +304,31 @@ function validateTransforms(transforms) {
   return { replayable };
 }
 
+function transformsMatchExtractionBuffer(extraction, transforms) {
+  if (!isObject(extraction) || !Array.isArray(transforms)) return false;
+  const spectral = transforms
+    .map((transform, index) => ({ transform, index }))
+    .filter(({ transform }) => isObject(transform) && transform.kind === 'spectral-repair-stack');
+  if (extraction.buffer === 'original') return spectral.length === 0;
+  if (extraction.buffer !== 'repaired' || spectral.length !== 1) return false;
+  const [{ transform, index }] = spectral;
+  return index === 0 && transform.schemaVersion === 1 && Array.isArray(transform.repairs)
+    && transform.repairs.some((repair) => isObject(repair) && repair.enabled === true);
+}
+
+function validProjectSourceClipShape(provenance) {
+  return hasExactKeys(provenance, PROJECT_PROVENANCE_KEYS)
+    && provenance.kind === 'source-clip' && provenance.binding === 'project'
+    && hasExactKeys(provenance.sourceSpan, SOURCE_SPAN_KEYS)
+    && hasExactKeys(provenance.extraction, EXTRACTION_KEYS);
+}
+
+function validExternalShape(provenance) {
+  return hasExactKeys(provenance, EXTERNAL_PROVENANCE_KEYS)
+    && provenance.binding === 'external' && isPlainObject(provenance.descriptor)
+    && !hasPcmBearingField(provenance);
+}
+
 function matchingProjectExtraction(project, asset, provenance) {
   if (!isObject(project) || !isObject(project.sources) || typeof provenance.sourceId !== 'string'
       || typeof provenance.clipId !== 'string') return false;
@@ -316,10 +371,19 @@ export function validateAssetProvenance(project, asset) {
   }
   const encoded = serializedBytes(provenance);
   if (!encoded || encoded.byteLength > MAX_TRANSFORM_BYTES) return { ok: false, issue: 'provenance' };
-  if (provenance.binding === 'project' && !matchingProjectExtraction(project, asset, provenance)) {
-    return { ok: false, issue: 'projectBinding' };
+  if (provenance.binding === 'project') {
+    if (!validProjectSourceClipShape(provenance)) return { ok: false, issue: 'projectShape' };
+    if (!matchingProjectExtraction(project, asset, provenance)) {
+      return { ok: false, issue: 'projectBinding' };
+    }
+  } else if (!validExternalShape(provenance)) {
+    return { ok: false, issue: 'externalShape' };
   }
   const transforms = validateTransforms(provenance.transforms);
   if (!transforms) return { ok: false, issue: 'transforms' };
+  if (provenance.binding === 'project'
+      && !transformsMatchExtractionBuffer(provenance.extraction, provenance.transforms)) {
+    return { ok: false, issue: 'bufferTransforms' };
+  }
   return { ok: true, replayable: transforms.replayable };
 }

@@ -13,6 +13,7 @@ import {
   wordsToClip,
 } from '../js/machine/cliprefs.js';
 import { CrateStore, prepareCrateAsset } from '../js/app/crate.js';
+import { validateAssetProvenance } from '../js/app/sample-payload.js';
 import {
   createProject,
   registerPreparedAsset,
@@ -152,6 +153,91 @@ export const clipIdentityCases = [
     assert.equal(frozen.allocators.clip, 0, 'an Atlas that cannot append fails before allocation');
   },
 
+  function finalizesAnnotationsOnceAndNeverBurnsAnIdOnAppendFailure() {
+    // Mutation caught: validating a caller annotation once, then serializing it again after allocation.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    let snapshots = 0;
+    const features = {
+      toJSON() {
+        snapshots++;
+        if (snapshots > 1) throw new Error('serialized twice');
+        return [1, 2, 3];
+      },
+    };
+    const clip = createClipRef(project, { sourceId: a, start: 0, end: 1, features });
+    assert.equal(snapshots, 1);
+    assert.deepEqual(clip.features, [1, 2, 3]);
+    assert.equal(clip.id, 'c1');
+
+    const blocked = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    Object.defineProperty(blocked.clips, 'length', { writable: false });
+    assert.throws(() => createClipRef(blocked, { sourceId: a, start: 0, end: 1 }));
+    assert.equal(blocked.allocators.clip, 0, 'non-writable length cannot burn c1');
+    assert.deepEqual(Array.from(blocked.clips), []);
+  },
+
+  function requiresCanonicalMatchingSourceRecordsAndBoundedCreationDates() {
+    // Mutation caught: treating any object under any source key as a known source, or accepting invalid Date values.
+    const canonical = sourceId('a');
+    const noncanonical = projectWithSources([{ id: 'source-a', sampleRate: 10, channelCount: 1, frames: 100 }]);
+    assert.throws(() => createClipRef(noncanonical, { sourceId: 'source-a', start: 0, end: 1 }));
+    assert.equal(noncanonical.allocators.clip, 0);
+
+    const mismatched = projectWithSources([{ id: canonical, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    mismatched.sources[canonical].id = sourceId('b');
+    assert.throws(() => createClipRef(mismatched, { sourceId: canonical, start: 0, end: 1 }));
+    assert.equal(mismatched.allocators.clip, 0);
+
+    const dates = projectWithSources([{ id: canonical, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    for (const createdAt of [8640000000000001, -8640000000000001]) {
+      assert.throws(() => createClipRef(dates, { sourceId: canonical, start: 0, end: 1, createdAt }));
+      assert.equal(dates.allocators.clip, 0);
+    }
+    assert.equal(createClipRef(dates, {
+      sourceId: canonical, start: 0, end: 1, createdAt: null,
+    }).createdAt, null);
+  },
+
+  function rollsBackAProxyAppendOrReplacementTrapWithoutTouchingPriorAtlasState() {
+    // Mutation caught: a trap throws after the underlying array write has already become visible.
+    const a = sourceId('a');
+    const appendProject = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const appendTarget = appendProject.clips;
+    let failLength = true;
+    appendProject.clips = new Proxy(appendTarget, {
+      set(target, property, value, receiver) {
+        const result = Reflect.set(target, property, value, receiver);
+        if (property === 'length' && failLength) {
+          failLength = false;
+          throw new Error('append commit fault');
+        }
+        return result;
+      },
+    });
+    assert.throws(() => createClipRef(appendProject, { sourceId: a, start: 0, end: 1 }), /commit fault/);
+    assert.equal(appendProject.allocators.clip, 0);
+    assert.deepEqual(appendTarget, [], 'partially exposed appended element is removed');
+
+    const replaceProject = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const original = createClipRef(replaceProject, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const replaceTarget = replaceProject.clips;
+    let failSlot = true;
+    replaceProject.clips = new Proxy(replaceTarget, {
+      set(target, property, value, receiver) {
+        const result = Reflect.set(target, property, value, receiver);
+        if (property === '0' && failSlot) {
+          failSlot = false;
+          throw new Error('replace commit fault');
+        }
+        return result;
+      },
+    });
+    assert.throws(() => replaceClipBounds(replaceProject, original.id, { start: 0, end: 2 }), /commit fault/);
+    assert.equal(replaceProject.allocators.clip, 1);
+    assert.strictEqual(replaceTarget[0], original, 'the exact prior ClipRef is restored');
+  },
+
   function projectsAFilteredSourceViewWithoutReorderingTheAtlas() {
     // Mutation caught: sorting/filtering in place or treating malformed unrelated entries as matches.
     const a = sourceId('a');
@@ -204,19 +290,21 @@ export const clipIdentityCases = [
       a5: { id: 'a5', provenance: { kind: 'factory', binding: 'project', clipId: clip.id } },
       key2: { id: 'a3', provenance: { kind: 'source-clip', binding: 'project', clipId: clip.id } },
       a6: { provenance: { kind: 'source-clip', binding: 'project', clipId: clip.id } },
+      a7: { id: 'bogus', provenance: { kind: 'source-clip', binding: 'project', clipId: clip.id } },
     };
-    assert.deepEqual(clipReferences(project, clip.id), ['a3', 'a6']);
+    assert.deepEqual(clipReferences(project, clip.id), ['a3', 'a6', 'a7']);
     assert.deepEqual(replaceClipBounds(project, clip.id, { start: 1, end: 2 }), {
       kind: 'unchanged', clip,
     });
     assert.deepEqual(replaceClipBounds(project, clip.id, { start: 1, end: 2.5 }), {
-      kind: 'blocked', clipId: clip.id, references: ['a3', 'a6'],
+      kind: 'blocked', clipId: clip.id, references: ['a3', 'a6', 'a7'],
     });
     assert.equal(project.allocators.clip, 1);
     assert.strictEqual(project.clips[0], clip);
     delete project.assets.key1;
     delete project.assets.key2;
     delete project.assets.a6;
+    delete project.assets.a7;
     const original = structuredClone(clip);
     const result = replaceClipBounds(project, clip.id, { start: 1, end: 2.5 });
     assert.equal(result.kind, 'replaced');
@@ -240,9 +328,131 @@ export const clipIdentityCases = [
     assert.equal(project.allocators.clip, 0);
     assert.deepEqual(project.clips, []);
   },
+
+  async function harvestCommitsEveryClipOrRollsBackTheWholeBatch() {
+    // Mutation caught: the second append fails after the first clip and both ID allocations become visible.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const target = project.clips;
+    let failed = false;
+    project.clips = new Proxy(target, {
+      set(array, property, value, receiver) {
+        const result = Reflect.set(array, property, value, receiver);
+        if (property === '1' && !failed) {
+          failed = true;
+          throw new Error('second append fault');
+        }
+        return result;
+      },
+    });
+    await assert.rejects(() => prepareHarvestRun(project,
+      decodedBuffer([new Float32Array(100)], 10), [
+        { t0: 0, t1: 1, role: 'kick', label: 'one' },
+        { t0: 2, t1: 3, role: 'snare', label: 'two' },
+      ], { sourceId: a, runId: 'atomic-run', buffer: 'original' }), /second append fault/);
+    assert.equal(project.allocators.clip, 0, 'the failed batch burns no suffixes');
+    assert.deepEqual(target, [], 'the failed batch exposes no partial Atlas');
+  },
 ];
 
 export const assetProvenanceCases = [
+  function sharedValidationEnforcesTruthfulBufferRepairCombinations() {
+    // Mutation caught: treating transform validity and buffer truthfulness as independent checks.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    project.clips.push({ id: 'c1', sourceId: a, start: 0, end: 1 });
+    const enabledRepair = {
+      id: 'r1', t0: 0, t1: 0.5, f0: 10, f1: 20, strength: 0.5, enabled: true, label: 'repair',
+    };
+    const disabledRepair = { ...enabledRepair, enabled: false };
+    const spectral = (repairs = [enabledRepair]) => ({
+      schemaVersion: 1, kind: 'spectral-repair-stack', repairs,
+    });
+    const gain = { schemaVersion: 1, kind: 'linear-gain', gain: 0.5 };
+    const asset = (buffer, transforms) => ({
+      kind: 'sample', label: 'clip', sampleRate: 10, channelCount: 1, frames: 10,
+      payload: { byteLength: 40, sha256: 'sha256:' + '0'.repeat(64) },
+      provenance: {
+        kind: 'source-clip', binding: 'project', sourceId: a, clipId: 'c1',
+        sourceSpan: { start: 0, end: 1 },
+        extraction: { startFrame: 0, endFrame: 10, sampleRate: 10, channelCount: 1, buffer },
+        transforms,
+      },
+    });
+    assert.equal(validateAssetProvenance(project, asset('original', [])).ok, true);
+    assert.equal(validateAssetProvenance(project, asset('original', [spectral()])).ok, false,
+      'original cannot claim spectral repair');
+    assert.equal(validateAssetProvenance(project, asset('repaired', [])).ok, false,
+      'repaired requires one spectral stack');
+    assert.equal(validateAssetProvenance(project, asset('repaired', [gain, spectral()])).ok, false,
+      'the spectral stack must be first');
+    assert.equal(validateAssetProvenance(project, asset('repaired', [spectral(), spectral()])).ok, false,
+      'duplicate spectral stacks are invalid');
+    assert.equal(validateAssetProvenance(project, asset('repaired', [spectral([disabledRepair])])).ok, false,
+      'a repaired buffer requires at least one enabled repair');
+    assert.equal(validateAssetProvenance(project, asset('repaired', [spectral(), gain])).ok, true);
+
+    const wrongKind = asset('original', []);
+    wrongKind.provenance.kind = 'not-source-clip';
+    assert.equal(validateAssetProvenance(project, wrongKind).ok, false,
+      'project-bound extraction has exactly the source-clip kind');
+    const outerFreight = asset('original', []);
+    outerFreight.provenance.freight = 'hidden';
+    assert.equal(validateAssetProvenance(project, outerFreight).ok, false,
+      'project-bound provenance rejects extra outer freight');
+    const spanFreight = asset('original', []);
+    spanFreight.provenance.sourceSpan.freight = 'hidden';
+    assert.equal(validateAssetProvenance(project, spanFreight).ok, false,
+      'sourceSpan is an exact two-field record');
+    const extractionFreight = asset('original', []);
+    extractionFreight.provenance.extraction.freight = 'hidden';
+    assert.equal(validateAssetProvenance(project, extractionFreight).ok, false,
+      'extraction is an exact five-field record');
+  },
+
+  function sharedValidationRequiresTheExactExternalEnvelope() {
+    // Mutation caught: accepting external provenance that preparation can
+    // return but canonical project registration must later reject.
+    const asset = (provenance) => ({
+      kind: 'sample', label: 'external', sampleRate: 10, channelCount: 1, frames: 2,
+      payload: { byteLength: 8, sha256: 'sha256:' + '0'.repeat(64) },
+      provenance,
+    });
+    const valid = {
+      kind: 'field-capture', binding: 'external', descriptor: { provider: 'archive' }, transforms: [],
+    };
+    assert.deepEqual(validateAssetProvenance({}, asset(valid)), { ok: true, replayable: true });
+    assert.equal(validateAssetProvenance({}, asset({
+      kind: 'field-capture', binding: 'external', transforms: [],
+    })).ok, false, 'external provenance requires a descriptor');
+    assert.equal(validateAssetProvenance({}, asset({ ...valid, descriptor: [] })).ok, false,
+      'the external descriptor is a bounded JSON object');
+    assert.equal(validateAssetProvenance({}, asset({ ...valid, freight: true })).ok, false,
+      'external provenance rejects outer freight');
+    assert.equal(validateAssetProvenance({}, asset({
+      ...valid, descriptor: { provider: 'archive', pcm: [0.25, -0.5] },
+    })).ok, false, 'external metadata cannot smuggle a second PCM owner');
+  },
+
+  async function registrationRejectsNestedProjectProvenanceFreightBeforeAllocation() {
+    // Mutation caught: project-store's outer allowlist delegating a permissive nested shape to shared validation.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const clip = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'clip' });
+    const extraction = extractClipAsset(decodedBuffer([new Float32Array(100)], 10), clip);
+    const prepared = await prepareClipAsset(project, clip, extraction, { buffer: 'original' });
+    const poisoned = {
+      ...prepared,
+      meta: structuredClone(prepared.meta),
+    };
+    poisoned.meta.provenance.extraction.freight = { hidden: 'not allowed' };
+    const runtime = { assetPcm: new Map() };
+    await assert.rejects(() => registerPreparedAsset(project, runtime, poisoned), /provenance/i);
+    assert.equal(project.allocators.asset, 0);
+    assert.deepEqual(project.assets, {});
+    assert.equal(runtime.assetPcm.size, 0);
+  },
+
   function extractsExactOwnedHalfOpenFramesFromEveryNativeRateChannel() {
     // Mutation caught: rounding, inclusive end, mono fold-down, resampling, or retaining AudioBuffer views.
     const left = new Float32Array(60010);
@@ -377,6 +587,64 @@ export const assetProvenanceCases = [
     }), /repair|stack/i, 'repaired PCM requires an enabled repair basis');
   },
 
+  async function clipPreparationSnapshotsEveryInputBeforeItsFirstAwait() {
+    // Mutation caught: hashing yields before metadata assembly, so caller-owned
+    // clip, extraction metadata, or options cannot be reread afterward.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const clip = createClipRef(project, { sourceId: a, start: 0, end: 0.2, label: 'ORIGINAL' });
+    const extraction = extractClipAsset(decodedBuffer([Float32Array.of(0.25, -0.5)], 10), clip);
+    const options = { buffer: 'original', role: 'TONE' };
+    const pending = prepareClipAsset(project, clip, extraction, options);
+    clip.label = 'MUTATED';
+    extraction.extraction.startFrame = 1;
+    extraction.sourceSpan.end = 99;
+    extraction.sample.channels[0][0] = 9;
+    options.role = 'FX';
+    options.label = 'MUTATED';
+    const prepared = await pending;
+    assert.equal(prepared.meta.label, 'ORIGINAL');
+    assert.equal(prepared.meta.role, 'TONE');
+    assert.deepEqual(prepared.meta.provenance.sourceSpan, { start: 0, end: 0.2 });
+    assert.equal(prepared.meta.provenance.extraction.startFrame, 0);
+    assert.deepEqual(Array.from(prepared.sample.channels[0]), [0.25, -0.5]);
+  },
+
+  async function harvestSnapshotsPicksAndRunOptionsBeforeItsFirstAwait() {
+    // Mutation caught: a stateful pick getter and caller edits while the first
+    // digest is pending cannot mix one run's labels, leveling, or buffer basis.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    let roleReads = 0;
+    const pick = {
+      t0: 0,
+      t1: 1,
+      get role() {
+        roleReads += 1;
+        return roleReads === 1 ? 'TONE' : 'MUTATED';
+      },
+      label: 'ORIGINAL',
+    };
+    const options = {
+      sourceId: a, runId: 'snapshot-run', buffer: 'original', level: false,
+    };
+    const pending = prepareHarvestRun(project,
+      decodedBuffer([new Float32Array(100).fill(0.1)], 10), [pick], options);
+    pick.label = 'MUTATED';
+    options.level = true;
+    options.buffer = 'repaired';
+    options.repairStack = [{
+      id: 'r1', t0: 0, t1: 1, f0: 10, f1: 20, strength: 0.5, enabled: true, label: 'late',
+    }];
+    const run = await pending;
+    assert.equal(roleReads, 1, 'each pick field is finalized from one detached snapshot');
+    assert.equal(run.clips[0].tag, 'TONE');
+    assert.equal(run.clips[0].label, 'ORIGINAL');
+    assert.equal(run.preparedAssets[0].meta.provenance.extraction.buffer, 'original');
+    assert.deepEqual(run.preparedAssets[0].meta.provenance.transforms, []);
+    assert.equal(run.preparedAssets[0].sample.channels[0][0], Math.fround(0.1));
+  },
+
   async function harvestUsesOneBoundedMultichannelGainAndHashesTransformedPcm() {
     // Mutation caught: per-channel leveling, missing/duplicate unity transform, or hashing pre-gain samples.
     const a = sourceId('a');
@@ -458,6 +726,54 @@ export const assetProvenanceCases = [
 ];
 
 export const crateAssetCases = [
+  async function cratePreparationSnapshotsTheEntireItemBeforeItsFirstAwait() {
+    // Mutation caught: sample is detached synchronously but meta/provenance are read after asynchronous hashing.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    project.clips.push({ id: 'c1', sourceId: a, start: 0, end: 0.2 });
+    const item = {
+      meta: {
+        name: 'ORIGINAL', role: 'TONE', source: 'display-only.wav',
+        provenance: {
+          kind: 'source-clip', binding: 'project', sourceId: a, clipId: 'c1',
+          sourceSpan: { start: 0, end: 0.2 },
+          extraction: {
+            startFrame: 0, endFrame: 2, sampleRate: 10, channelCount: 1, buffer: 'original',
+          },
+          transforms: [],
+        },
+      },
+      sample: {
+        sampleRate: 10, channelCount: 1, frames: 2, channels: [Float32Array.of(0.25, -0.5)],
+      },
+    };
+    const pending = prepareCrateAsset(item, project);
+    item.meta.name = 'MUTATED';
+    item.meta.role = 'FX';
+    item.meta.provenance.sourceSpan.end = 99;
+    item.sample.channels[0][0] = 9;
+    const prepared = await pending;
+    assert.equal(prepared.meta.label, 'ORIGINAL');
+    assert.equal(prepared.meta.role, 'TONE');
+    assert.deepEqual(prepared.meta.provenance.descriptor.sourceClip.sourceSpan, { start: 0, end: 0.2 });
+    assert.deepEqual(Array.from(prepared.sample.channels[0]), [0.25, -0.5]);
+  },
+
+  async function cratePreparationRejectsMalformedExternalProvenanceImmediately() {
+    // Mutation caught: returning an object which only fails at the later
+    // registerPreparedAsset trust boundary.
+    const item = {
+      meta: {
+        name: 'MALFORMED',
+        provenance: { kind: 'field-capture', binding: 'external', transforms: [] },
+      },
+      sample: {
+        sampleRate: 10, channelCount: 1, frames: 2, channels: [Float32Array.of(0.25, -0.5)],
+      },
+    };
+    await assert.rejects(() => prepareCrateAsset(item, projectWithSources([])), /provenance/i);
+  },
+
   async function roundTripsStereoCanonicalPcmAndDeepImmutableMetadata() {
     // Mutation caught: host-endian/interleaved bytes, mono flattening, shallow voice/provenance, or post-put aliasing.
     const crate = new MemoryCrate();
@@ -579,6 +895,22 @@ export const crateAssetCases = [
     const relinked = await prepareCrateAsset(item, project, { relink: true });
     assert.equal(relinked.meta.provenance.binding, 'project');
     assert.equal(relinked.meta.provenance.sourceId, a);
+
+    const falseOriginal = structuredClone(item);
+    falseOriginal.meta.provenance.transforms = [{
+      schemaVersion: 1,
+      kind: 'spectral-repair-stack',
+      repairs: [{
+        id: 'r1', t0: 0, t1: 2 / 96000, f0: 10, f1: 20,
+        strength: 0.5, enabled: true, label: 'repair',
+      }],
+    }];
+    assert.equal((await prepareCrateAsset(falseOriginal, project, { relink: true }))
+      .meta.provenance.binding, 'external', 'false original provenance cannot relink');
+    const falseRepaired = structuredClone(item);
+    falseRepaired.meta.provenance.extraction.buffer = 'repaired';
+    assert.equal((await prepareCrateAsset(falseRepaired, project, { relink: true }))
+      .meta.provenance.binding, 'external', 'repaired provenance without a stack cannot relink');
 
     const mismatched = structuredClone(item);
     mismatched.meta.provenance.sourceSpan.end = 4 / 96000;

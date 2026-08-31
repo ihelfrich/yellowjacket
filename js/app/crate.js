@@ -401,24 +401,35 @@ function externalizedProvenance(provenance) {
 }
 
 export async function prepareCrateAsset(item, project, { relink = false } = {}) {
-  if (!item || typeof item !== 'object' || !item.meta || !item.sample) {
+  if (!item || typeof item !== 'object') {
     throw new TypeError('CRATE preparation is invalid');
   }
-  const sample = snapshotSample({ sample: item.sample });
+  const itemMeta = item.meta;
+  const itemSample = item.sample;
+  if (!itemMeta || typeof itemMeta !== 'object' || Array.isArray(itemMeta) || !itemSample) {
+    throw new TypeError('CRATE preparation is invalid');
+  }
+  // Detach the entire stored item before hashing yields; metadata and PCM must
+  // always come from one synchronous caller snapshot.
+  const metaSnapshot = jsonCopy(itemMeta);
+  if (!metaSnapshot || typeof metaSnapshot !== 'object' || Array.isArray(metaSnapshot)) {
+    throw new TypeError('CRATE preparation is invalid');
+  }
+  const sample = snapshotSample({ sample: itemSample });
   const { describeSamplePayload, validateAssetProvenance } = await import('./sample-payload.js');
   const described = await describeSamplePayload(sample);
   if (!described) throw new TypeError('CRATE PCM is invalid');
   const meta = {
     kind: 'sample',
-    label: typeof item.meta.name === 'string' ? item.meta.name : 'INSTRUMENT',
+    label: typeof metaSnapshot.name === 'string' ? metaSnapshot.name : 'INSTRUMENT',
     sampleRate: sample.sampleRate,
     channelCount: sample.channelCount,
     frames: sample.frames,
     payload: { byteLength: described.byteLength, sha256: described.sha256 },
   };
-  if (typeof item.meta.role === 'string') meta.role = item.meta.role;
-  if (item.meta.provenance !== undefined) {
-    const stored = jsonCopy(item.meta.provenance);
+  if (typeof metaSnapshot.role === 'string') meta.role = metaSnapshot.role;
+  if (metaSnapshot.provenance !== undefined) {
+    const stored = metaSnapshot.provenance;
     const snapshot = sourceClipSnapshot(stored);
     let provenance = externalizedProvenance(stored);
     if (relink && snapshot) {
