@@ -67,13 +67,40 @@ function validTime(value) {
   return Number.isFinite(value) && value >= 0 && !Object.is(value, -0);
 }
 
+function ownDataDescriptor(object, key) {
+  try {
+    const descriptor = Reflect.getOwnPropertyDescriptor(object, key);
+    return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+      ? descriptor : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const prototype = Reflect.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
 function knownSource(project, sourceId) {
-  return project && typeof project === 'object' && project.sources
-    && typeof project.sources === 'object' && !Array.isArray(project.sources)
-    && typeof sourceId === 'string' && SOURCE_ID_RE.test(sourceId)
-    && Object.prototype.hasOwnProperty.call(project.sources, sourceId)
-    && project.sources[sourceId] && typeof project.sources[sourceId] === 'object'
-    && !Array.isArray(project.sources[sourceId]) && project.sources[sourceId].id === sourceId;
+  if (!project || typeof project !== 'object' || !project.sources
+      || typeof project.sources !== 'object' || Array.isArray(project.sources)
+      || typeof sourceId !== 'string' || !SOURCE_ID_RE.test(sourceId)) return false;
+  const sourceDescriptor = ownDataDescriptor(project.sources, sourceId);
+  if (!sourceDescriptor || !isPlainObject(sourceDescriptor.value)) return false;
+  const record = sourceDescriptor.value;
+  const idDescriptor = ownDataDescriptor(record, 'id');
+  try {
+    return idDescriptor && idDescriptor.value === sourceId
+      && Reflect.get(project.sources, sourceId) === record && Reflect.get(record, 'id') === sourceId;
+  } catch {
+    return false;
+  }
 }
 
 function validateSpan(start, end) {
@@ -153,16 +180,48 @@ function rollbackClipCounter(project, before, issued) {
     throw new Error('Clip allocator changed during rollback');
   }
   project.allocators.clip = before;
+  if (project.allocators.clip !== before) throw new Error('Clip allocator rollback failed');
+}
+
+function exactArrayLength(atlas, expected, writable = undefined) {
+  const descriptor = ownDataDescriptor(atlas, 'length');
+  try {
+    return descriptor && descriptor.value === expected && atlas.length === expected
+      && descriptor.enumerable === false && descriptor.configurable === false
+      && (writable === undefined || descriptor.writable === writable);
+  } catch {
+    return false;
+  }
+}
+
+function exactSlot(atlas, index, value, template = null) {
+  const descriptor = ownDataDescriptor(atlas, String(index));
+  if (!descriptor || descriptor.value !== value) return false;
+  if (template && (descriptor.writable !== template.writable
+      || descriptor.enumerable !== template.enumerable
+      || descriptor.configurable !== template.configurable)) return false;
+  try {
+    return Reflect.get(atlas, String(index)) === value;
+  } catch {
+    return false;
+  }
+}
+
+function exactAppendedSlot(atlas, index, value) {
+  return exactSlot(atlas, index, value, {
+    writable: true, enumerable: true, configurable: true,
+  });
 }
 
 function rollbackAppends(atlas, beforeLength, count, lengthDescriptor) {
   for (let index = beforeLength; index < beforeLength + count; index++) {
-    if (!Reflect.deleteProperty(atlas, String(index))) {
+    if (!Reflect.deleteProperty(atlas, String(index))
+        || Reflect.getOwnPropertyDescriptor(atlas, String(index)) !== undefined) {
       throw new Error('Clip Atlas append rollback failed');
     }
   }
-  if (atlas.length !== beforeLength
-      && !Reflect.defineProperty(atlas, 'length', { ...lengthDescriptor, value: beforeLength })) {
+  if (!Reflect.defineProperty(atlas, 'length', { ...lengthDescriptor, value: beforeLength })
+      || !exactArrayLength(atlas, beforeLength, lengthDescriptor.writable)) {
     throw new Error('Clip Atlas length rollback failed');
   }
 }
@@ -174,8 +233,8 @@ function appendFinalizedClips(project, finalizedClips, expectedIds = null) {
   }
   if (!finalizedClips.length) return [];
   const beforeLength = atlas.length;
-  const lengthDescriptor = Reflect.getOwnPropertyDescriptor(atlas, 'length');
-  if (!lengthDescriptor || lengthDescriptor.writable === false || !Reflect.isExtensible(atlas)) {
+  const lengthDescriptor = ownDataDescriptor(atlas, 'length');
+  if (!lengthDescriptor || !exactArrayLength(atlas, beforeLength, true) || !Reflect.isExtensible(atlas)) {
     throw new TypeError('Clip Atlas cannot append');
   }
   const beforeCounter = project.allocators && project.allocators.clip;
@@ -190,17 +249,31 @@ function appendFinalizedClips(project, finalizedClips, expectedIds = null) {
     if (expectedIds && clips.some((clip, index) => clip.id !== expectedIds[index])) {
       throw new Error('Clip allocation changed during preparation');
     }
-    for (const clip of clips) atlas.push(clip);
+    for (let index = 0; index < clips.length; index++) {
+      const clip = clips[index];
+      const expectedLength = beforeLength + index + 1;
+      const result = Reflect.apply(Array.prototype.push, atlas, [clip]);
+      if (result !== expectedLength || !exactAppendedSlot(atlas, expectedLength - 1, clip)
+          || !exactArrayLength(atlas, expectedLength, true)) {
+        throw new TypeError('Clip Atlas append commit failed');
+      }
+    }
     return clips;
   } catch (error) {
-    let rollbackError = null;
+    const rollbackErrors = [];
     try {
       rollbackAppends(atlas, beforeLength, clips.length, lengthDescriptor);
+    } catch (caught) {
+      rollbackErrors.push(caught);
+    }
+    try {
       rollbackClipCounter(project, beforeCounter, issued);
     } catch (caught) {
-      rollbackError = caught;
+      rollbackErrors.push(caught);
     }
-    if (rollbackError) throw new AggregateError([error, rollbackError], 'Clip append and rollback failed');
+    if (rollbackErrors.length) {
+      throw new AggregateError([error, ...rollbackErrors], 'Clip append and rollback failed');
+    }
     throw error;
   }
 }
@@ -282,8 +355,14 @@ export function replaceClipBounds(project, oldId, nextBounds) {
   input.start = nextBounds.start;
   input.end = nextBounds.end;
   const finalized = finalizeClipInput(project, input);
-  const descriptor = Reflect.getOwnPropertyDescriptor(project.clips, String(index));
-  if (!descriptor || descriptor.writable === false) throw new TypeError('Clip Atlas cannot replace');
+  const beforeLength = project.clips.length;
+  const descriptor = ownDataDescriptor(project.clips, String(index));
+  if (!descriptor || descriptor.writable !== true || descriptor.value !== old
+      || !exactSlot(project.clips, index, old, descriptor)
+      || !exactArrayLength(project.clips, beforeLength)) {
+    throw new TypeError('Clip Atlas replacement descriptor is invalid');
+  }
+  const restoreDescriptor = { ...descriptor, value: old };
   const beforeCounter = project.allocators && project.allocators.clip;
   let issued = 0;
   try {
@@ -292,18 +371,30 @@ export function replaceClipBounds(project, oldId, nextBounds) {
     if (!Reflect.set(project.clips, String(index), replacement)) {
       throw new TypeError('Clip Atlas cannot replace');
     }
+    if (!exactSlot(project.clips, index, replacement, restoreDescriptor)
+        || !exactArrayLength(project.clips, beforeLength)) {
+      throw new TypeError('Clip Atlas replacement commit failed');
+    }
     return { kind: 'replaced', oldId, clip: replacement };
   } catch (error) {
-    let rollbackError = null;
+    const rollbackErrors = [];
     try {
-      if (!Reflect.defineProperty(project.clips, String(index), descriptor)) {
+      if (!Reflect.defineProperty(project.clips, String(index), restoreDescriptor)
+          || !exactSlot(project.clips, index, old, restoreDescriptor)
+          || !exactArrayLength(project.clips, beforeLength)) {
         throw new Error('Clip Atlas replacement rollback failed');
       }
+    } catch (caught) {
+      rollbackErrors.push(caught);
+    }
+    try {
       rollbackClipCounter(project, beforeCounter, issued);
     } catch (caught) {
-      rollbackError = caught;
+      rollbackErrors.push(caught);
     }
-    if (rollbackError) throw new AggregateError([error, rollbackError], 'Clip replacement and rollback failed');
+    if (rollbackErrors.length) {
+      throw new AggregateError([error, ...rollbackErrors], 'Clip replacement and rollback failed');
+    }
     throw error;
   }
 }

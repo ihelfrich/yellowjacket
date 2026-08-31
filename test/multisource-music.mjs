@@ -199,6 +199,109 @@ export const clipIdentityCases = [
     }).createdAt, null);
   },
 
+  function requiresAPlainSourceRecordWithAnOwnDataIdBeforeAllocation() {
+    // Mutation caught: accepting an inherited/accessor ID which disappears or
+    // changes when the source record crosses the JSON project boundary.
+    const a = sourceId('a');
+    const inherited = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    inherited.sources[a] = Object.assign(Object.create({ id: a }), {
+      audio: { sampleRate: 10, channelCount: 1, frames: 100 },
+    });
+    assert.throws(() => createClipRef(inherited, { sourceId: a, start: 0, end: 1 }), /source/i);
+    assert.equal(inherited.allocators.clip, 0);
+    assert.deepEqual(inherited.clips, []);
+
+    const accessor = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    let idReads = 0;
+    const source = { audio: { sampleRate: 10, channelCount: 1, frames: 100 } };
+    Object.defineProperty(source, 'id', {
+      enumerable: true,
+      get() {
+        idReads++;
+        return a;
+      },
+    });
+    accessor.sources[a] = source;
+    assert.throws(() => createClipRef(accessor, { sourceId: a, start: 0, end: 1 }), /source/i);
+    assert.equal(idReads, 0, 'source qualification never invokes an ID accessor');
+    assert.equal(accessor.allocators.clip, 0);
+    assert.deepEqual(accessor.clips, []);
+  },
+
+  function rejectsSuccessfulNoOpAppendTrapsWithoutBurningAnId() {
+    // Mutation caught: trusting a truthy Proxy set trap rather than proving
+    // the exact own appended slot and final Array length.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const target = project.clips;
+    project.clips = new Proxy(target, {
+      set() { return true; },
+    });
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /commit|Atlas/i);
+    assert.equal(project.allocators.clip, 0, 'a successful no-op cannot burn c1');
+    assert.deepEqual(target, [], 'a successful no-op cannot be reported as an appended clip');
+  },
+
+  function usesTheIntrinsicArrayAppendInsteadOfAnAtlasMethodOverride() {
+    // Mutation caught: calling the caller-overridable atlas.push method rather
+    // than the intrinsic Array operation at the commit boundary.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    let overrideCalls = 0;
+    project.clips.push = () => {
+      overrideCalls++;
+      return 1;
+    };
+    const clip = createClipRef(project, { sourceId: a, start: 0, end: 1 });
+    assert.equal(overrideCalls, 0);
+    assert.strictEqual(project.clips[0], clip);
+    assert.equal(project.clips.length, 1);
+    assert.equal(project.allocators.clip, 1);
+  },
+
+  function rejectsSuccessfulNoOpReplacementTrapsAndKeepsThePriorClip() {
+    // Mutation caught: treating Reflect.set true as replacement success when
+    // the exact own slot still contains the old ClipRef.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const original = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const target = project.clips;
+    project.clips = new Proxy(target, {
+      set() { return true; },
+    });
+    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }), /commit|Atlas/i);
+    assert.equal(project.allocators.clip, 1, 'a successful no-op cannot burn c2');
+    assert.strictEqual(target[0], original);
+  },
+
+  function rejectsACounterfeitReplacementDescriptorBeforeAllocation() {
+    // Mutation caught: restoring a Proxy's counterfeit descriptor after a
+    // failed write instead of preserving the already-observed prior ClipRef.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const original = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const target = project.clips;
+    const fake = { ...original, label: 'fake' };
+    let writes = 0;
+    project.clips = new Proxy(target, {
+      getOwnPropertyDescriptor(array, property) {
+        if (property === '0') {
+          return { value: fake, writable: true, enumerable: true, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(array, property);
+      },
+      set(array, property, value) {
+        writes++;
+        Reflect.set(array, property, value, array);
+        throw new Error('replacement write fault');
+      },
+    });
+    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }));
+    assert.equal(writes, 0, 'an unprovable rollback boundary rejects before issuing c2');
+    assert.equal(project.allocators.clip, 1);
+    assert.strictEqual(target[0], original, 'the exact prior ClipRef remains authoritative');
+  },
+
   function rollsBackAProxyAppendOrReplacementTrapWithoutTouchingPriorAtlasState() {
     // Mutation caught: a trap throws after the underlying array write has already become visible.
     const a = sourceId('a');
@@ -352,6 +455,24 @@ export const clipIdentityCases = [
       ], { sourceId: a, runId: 'atomic-run', buffer: 'original' }), /second append fault/);
     assert.equal(project.allocators.clip, 0, 'the failed batch burns no suffixes');
     assert.deepEqual(target, [], 'the failed batch exposes no partial Atlas');
+  },
+
+  async function harvestRejectsSuccessfulNoOpAppendTrapsWithoutBurningTheBatch() {
+    // Mutation caught: a whole run reporting c1/c2 even though a lying Proxy
+    // silently dropped every intrinsic append write.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const target = project.clips;
+    project.clips = new Proxy(target, {
+      set() { return true; },
+    });
+    await assert.rejects(() => prepareHarvestRun(project,
+      decodedBuffer([new Float32Array(100)], 10), [
+        { t0: 0, t1: 1, role: 'kick', label: 'one' },
+        { t0: 2, t1: 3, role: 'snare', label: 'two' },
+      ], { sourceId: a, runId: 'no-op-run', buffer: 'original' }), /commit|Atlas/i);
+    assert.equal(project.allocators.clip, 0, 'a dropped run burns neither c1 nor c2');
+    assert.deepEqual(target, [], 'a dropped run exposes no Atlas suffix');
   },
 ];
 
