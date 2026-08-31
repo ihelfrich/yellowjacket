@@ -299,6 +299,13 @@ library:
 - Raw PCM bytes are SHA-256 verified asynchronously before a `CanonicalPcm`
   owner can exist. Only `.hydrate()` on an already-verified owner is
   synchronous and returns fresh playback channels.
+- Native import and migration adopt fixed-ID owners only through the verified
+  owner seam: it requires genuine `CanonicalPcm` private-field identity,
+  re-verifies metadata and bytes, and rechecks the exact `createProject()`
+  project/Clip Atlas/allocator association after every asynchronous yield.
+  Installation requires exact equality among MACHINE references, asset records,
+  and owner IDs; it preserves the runtime Map identity, allocates no ID, exposes
+  no canonical buffer to playback, and cannot install a partial set.
 - A runtime `assetPcm` map owns PCM independently of whichever track is active;
   compatibility `track.sample` references resolve from that map.
 - Replacing or clearing the last current track reference removes the asset
@@ -352,6 +359,15 @@ and import preflight call the same functions.
   `replayable: false`; the persisted PCM remains authoritative.
 - Analysis/cache version IDs match `[a-z0-9][a-z0-9._-]{0,63}`. An unknown
   analysis version invalidates the cache, never the source or project.
+- Asset metadata is at most 128 KiB and has an exact variant grammar. All kinds
+  use matching canonical ID, descriptor-valid kind, UTF-8-bounded label and
+  optional role, safe positive rate/channel count, safe nonnegative frames,
+  exact checked payload, and optional provenance. `sample` and unknown kinds
+  add nothing; `synth` requires a formula of at most 8192 UTF-8 bytes; `modal`
+  permits at most 64 exact finite physical mode records; `factory-drum` permits
+  only bounded kit/voice/model IDs, positive engine version, uint32 seed, at
+  most 64 flat finite numeric params, oversample `1..64`, and optional exact
+  metrics matching core frames/time. PCM-bearing and unknown variant keys reject.
 
 ## 6. Runtime architecture
 
@@ -654,6 +670,11 @@ Pool entry exists, it may relink to `project`. The existing human-readable
 
 ## 9. Persistence and migration
 
+Tasks 10–11 expose version 3 only through explicitly named inactive APIs. The
+live `FORMAT_VERSION`, `serializeProject()`, `applySnapshot()`, and emitted
+manifest remain version 2 until Task 12 atomically switches persistence and
+archive orchestration. No intermediate Task 10/11 build writes version 3.
+
 ### 9.1 Version 3 storage layout
 
 Both OPFS and portable projects use:
@@ -661,7 +682,7 @@ Both OPFS and portable projects use:
 ```text
 project.json
 sources/<64-lowercase-hex>.bin
-samples/<assetId>.f32
+samples/a[1-9][0-9]*.f32
 ```
 
 Portable `.yjkt` remains a STORE-only ZIP. Existing guards remain: safe UTF-8
@@ -728,10 +749,17 @@ For a source-backed version 2 project:
 6. reissue legacy ClipRef IDs deterministically as `c1..cN` in serialized array
    order and set `allocators.clip = N`, because version 2's `cN`/per-run `hN`
    IDs were not globally safe;
-7. preserve only MACHINE-reachable legacy assets, canonicalize and hash their
-   existing PCM, preserve their IDs, and initialize the asset allocator above
-   the greatest observed `aN` suffix;
-8. keep MACHINE, STUDIO, LOOM, and WIRE state otherwise unchanged;
+7. preserve only MACHINE-reachable legacy assets and canonicalize/hash their
+   PCM. Before pruning, compute the canonical high-water from every valid `aN`
+   asset key, payload key, and track reference. Preserve reachable canonical
+   `aN` IDs; deterministically remap reachable noncanonical IDs in
+   `reachableAssetIds(machine)` order to successive `aN` IDs above that full
+   high-water, rewriting MACHINE references, metadata, payload, and owner keys,
+   then persist the final greatest issued suffix;
+8. deterministically canonicalize MACHINE, STUDIO, LOOM, and WIRE once into a
+   native version 3 serialize/apply fixed point, including LOOM identity/lane
+   remapping, while preserving musical and provenance content. Native
+   `applySnapshotV3()` performs no identity-changing normalization;
 9. do not invent source spans for legacy assets that never recorded them.
 
 A source-free version 2 project becomes version 3 with an empty source registry

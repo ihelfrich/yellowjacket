@@ -8,6 +8,7 @@ import { createStudio } from '../studio/model.js';
 // route. Retain the owners we install so synchronous playback resolution can
 // distinguish them from arbitrary values inserted into the public runtime map.
 const verifiedAssetPcm = new WeakSet();
+const verifiedAssetHydrators = new WeakMap();
 // Task 9 mutators need an unforgeable ownership boundary: neither a Proxy nor
 // another project's otherwise-canonical containers can prove a transaction.
 // Keep the exact project -> Atlas/allocator association private. Persistence
@@ -177,6 +178,33 @@ function canonicalProjectState(project) {
 
 export function hasCanonicalProjectState(project) {
   return canonicalProjectState(project) !== null;
+}
+
+function writableOwnData(object, key) {
+  const descriptor = object && Reflect.getOwnPropertyDescriptor(object, key);
+  return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+    && descriptor.writable === true ? descriptor : null;
+}
+
+// Whole-document restore needs stronger compatibility than the allocator's
+// identity predicate: a privately owned but frozen Atlas/counter would still
+// permit a partial restore before failing. Keep this read-only and exact.
+export function hasCompatibleProjectMutationState(project) {
+  const state = canonicalProjectState(project);
+  if (!state || Object.getPrototypeOf(state.clips) !== Array.prototype
+      || !Object.isExtensible(state.clips)) return false;
+  const length = writableOwnData(state.clips, 'length');
+  if (!length || length.value !== state.clips.length) return false;
+  for (let index = 0; index < state.clips.length; index++) {
+    const descriptor = writableOwnData(state.clips, String(index));
+    if (!descriptor || descriptor.configurable !== true || descriptor.value !== state.clips[index]) return false;
+  }
+  if (Object.getPrototypeOf(state.allocators) !== Object.prototype) return false;
+  for (const kind of ['clip', 'asset']) {
+    const descriptor = writableOwnData(state.allocators, kind);
+    if (!descriptor || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0) return false;
+  }
+  return true;
 }
 
 function allocatedSuffixes(project, kind, state) {
@@ -382,7 +410,205 @@ export async function registerPreparedAsset(project, runtime, prepared) {
   project.assets[id] = { ...meta, id };
   runtime.assetPcm.set(id, owner);
   verifiedAssetPcm.add(owner);
+  verifiedAssetHydrators.set(owner, () => CanonicalPcm.prototype.hydrate.call(owner));
   return id;
+}
+
+function exactMap(value) {
+  return value instanceof Map && Object.getPrototypeOf(value) === Map.prototype;
+}
+
+function currentAssetIds(project, machine = project && project.machine, assets = project && project.assets) {
+  const ids = historyReachableAssetIds(machine);
+  const metadata = assets && typeof assets === 'object'
+    && !Array.isArray(assets) ? Object.keys(assets) : null;
+  if (!metadata || ids.length !== metadata.length) return null;
+  const expected = new Set(ids);
+  if (expected.size !== ids.length || metadata.some((id) => !expected.has(id))) return null;
+  return ids;
+}
+
+function strictJsonDataClone(value, seen = new Set()) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || Object.is(value, -0)) throw new TypeError('JSON data is invalid');
+    return value;
+  }
+  if (!value || typeof value !== 'object' || seen.has(value)) {
+    throw new TypeError('JSON data is invalid');
+  }
+  seen.add(value);
+  try {
+    const prototype = Reflect.getPrototypeOf(value);
+    if (Array.isArray(value)) {
+      if (prototype !== Array.prototype || !Object.isExtensible(value)) {
+        throw new TypeError('JSON array is not compatible');
+      }
+      const keys = Reflect.ownKeys(value);
+      if (keys.some((key) => typeof key !== 'string') || keys.length !== value.length + 1
+          || !keys.includes('length')) throw new TypeError('JSON array is invalid');
+      const copy = [];
+      for (let index = 0; index < value.length; index++) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+            || descriptor.enumerable !== true || descriptor.writable !== true
+            || descriptor.configurable !== true) throw new TypeError('JSON array is invalid');
+        copy.push(strictJsonDataClone(descriptor.value, seen));
+      }
+      return copy;
+    }
+    if ((prototype !== Object.prototype && prototype !== null) || !Object.isExtensible(value)) {
+      throw new TypeError('JSON object is not compatible');
+    }
+    const copy = Object.create(null);
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string' || key === '__proto__') throw new TypeError('JSON object is invalid');
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+          || descriptor.enumerable !== true || descriptor.writable !== true
+          || descriptor.configurable !== true) throw new TypeError('JSON object is invalid');
+      Object.defineProperty(copy, key, {
+        value: strictJsonDataClone(descriptor.value, seen),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return copy;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function sameJsonData(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object'
+      || Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && leftKeys.every((key, index) => (
+    key === rightKeys[index] && sameJsonData(left[key], right[key])
+  ));
+}
+
+function exactOwnerEntries(owners, expectedIds) {
+  if (!exactMap(owners) || owners.size !== expectedIds.length) return null;
+  const entries = Array.from(Map.prototype.entries.call(owners));
+  const expected = new Set(expectedIds);
+  if (entries.some(([id]) => typeof id !== 'string' || !expected.has(id))) return null;
+  return entries;
+}
+
+// Preflight-created CanonicalPcm owners cross an async cryptographic boundary.
+// Authenticate the class's private fields through intrinsic methods, verify
+// metadata/bytes again, then brand the complete set at once. `instanceof`
+// alone is deliberately insufficient because its prototype can be forged.
+export async function adoptVerifiedAssetPcmOwners(project, owners) {
+  if (!hasCompatibleProjectMutationState(project)) {
+    throw new TypeError('Verified PCM project is not compatible');
+  }
+  const assetsDescriptor = writableOwnData(project, 'assets');
+  const machineDescriptor = writableOwnData(project, 'machine');
+  if (!assetsDescriptor || !machineDescriptor) {
+    throw new TypeError('Verified PCM project is not compatible');
+  }
+  const assets = assetsDescriptor.value;
+  const machine = machineDescriptor.value;
+  let assetSnapshot;
+  try {
+    assetSnapshot = strictJsonDataClone(assets);
+  } catch {
+    throw new TypeError('Verified PCM project assets are invalid');
+  }
+  const expectedIds = currentAssetIds(project, machine, assetSnapshot);
+  const entries = expectedIds && exactOwnerEntries(owners, expectedIds);
+  if (!entries) throw new TypeError('Verified PCM ownership is invalid');
+  const entrySnapshot = entries.slice();
+  const assertUnchanged = () => {
+    if (!hasCompatibleProjectMutationState(project)
+        || writableOwnData(project, 'assets')?.value !== assets
+        || writableOwnData(project, 'machine')?.value !== machine) {
+      throw new TypeError('Verified PCM project changed during adoption');
+    }
+    let currentAssets;
+    try {
+      currentAssets = strictJsonDataClone(assets);
+    } catch {
+      throw new TypeError('Verified PCM project changed during adoption');
+    }
+    if (!sameJsonData(currentAssets, assetSnapshot)) {
+      throw new TypeError('Verified PCM project changed during adoption');
+    }
+    const finalEntries = exactOwnerEntries(owners, expectedIds);
+    if (!finalEntries || finalEntries.some(([id, owner], index) => (
+      id !== entrySnapshot[index][0] || owner !== entrySnapshot[index][1]
+    ))) throw new TypeError('Verified PCM owners changed during adoption');
+  };
+  const { CanonicalPcm, validateSamplePayload } = await import('./sample-payload.js');
+  assertUnchanged();
+  const plans = [];
+  for (const [id, owner] of entries) {
+    if (!(owner instanceof CanonicalPcm)) throw new TypeError(`Verified PCM ${id} is invalid`);
+    let bytes;
+    let hydrated;
+    try {
+      bytes = CanonicalPcm.prototype.copyBytes.call(owner);
+      hydrated = CanonicalPcm.prototype.hydrate.call(owner);
+    } catch {
+      throw new TypeError(`Verified PCM ${id} is invalid`);
+    }
+    const meta = assetSnapshot[id];
+    if (!meta || hydrated.sampleRate !== meta.sampleRate
+        || hydrated.channelCount !== meta.channelCount || hydrated.frames !== meta.frames) {
+      throw new TypeError(`Verified PCM ${id} metadata is invalid`);
+    }
+    const validation = await validateSamplePayload(meta, bytes);
+    assertUnchanged();
+    if (!validation.ok) throw new TypeError(`Verified PCM ${id} bytes are invalid`);
+    plans.push({ owner, hydrate: () => CanonicalPcm.prototype.hydrate.call(owner) });
+  }
+  assertUnchanged();
+  for (const plan of plans) {
+    verifiedAssetPcm.add(plan.owner);
+    verifiedAssetHydrators.set(plan.owner, plan.hydrate);
+  }
+  return owners;
+}
+
+export function installVerifiedAssetPcm(project, runtime, owners) {
+  if (!hasCompatibleProjectMutationState(project) || !runtime || !exactMap(runtime.assetPcm)) {
+    throw new TypeError('Verified PCM install target is invalid');
+  }
+  const expectedIds = currentAssetIds(project);
+  const entries = expectedIds && exactOwnerEntries(owners, expectedIds);
+  if (!entries || entries.some(([, owner]) => (
+    !verifiedAssetPcm.has(owner) || !verifiedAssetHydrators.has(owner)
+  ))) throw new TypeError('Verified PCM install ownership is invalid');
+
+  const attachments = [];
+  for (const scene of project.machine.scenes) {
+    if (!scene || !Array.isArray(scene.tracks)) throw new TypeError('Verified PCM tracks are invalid');
+    for (const track of scene.tracks) {
+      if (!track || !writableOwnData(track, 'sample')) throw new TypeError('Verified PCM track is not writable');
+      const id = track.sampleId;
+      if (id === null) {
+        attachments.push({ track, sample: null });
+        continue;
+      }
+      const owner = owners.get(id);
+      const hydrate = owner && verifiedAssetHydrators.get(owner);
+      if (!hydrate) throw new TypeError(`Verified PCM ${String(id)} is missing`);
+      const asset = project.assets[id];
+      attachments.push({
+        track,
+        sample: { ...hydrate(), label: asset && asset.label, role: asset && asset.role },
+      });
+    }
+  }
+
+  Map.prototype.clear.call(runtime.assetPcm);
+  for (const [id, owner] of entries) Map.prototype.set.call(runtime.assetPcm, id, owner);
+  for (const { track, sample } of attachments) track.sample = sample;
 }
 
 export function resolveTrackSamples(project, runtime) {
@@ -393,13 +619,14 @@ export function resolveTrackSamples(project, runtime) {
     for (const track of scene.tracks) {
       if (!track) continue;
       const owner = runtime.assetPcm.get(track.sampleId);
-      if (!verifiedAssetPcm.has(owner)) {
+      const hydrate = verifiedAssetHydrators.get(owner);
+      if (!verifiedAssetPcm.has(owner) || !hydrate) {
         track.sample = null;
         continue;
       }
       const asset = project.assets && project.assets[track.sampleId];
       track.sample = {
-        ...owner.hydrate(),
+        ...hydrate(),
         label: asset && asset.label,
         role: asset && asset.role,
       };

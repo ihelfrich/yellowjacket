@@ -730,7 +730,7 @@ session.commitProjectReplacement(prepared);
   - project-bound provenance resolves the exact clip/source/span/frame rule, while bounded external provenance and offline LOOM lineage remain valid;
   - applying a validated document mutates controller-held machine/scenes/tracks/steps, STUDIO, LOOM, WIRE, source documents, active facade, and rack parameter objects in place.
 
-  For source-backed v2 migration, use legacy clips named `h1` and `c9` in that serialized order. Assert they become `c1` and `c2`, receive the hashed source ID, use `createdAt:null`, and set `allocators.clip = 2`. Preserve only MACHINE-reachable assets, hash canonical PCM, keep their existing IDs, and lift `allocators.asset` above the greatest observed `aN`. Preserve MACHINE/STUDIO/LOOM/WIRE without inventing provenance.
+  For source-backed v2 migration, use legacy clips named `h1` and `c9` in that serialized order. Assert they become `c1` and `c2`, receive the hashed source ID, use `createdAt:null`, and set `allocators.clip = 2`. Preserve only MACHINE-reachable assets and hash canonical PCM. Preserve reachable canonical `aN` IDs; compute the full observed canonical high-water from every legacy asset key, sample-payload key, and track reference before pruning, then deterministically remap reachable noncanonical IDs in `reachableAssetIds(machine)` order above that high-water, rewriting every reference/key/owner and persisting the final greatest issued suffix. Canonicalize MACHINE/STUDIO/LOOM/WIRE once into a v3 fixed point without inventing provenance.
 
   For source-free v2 migration, assert `{sources:{}, activeSourceId:null}`, no fabricated source, the same reachable-asset rule, and otherwise exact musical state.
 
@@ -753,11 +753,15 @@ session.commitProjectReplacement(prepared);
   export function serializeProjectV3(project, runtime, options = {});
   export function validateProjectDocument(json);
   export async function preflightProjectPayloads({ json, sourcePayloads, samplePayloads });
-  export function applySnapshotV3(json, { project, runtime });
+  export function applySnapshotV3(json, { project, runtime, assetPcm });
   export async function migrateV2Project({ json, sourceBytes, samplePayloads, decode });
   ```
 
-  `serializeProjectV3()` returns `{json, sourceIds, sampleFiles}` where each sample file is `{id, bytes, byteLength, sha256}` and only current reachable assets appear. It never owns source bytes. Its caller must invoke `session.projectActiveFacade()` first. `applySnapshotV3()` is v3-only and assumes complete preflight; do not add an implicit dual-version branch.
+  `serializeProjectV3()` returns `{json, sourceIds, sampleFiles}` where each sample file is `{id, bytes, byteLength, sha256}` and only current reachable assets appear. It never owns source bytes. Its caller must invoke `session.projectActiveFacade()` first. `applySnapshotV3()` is v3-only and assumes complete preflight; do not add an implicit dual-version branch. A valid v3 document is already a fixed point: validate canonical LOOM identities and every MACHINE/STUDIO/WIRE value up front, and perform no identity-changing normalization during apply.
+
+  Add the focused fixed-ID owner seam in `project-store.js`: asynchronously adopt only genuine cryptographically verified `CanonicalPcm` owners after exact metadata/byte verification and post-await ownership rechecks; synchronously install an exact owner set without reallocating IDs, replacing the `runtime.assetPcm` Map, exposing canonical bytes to playback, or permitting partial installation. Both adoption and apply require the exact `createProject()` project/Clip Atlas/allocator association. Preflight/apply also prove that every container later mutated is writable before branding, playback, owner-map, or document mutation.
+
+  Asset validation uses the exact bounded grammar: core matching ID/kind/label/optional role/rate/channel/frame/payload/provenance keys; core-only `sample` and unknown kinds; `synth` plus bounded formula; `modal` plus at most 64 exact physical mode records; and `factory-drum` plus bounded kit/voice/model/version/uint32 seed/flat finite params/oversample and optional exact matching metrics. Enforce 128 KiB total metadata and the existing 32-transform/64 KiB provenance bounds; reject PCM-bearing or unknown variant freight.
 
   Keep the currently exported v2 writer/reader and `FORMAT_VERSION = 2` unchanged for the live controller through Tasks 10 and 11. No intermediate build may write a partial v3 manifest. Task 12 atomically switches the public aliases to v3 only after archive and IO orchestration are ready, then removes the legacy write path while retaining only `migrateV2Project()` for reads.
 
@@ -765,7 +769,7 @@ session.commitProjectReplacement(prepared);
 
 - [ ] **Step 4: Implement isolated v2 migration**
 
-  Validate the legacy envelope before decoding. Hash `source.bin`, stage-decode it through the injected `decode`, construct a rights-unknown source record, relocate source bench fields, reissue clips in serialized order, canonicalize only reachable PCM, and return detached v3 payload maps. Never call legacy `applySnapshot()` as a migration shortcut and never overwrite the v2 input.
+  Validate the legacy envelope before decoding. Hash `source.bin`, stage-decode it through the injected `decode`, construct a rights-unknown source record, relocate source bench fields, reissue clips in serialized order, canonicalize only reachable PCM, and return detached v3 payload maps. Preserve reachable canonical `aN` IDs, but remap reachable noncanonical IDs deterministically in reachability order above the full observed canonical high-water. Canonicalize legacy musical containers once into the native v3 fixed point. Never call legacy `applySnapshot()` as a migration shortcut and never overwrite the v2 input.
 
 - [ ] **Step 5: Update the binding persistence contract and run green**
 
