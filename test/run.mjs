@@ -103,6 +103,7 @@ const {
   sourcePayloadStoreCases,
   sourceSessionCases,
 } = await import('./multisource-runtime.mjs');
+const { assetProvenanceCases, clipIdentityCases, crateAssetCases } = await import('./multisource-music.mjs');
 const { processLimiter } = await import('../js/dsp/limiter.js');
 const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
 
@@ -4366,6 +4367,9 @@ const groups = [
   ['source registry', sourceRegistryCases],
   ['sample payload', samplePayloadCases],
   ['project store v3', projectStoreV3Cases],
+  ['multisource clip identity', clipIdentityCases],
+  ['multisource asset provenance', assetProvenanceCases],
+  ['multisource crate assets', crateAssetCases],
   ['soundscape', soundscapeCases],
   ['starter groove', grooveCases],
   ['kit levelling', kitLevelCases],

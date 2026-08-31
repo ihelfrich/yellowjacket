@@ -292,8 +292,14 @@ function matchingProjectExtraction(project, asset, provenance) {
   if (!Number.isFinite(scaledStart) || !Number.isFinite(scaledEnd)
       || Math.abs(scaledStart) > Number.MAX_SAFE_INTEGER || Math.abs(scaledEnd) > Number.MAX_SAFE_INTEGER) return false;
   const startFrame = Math.floor(scaledStart);
-  const endFrame = Math.ceil(scaledEnd);
-  if (startFrame < 0 || endFrame > source.audio.frames || extraction.startFrame !== startFrame
+  const naturalEndFrame = Math.ceil(scaledEnd);
+  const capFrames = source.audio.sampleRate * 30;
+  if (!Number.isSafeInteger(capFrames) || startFrame > Number.MAX_SAFE_INTEGER - capFrames) return false;
+  // Project-bound provenance permits exactly the settled default 30-second
+  // extraction cap. A shorter arbitrary cap is indistinguishable from
+  // truncated freight and therefore remains detached-only.
+  const endFrame = Math.min(naturalEndFrame, startFrame + capFrames);
+  if (startFrame < 0 || naturalEndFrame > source.audio.frames || extraction.startFrame !== startFrame
       || extraction.endFrame !== endFrame || extraction.sampleRate !== source.audio.sampleRate
       || extraction.channelCount !== source.audio.channelCount
       || (extraction.buffer !== 'original' && extraction.buffer !== 'repaired')) return false;

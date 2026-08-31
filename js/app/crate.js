@@ -14,6 +14,24 @@ const INDEX_NAME = 'index.json';
 const DEFAULT_RATE = 44100;
 const DASH = '—';
 
+function jsonCopy(value) {
+  if (value === undefined) return undefined;
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? null : JSON.parse(encoded);
+  } catch {
+    return null;
+  }
+}
+
+function positiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function safeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
 // ---------- pure index math (no OPFS, no DOM) ----------
 
 // ids are 'i' + a counter persisted as index.maxId. maxId only ever rises, so a
@@ -32,16 +50,19 @@ function secondsOf(meta) {
 }
 
 function normalizeMeta(meta) {
+  const detached = jsonCopy(meta);
+  const source = detached && typeof detached === 'object' && !Array.isArray(detached) ? detached : {};
   // Unknown keys ride through (forward tolerance, as in persist.js clone).
   return {
-    ...meta,
-    id: meta.id,
-    name: typeof meta.name === 'string' && meta.name ? meta.name : 'INSTRUMENT',
-    role: typeof meta.role === 'string' && meta.role ? meta.role : DASH,
-    source: typeof meta.source === 'string' && meta.source ? meta.source : DASH,
-    sampleRate: Number.isFinite(meta.sampleRate) && meta.sampleRate > 0 ? meta.sampleRate : DEFAULT_RATE,
-    frames: Number.isFinite(meta.frames) && meta.frames > 0 ? Math.floor(meta.frames) : 0,
-    savedAt: Number.isFinite(meta.savedAt) ? meta.savedAt : 0,
+    ...source,
+    id: source.id,
+    name: typeof source.name === 'string' && source.name ? source.name : 'INSTRUMENT',
+    role: typeof source.role === 'string' && source.role ? source.role : DASH,
+    source: typeof source.source === 'string' && source.source ? source.source : DASH,
+    sampleRate: Object.prototype.hasOwnProperty.call(source, 'sampleRate')
+      ? source.sampleRate : DEFAULT_RATE,
+    frames: Object.prototype.hasOwnProperty.call(source, 'frames') ? source.frames : 0,
+    savedAt: Number.isFinite(source.savedAt) ? source.savedAt : 0,
   };
 }
 
@@ -141,7 +162,13 @@ export class CrateStore {
   }
 
   put(spec) {
-    return this._mutate(() => this._put(spec || {}));
+    let snapshot;
+    try {
+      snapshot = snapshotPutSpec(spec || {});
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this._mutate(() => this._put(snapshot));
   }
 
   remove(id) {
@@ -158,31 +185,67 @@ export class CrateStore {
     if (!meta) return null;
     const bytes = await this._readBytes(id + '.f32');
     if (bytes === null) return null;                  // meta without audio: orphaned by a torn write
-    return { meta: { ...meta, seconds: secondsOf(meta) }, pcm: new Float32Array(bytes) };
+    const stored = new Uint8Array(bytes);
+    const hasChannelCount = Object.prototype.hasOwnProperty.call(meta, 'channelCount');
+    const hasPayload = Object.prototype.hasOwnProperty.call(meta, 'payload');
+    if (hasChannelCount || hasPayload) {
+      if (!hasChannelCount || !hasPayload || !positiveSafeInteger(meta.sampleRate)
+          || !positiveSafeInteger(meta.channelCount) || !safeInteger(meta.frames)
+          || !meta.payload || typeof meta.payload !== 'object'
+          || meta.payload.byteLength !== meta.frames * meta.channelCount * 4
+          || stored.byteLength !== meta.payload.byteLength) {
+        throw new TypeError('CRATE payload byte length is invalid');
+      }
+      const { validateSamplePayload } = await import('./sample-payload.js');
+      const verified = await validateSamplePayload(meta, stored);
+      if (!verified.ok) throw new TypeError(`CRATE payload ${verified.issue} is invalid`);
+      const sample = verified.sample.hydrate();
+      return {
+        meta: { ...normalizeMeta(meta), seconds: secondsOf(meta) },
+        sample,
+        pcm: sample.channelCount === 1 ? sample.channels[0].slice() : undefined,
+      };
+    }
+    if (!positiveSafeInteger(meta.sampleRate) || !safeInteger(meta.frames)
+        || stored.byteLength !== meta.frames * 4) {
+      throw new TypeError('CRATE legacy payload byte length is invalid');
+    }
+    const channel = new Float32Array(meta.frames);
+    const view = new DataView(stored.buffer, stored.byteOffset, stored.byteLength);
+    for (let frame = 0; frame < meta.frames; frame++) {
+      const value = view.getFloat32(frame * 4, true);
+      if (!Number.isFinite(value)) throw new TypeError('CRATE legacy PCM is invalid');
+      channel[frame] = value;
+    }
+    return {
+      meta: { ...normalizeMeta(meta), seconds: secondsOf(meta) },
+      sample: { sampleRate: meta.sampleRate, channelCount: 1, frames: meta.frames, channels: [channel] },
+      pcm: channel.slice(),
+    };
   }
 
   // ---------- queued mutations ----------
 
-  async _put({ name, role, source, voice, sampleRate, pcm }) {
+  async _put({ name, role, source, voice, provenance, sample }) {
     const index = await this._readIndex();
     const id = nextId(index);
-    const data = pcm instanceof Float32Array ? pcm : Float32Array.from(pcm || []);
-    // A subarray view shares a larger buffer: copy so the file is only the PCM.
-    const bytes = (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength)
-      ? data.buffer
-      : data.slice().buffer;
+    const { describeSamplePayload } = await import('./sample-payload.js');
+    const described = await describeSamplePayload(sample);
+    if (!described) throw new TypeError('CRATE sample is invalid');
     // PCM lands first: a crash between the two writes leaves an orphan file,
     // which costs bytes, where the reverse would leave a meta with no audio.
-    await this._writeBytes(id + '.f32', bytes);
+    await this._writeBytes(id + '.f32', described.bytes.slice());
     const meta = normalizeMeta({
       id,
       name,
       role,
       source,
-      // voice is flat scalars (project-store createVoice), so this is a real copy.
-      voice: voice && typeof voice === 'object' ? { ...voice } : null,
-      sampleRate,
-      frames: data.length,
+      voice,
+      sampleRate: sample.sampleRate,
+      channelCount: sample.channelCount,
+      frames: sample.frames,
+      payload: { byteLength: described.byteLength, sha256: described.sha256 },
+      ...(provenance === undefined ? {} : { provenance }),
       savedAt: Date.now(),
     });
     await this._writeJson(INDEX_NAME, addMeta(index, meta));
@@ -242,4 +305,144 @@ export class CrateStore {
       throw e;
     }
   }
+}
+
+function copyChannel(source, frames) {
+  if (!(Array.isArray(source) || ArrayBuffer.isView(source)) || source.length !== frames) {
+    throw new TypeError('CRATE channel is invalid');
+  }
+  const channel = new Float32Array(frames);
+  for (let frame = 0; frame < frames; frame++) channel[frame] = source[frame];
+  return channel;
+}
+
+function snapshotSample(spec) {
+  if (spec.sample && typeof spec.sample === 'object') {
+    const sample = spec.sample;
+    if (!positiveSafeInteger(sample.sampleRate) || !positiveSafeInteger(sample.channelCount)
+        || !safeInteger(sample.frames) || !Array.isArray(sample.channels)
+        || sample.channels.length !== sample.channelCount) throw new TypeError('CRATE sample is invalid');
+    return {
+      sampleRate: sample.sampleRate,
+      channelCount: sample.channelCount,
+      frames: sample.frames,
+      channels: sample.channels.map((channel) => copyChannel(channel, sample.frames)),
+    };
+  }
+  if (Array.isArray(spec.channels)) {
+    const frames = spec.frames === undefined ? (spec.channels[0] ? spec.channels[0].length : 0) : spec.frames;
+    if (!positiveSafeInteger(spec.sampleRate) || !positiveSafeInteger(spec.channelCount)
+        || spec.channelCount !== spec.channels.length || !safeInteger(frames)) {
+      throw new TypeError('CRATE sample is invalid');
+    }
+    return {
+      sampleRate: spec.sampleRate,
+      channelCount: spec.channelCount,
+      frames,
+      channels: spec.channels.map((channel) => copyChannel(channel, frames)),
+    };
+  }
+  const rate = Number.isFinite(spec.sampleRate) && spec.sampleRate > 0 ? Math.floor(spec.sampleRate) : DEFAULT_RATE;
+  const pcm = spec.pcm instanceof Float32Array ? spec.pcm : Float32Array.from(spec.pcm || []);
+  return {
+    sampleRate: rate,
+    channelCount: 1,
+    frames: pcm.length,
+    channels: [pcm.slice()],
+  };
+}
+
+function snapshotPutSpec(spec) {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new TypeError('CRATE item is invalid');
+  const voice = spec.voice === undefined || spec.voice === null ? null : jsonCopy(spec.voice);
+  const provenance = spec.provenance === undefined ? undefined : jsonCopy(spec.provenance);
+  if ((spec.voice !== undefined && spec.voice !== null && voice === null)
+      || (spec.provenance !== undefined && provenance === null)) {
+    throw new TypeError('CRATE metadata is not JSON-safe');
+  }
+  return {
+    name: spec.name,
+    role: spec.role,
+    source: spec.source,
+    voice,
+    provenance,
+    sample: snapshotSample(spec),
+  };
+}
+
+function sourceClipSnapshot(provenance) {
+  if (!provenance || provenance.kind !== 'source-clip') return null;
+  if (provenance.binding === 'project') {
+    return jsonCopy({
+      sourceId: provenance.sourceId,
+      clipId: provenance.clipId,
+      sourceSpan: provenance.sourceSpan,
+      extraction: provenance.extraction,
+    });
+  }
+  if (provenance.binding === 'external' && provenance.descriptor
+      && provenance.descriptor.sourceClip) return jsonCopy(provenance.descriptor.sourceClip);
+  return null;
+}
+
+function externalizedProvenance(provenance) {
+  const copy = jsonCopy(provenance);
+  if (!copy || typeof copy !== 'object' || !Array.isArray(copy.transforms)) {
+    throw new TypeError('CRATE provenance is invalid');
+  }
+  if (copy.binding === 'external') return copy;
+  const snapshot = sourceClipSnapshot(copy);
+  return {
+    kind: copy.kind,
+    binding: 'external',
+    descriptor: snapshot ? { sourceClip: snapshot } : { storedProvenance: copy },
+    transforms: jsonCopy(copy.transforms),
+  };
+}
+
+export async function prepareCrateAsset(item, project, { relink = false } = {}) {
+  if (!item || typeof item !== 'object' || !item.meta || !item.sample) {
+    throw new TypeError('CRATE preparation is invalid');
+  }
+  const sample = snapshotSample({ sample: item.sample });
+  const { describeSamplePayload, validateAssetProvenance } = await import('./sample-payload.js');
+  const described = await describeSamplePayload(sample);
+  if (!described) throw new TypeError('CRATE PCM is invalid');
+  const meta = {
+    kind: 'sample',
+    label: typeof item.meta.name === 'string' ? item.meta.name : 'INSTRUMENT',
+    sampleRate: sample.sampleRate,
+    channelCount: sample.channelCount,
+    frames: sample.frames,
+    payload: { byteLength: described.byteLength, sha256: described.sha256 },
+  };
+  if (typeof item.meta.role === 'string') meta.role = item.meta.role;
+  if (item.meta.provenance !== undefined) {
+    const stored = jsonCopy(item.meta.provenance);
+    const snapshot = sourceClipSnapshot(stored);
+    let provenance = externalizedProvenance(stored);
+    if (relink && snapshot) {
+      const matches = Array.isArray(project && project.clips)
+        ? project.clips.filter((clip) => clip && clip.id === snapshot.clipId) : [];
+      const candidate = {
+        kind: 'source-clip',
+        binding: 'project',
+        sourceId: snapshot.sourceId,
+        clipId: snapshot.clipId,
+        sourceSpan: jsonCopy(snapshot.sourceSpan),
+        extraction: jsonCopy(snapshot.extraction),
+        transforms: jsonCopy(stored.transforms),
+      };
+      if (matches.length === 1 && matches[0].sourceId === snapshot.sourceId
+          && matches[0].start === snapshot.sourceSpan.start && matches[0].end === snapshot.sourceSpan.end
+          && validateAssetProvenance(project, { ...meta, provenance: candidate }).ok) {
+        provenance = candidate;
+      }
+    }
+    if (!validateAssetProvenance(project || {}, { ...meta, provenance }).ok) {
+      throw new TypeError('CRATE provenance is invalid');
+    }
+    meta.provenance = jsonCopy(provenance);
+  }
+  return { meta, sample, bytes: described.bytes.slice() };
 }
