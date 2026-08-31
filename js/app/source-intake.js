@@ -28,6 +28,49 @@ function rightsCopy() {
   return { ...UNKNOWN_RIGHTS };
 }
 
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function plainDataCopy(value, seen = new Map()) {
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  const copy = Array.isArray(value) ? [] : {};
+  seen.set(value, copy);
+  for (const key of Object.keys(value)) {
+    Object.defineProperty(copy, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: plainDataCopy(value[key], seen),
+    });
+  }
+  return copy;
+}
+
+function deepFreeze(value, seen = new Set()) {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const key of Object.keys(value)) deepFreeze(value[key], seen);
+  return Object.freeze(value);
+}
+
+function observeResult(observer, authoritative) {
+  let outcome;
+  try {
+    outcome = observer(deepFreeze(plainDataCopy(authoritative)));
+  } catch {
+    return;
+  }
+  try {
+    Promise.resolve(outcome).catch(() => {});
+  } catch {
+    // A hostile thenable cannot become a batch failure or an unhandled rejection.
+  }
+}
+
 function fileItem(file) {
   return {
     kind: 'file',
@@ -71,7 +114,7 @@ export function classifySelection(files) {
 export function normalizeDirectUrls(text) {
   const items = [];
   const errors = [];
-  const lines = String(text ?? '').split(/\r?\n/);
+  const lines = String(text ?? '').split(/\r\n?|\n/);
   let nonblank = 0;
 
   for (let index = 0; index < lines.length; index++) {
@@ -145,9 +188,10 @@ export async function processSourceBatch(items, {
         message: error && error.message ? error.message : String(error),
       };
     }
-    results.push(result);
-    await onResult(result);
-    if (result && result.kind === 'added') hasActivatedAddition = true;
+    const authoritative = plainDataCopy(result);
+    results.push(authoritative);
+    if (authoritative && authoritative.kind === 'added') hasActivatedAddition = true;
+    observeResult(onResult, authoritative);
   }
   return { results, cancelled };
 }
@@ -180,10 +224,13 @@ export function adapterFailureGuidance(code) {
 
 export function catalogIntakeMetadata(kind, catalog = {}) {
   if (kind !== 'demo' && kind !== 'field') throw new TypeError('catalog intake kind must be demo or field');
-  const supplied = catalog && catalog.rights && typeof catalog.rights === 'object'
-    ? catalog.rights : {};
+  const supplied = isPlainObject(catalog)
+    && Object.prototype.hasOwnProperty.call(catalog, 'rights')
+    && isPlainObject(catalog.rights) ? catalog.rights : null;
   const rights = rightsCopy();
-  if (RIGHTS_BASES.has(supplied.basis)) rights.basis = supplied.basis;
-  if (typeof supplied.attribution === 'string') rights.attribution = supplied.attribution;
+  if (supplied && Object.prototype.hasOwnProperty.call(supplied, 'basis')
+      && RIGHTS_BASES.has(supplied.basis)) rights.basis = supplied.basis;
+  if (supplied && Object.prototype.hasOwnProperty.call(supplied, 'attribution')
+      && typeof supplied.attribution === 'string') rights.attribution = supplied.attribution;
   return { origin: { kind, url: null }, rights };
 }

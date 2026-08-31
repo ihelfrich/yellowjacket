@@ -18,6 +18,11 @@
 
 import { onsetAnalysis } from '../js/analysis/onsets.js';
 import { trackBeats } from '../js/analysis/beattrack.js';
+import {
+  analysisTupleCacheKey,
+  hasOwnAnalysisTupleField,
+  isAnalysisTuple,
+} from '../js/app/analysis-tuple.js';
 
 const MIN_SAMPLES = 2048;   // below this there is no meaningful STFT frame to analyze
 const ENVELOPE_HOP = 512;   // per contract: envelope hopSize 512 @ analysis rate
@@ -28,8 +33,6 @@ const BEATS_PER_BAR = 4;    // fixed this slice
 // legacy slot or another source/version entry.
 let legacyCache = null; // { generation, envelope, envelopeRate, onsets }
 let tupleCache = null; // { key, envelope, envelopeRate, onsets }
-const IDENTIFIER_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-const SOURCE_ID_RE = /^(?:sha256:[0-9a-f]{64}|[a-z0-9][a-z0-9._-]{0,63})$/;
 
 self.onmessage = (e) => {
   const msg = e.data;
@@ -126,14 +129,9 @@ function replyMetadata(msg) {
 }
 
 function analysisTuple(msg) {
-  const supplied = ['sourceId', 'jobId', 'algorithmVersion'].some((key) => Object.hasOwn(msg, key));
-  if (!supplied) return { kind: 'legacy' };
-  if (typeof msg.sourceId !== 'string' || !SOURCE_ID_RE.test(msg.sourceId)
-      || typeof msg.jobId !== 'string' || !IDENTIFIER_RE.test(msg.jobId)
-      || typeof msg.algorithmVersion !== 'string' || !IDENTIFIER_RE.test(msg.algorithmVersion)) {
-    return { kind: 'invalid' };
-  }
-  return { kind: 'tuple', key: msg.sourceId + ':' + msg.algorithmVersion };
+  if (!hasOwnAnalysisTupleField(msg)) return { kind: 'legacy' };
+  if (!isAnalysisTuple(msg)) return { kind: 'invalid' };
+  return { kind: 'tuple', key: analysisTupleCacheKey(msg) };
 }
 
 function postProgress(reply, pct) {

@@ -2626,6 +2626,9 @@ async function runWorkerModule(path, message, tag) {
   return runWorkerMessages(path, [message], tag);
 }
 
+const WORKER_SOURCE_A = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const WORKER_SOURCE_B = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
 const workerProtocolCases = [
   async function theLoudnessWorkerEchoesItsJob() {
     const mono = new Float32Array(48000);
@@ -2664,7 +2667,7 @@ const workerProtocolCases = [
     assert.equal(err.job, 9, 'and the error names its job');
   },
   async function theAnalysisWorkerEchoesTheFutureTupleOnProgressNormalEmptyAndErrorReplies() {
-    const tuple = { sourceId: 'source-a', jobId: 'job-3', algorithmVersion: 'analysis.v1' };
+    const tuple = { sourceId: WORKER_SOURCE_A, jobId: 'job-3', algorithmVersion: 'analysis.v1' };
     const mono = new Float32Array(44100);
     for (let i = 0; i < mono.length; i++) mono[i] = Math.sin(2 * Math.PI * 110 * i / 44100);
     const normal = await runWorkerModule('../workers/analysis-worker.js', {
@@ -2684,33 +2687,33 @@ const workerProtocolCases = [
 
     const empty = await runWorkerModule('../workers/analysis-worker.js', {
       type: 'analyze', job: 14, generation: 14,
-      sourceId: 'source-empty', jobId: 'job-14', algorithmVersion: 'analysis.v1',
+      sourceId: WORKER_SOURCE_B, jobId: 'job-14', algorithmVersion: 'analysis.v1',
       mono: new Float32Array(0), sampleRate: 44100,
       anchors: { bpm: null, barOneTime: null },
     }, 'analysis-tuple-empty');
     const emptyDone = empty.find((message) => message.type === 'done');
     assert.ok(emptyDone, 'the short-source path returns an explicit done');
     assert.equal(emptyDone.job, 14, 'the formerly untagged empty done keeps legacy job');
-    assert.equal(emptyDone.sourceId, 'source-empty');
+    assert.equal(emptyDone.sourceId, WORKER_SOURCE_B);
     assert.equal(emptyDone.jobId, 'job-14');
     assert.equal(emptyDone.algorithmVersion, 'analysis.v1');
     for (const message of empty) {
-      assert.equal(message.sourceId, 'source-empty', message.type + ' echoes source');
+      assert.equal(message.sourceId, WORKER_SOURCE_B, message.type + ' echoes source');
       assert.equal(message.jobId, 'job-14', message.type + ' echoes job');
       assert.equal(message.algorithmVersion, 'analysis.v1', message.type + ' echoes algorithm');
     }
 
     const error = await runWorkerModule('../workers/analysis-worker.js', {
       type: 'analyze', job: 15, generation: 15,
-      sourceId: 'source-error', jobId: 'job-15', algorithmVersion: 'analysis.v1',
+      sourceId: WORKER_SOURCE_B, jobId: 'job-15', algorithmVersion: 'analysis.v2',
       sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
     }, 'analysis-tuple-error');
     const errorReply = error.find((message) => message.type === 'error');
     assert.ok(errorReply);
     assert.equal(errorReply.job, 15);
-    assert.equal(errorReply.sourceId, 'source-error');
+    assert.equal(errorReply.sourceId, WORKER_SOURCE_B);
     assert.equal(errorReply.jobId, 'job-15');
-    assert.equal(errorReply.algorithmVersion, 'analysis.v1');
+    assert.equal(errorReply.algorithmVersion, 'analysis.v2');
   },
   async function futureWorkerCacheKeysIncludeSourceAndAlgorithmWithoutHittingLegacyGeneration() {
     const mono = new Float32Array(4096);
@@ -2718,17 +2721,17 @@ const workerProtocolCases = [
     const sent = await runWorkerMessages('../workers/analysis-worker.js', [
       {
         type: 'analyze', job: 21, generation: 77,
-        sourceId: 'source-a', jobId: 'job-21', algorithmVersion: 'analysis.v1',
+        sourceId: WORKER_SOURCE_A, jobId: 'job-21', algorithmVersion: 'analysis.v1',
         mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
       },
       {
         type: 'analyze', job: 22, generation: 77,
-        sourceId: 'source-a', jobId: 'job-22', algorithmVersion: 'analysis.v2',
+        sourceId: WORKER_SOURCE_A, jobId: 'job-22', algorithmVersion: 'analysis.v2',
         sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
       },
       {
         type: 'analyze', job: 23, generation: 999,
-        sourceId: 'source-a', jobId: 'job-23', algorithmVersion: 'analysis.v1',
+        sourceId: WORKER_SOURCE_A, jobId: 'job-23', algorithmVersion: 'analysis.v1',
         sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
       },
     ], 'analysis-cache-tuple');
@@ -2737,6 +2740,61 @@ const workerProtocolCases = [
       'a well-formed unknown version is only a cache miss');
     assert.ok(sent.some((message) => message.type === 'done' && message.jobId === 'job-23'),
       'the original source/version cache ignores a different legacy generation');
+  },
+  async function invalidFutureTuplesNeverCacheAndCannotPoisonTheNextCanonicalNamespace() {
+    const mono = new Float32Array(4096);
+    mono[64] = 1;
+    const inherited = Object.assign(Object.create({ sourceId: WORKER_SOURCE_A }), {
+      type: 'analyze', job: 30, generation: 30,
+      jobId: 'job-30', algorithmVersion: 'analysis.v3',
+      mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+    });
+    const sent = await runWorkerMessages('../workers/analysis-worker.js', [
+      {
+        type: 'analyze', job: 31, generation: 31,
+        sourceId: 'source-a', jobId: 'job-31', algorithmVersion: 'analysis.v3',
+        mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 32, generation: 32,
+        sourceId: WORKER_SOURCE_A, jobId: 'job-32', algorithmVersion: 'analysis.v3',
+        sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      inherited,
+      {
+        type: 'analyze', job: 33, generation: 33,
+        sourceId: WORKER_SOURCE_A, jobId: new String('job-33'), algorithmVersion: 'analysis.v3',
+        mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 34, generation: 34,
+        sourceId: WORKER_SOURCE_A, jobId: 34, algorithmVersion: 'analysis.v3',
+        mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 35, generation: 35,
+        sourceId: WORKER_SOURCE_A, jobId: 'job-35', algorithmVersion: 'Analysis.V3',
+        mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 36, generation: 36,
+        sourceId: WORKER_SOURCE_A, jobId: 'job-36', algorithmVersion: 'analysis.v3',
+        mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 37, generation: 999,
+        sourceId: WORKER_SOURCE_A, jobId: 'job-37', algorithmVersion: 'analysis.v3',
+        sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+    ], 'analysis-invalid-tuples');
+    for (const job of [31, 32, 30, 33, 34, 35]) {
+      assert.ok(sent.some((message) => message.type === 'error' && message.job === job),
+        'invalid or still-uncached job ' + job + ' is an error');
+    }
+    assert.ok(sent.some((message) => message.type === 'done' && message.job === 36),
+      'the first canonical tuple with audio can populate its cache');
+    assert.ok(sent.some((message) => message.type === 'done' && message.job === 37),
+      'the later canonical tuple can reuse only that valid cache');
   },
 ];
 

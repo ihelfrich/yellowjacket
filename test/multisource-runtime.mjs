@@ -139,6 +139,69 @@ export const sourceIntakeCases = [
     ]);
   },
 
+  async function observerReceivesASeparateDeeplyFrozenPlainSnapshotAndCannotRewritePolicy() {
+    const modes = [];
+    const runRows = [];
+    const observed = [];
+    const settled = await processSourceBatch([{ id: 'a' }, { id: 'b' }], {
+      run: async (item, mode) => {
+        modes.push([item.id, mode.activation]);
+        const row = Object.assign(Object.create({ inherited: 'not row data' }), {
+          kind: 'added', id: item.id, detail: { nested: { value: item.id } },
+        });
+        runRows.push(row);
+        return row;
+      },
+      onResult: (row) => {
+        observed.push(row);
+        Reflect.set(row, 'kind', 'duplicate');
+        Reflect.set(row.detail.nested, 'value', 'observer mutation');
+      },
+    });
+    runRows[0].kind = 'duplicate';
+    runRows[0].detail.nested.value = 'runner mutation';
+
+    assert.deepEqual(modes, [['a', 'activate'], ['b', 'registry-only']],
+      'first-added bookkeeping is authoritative before the observer runs');
+    assert.deepEqual(settled.results, [
+      { kind: 'added', id: 'a', detail: { nested: { value: 'a' } } },
+      { kind: 'added', id: 'b', detail: { nested: { value: 'b' } } },
+    ], 'runner and observer retain no reference into authoritative rows');
+    assert.equal(Object.hasOwn(settled.results[0], 'inherited'), false);
+    for (const row of observed) {
+      assert.notEqual(row, settled.results.find((result) => result.id === row.id));
+      assert.equal(Object.getPrototypeOf(row), Object.prototype, 'observer row is plain data');
+      assert.equal(Object.getPrototypeOf(row.detail), Object.prototype, 'nested observer data is plain');
+      assert.equal(Object.isFrozen(row), true);
+      assert.equal(Object.isFrozen(row.detail), true);
+      assert.equal(Object.isFrozen(row.detail.nested), true);
+    }
+  },
+
+  async function observerThrowsAndAsyncRejectionsAreIsolatedWithoutAwaitingOrStoppingTheBatch() {
+    const starts = [];
+    const observerCalls = [];
+    const held = deferred();
+    const settled = await settleWithin(processSourceBatch([{ id: 'a' }, { id: 'b' }, { id: 'c' }], {
+      run: async (item) => {
+        starts.push(item.id);
+        return { kind: 'added', id: item.id };
+      },
+      onResult: (row) => {
+        observerCalls.push(row.id);
+        if (row.id === 'a') throw new Error('observer failed synchronously');
+        if (row.id === 'b') return held.promise;
+        return Promise.reject(new Error('observer failed asynchronously'));
+      },
+    }), 'batch waited for observer work');
+    assert.deepEqual(starts, ['a', 'b', 'c'], 'observer failures cannot stop later transactions');
+    assert.deepEqual(observerCalls, ['a', 'b', 'c'], 'observer invocation remains in row order');
+    assert.deepEqual(settled.results.map((row) => row.id), ['a', 'b', 'c']);
+    held.reject(new Error('late observer rejection'));
+    await nextTurn();
+    await nextTurn();
+  },
+
   async function cancellationAtAnItemBoundaryKeepsPriorRowsAndStartsNothingFurther() {
     let cancel = false;
     const starts = [];
@@ -186,6 +249,32 @@ export const sourceIntakeCases = [
     });
   },
 
+  function directUrlsRecognizeCrLfCrAndLfAsIndependentProvenanceLines() {
+    const normalized = normalizeDirectUrls(
+      ' https://a.test/a?q=1#discard \r\n\rftp://bad.test/file.wav\n\n'
+      + 'https://b.test/b#gone\rnot a url',
+    );
+    assert.deepEqual(normalized.items, [
+      {
+        kind: 'url',
+        url: 'https://a.test/a?q=1',
+        origin: { kind: 'url', url: 'https://a.test/a?q=1' },
+      },
+      {
+        kind: 'url',
+        url: 'https://b.test/b',
+        origin: { kind: 'url', url: 'https://b.test/b' },
+      },
+    ]);
+    assert.deepEqual(normalized.errors, [
+      { line: 3, value: 'ftp://bad.test/file.wav', code: 'NON_HTTP_URL' },
+      { line: 6, value: 'not a url', code: 'INVALID_URL' },
+    ], 'blank lines count toward independent physical line provenance');
+    assert.deepEqual(normalizeDirectUrls('https://c.test/c\rhttps://d.test/d').items.map((item) => item.url), [
+      'https://c.test/c', 'https://d.test/d',
+    ], 'bare CR never merges two source origins');
+  },
+
   function sizePreflightUsesExactKnownBytesAndNeverEstimatesUnknownPayloads() {
     const MiB = 1024 * 1024;
     assert.deepEqual(validateKnownPayloadAddition({ sourceBytes: 250 * MiB, knownProjectBytes: 518 * MiB }), {
@@ -225,6 +314,32 @@ export const sourceIntakeCases = [
       origin: { kind: 'demo', url: null },
       rights: { basis: 'unknown', license: null, attribution: null, notes: null },
     }, 'implicit catalog fields cannot become rights assertions');
+  },
+
+  function inheritedOrNonPlainCatalogRightsCanNeverManufactureAnAssertion() {
+    const unknownDemo = {
+      origin: { kind: 'demo', url: null },
+      rights: { basis: 'unknown', license: null, attribution: null, notes: null },
+    };
+    const rootPrototype = Object.create({
+      rights: { basis: 'permission', attribution: 'prototype catalog' },
+    });
+    assert.deepEqual(catalogIntakeMetadata('demo', rootPrototype), unknownDemo,
+      'inherited root rights are not explicit catalog data');
+
+    const nestedPrototype = {
+      rights: Object.create({ basis: 'licensed', attribution: 'inherited claim' }),
+    };
+    assert.deepEqual(catalogIntakeMetadata('demo', nestedPrototype), unknownDemo,
+      'inherited nested fields are not explicit rights metadata');
+
+    const pollutedButOwned = Object.create({ rights: { basis: 'permission' } });
+    Object.defineProperty(pollutedButOwned, 'rights', {
+      enumerable: true,
+      value: Object.assign(Object.create({ basis: 'licensed' }), { attribution: 'owned but non-plain' }),
+    });
+    assert.deepEqual(catalogIntakeMetadata('demo', pollutedButOwned), unknownDemo,
+      'non-plain explicit containers do not cross the provenance boundary');
   },
 
   async function importingSourceIntakeHasNoBrowserFileNetworkWorkerOrControllerEffects() {
@@ -1256,6 +1371,42 @@ export const analysisTokenCases = [
     assert.equal(session.isActive(unknown, {
       sourceId: SOURCE_A, jobId: 'job-2', algorithmVersion: 'unknown-but-valid.v99',
     }), true, 'unknown versions are not project or source validation failures');
+  },
+
+  async function analysisTokensRequireCanonicalOwnPrimitiveRequestAndReplyFields() {
+    const { session } = await sourceSessionFixture();
+    const valid = { sourceId: SOURCE_A, jobId: 'job-3', algorithmVersion: 'analysis.v1' };
+    assert.throws(() => session.issueAnalysisToken({ ...valid, sourceId: 'source-a' }), /sourceId/i,
+      'a descriptor-shaped label is not a canonical source ID');
+    assert.throws(() => session.issueAnalysisToken({ ...valid, jobId: 3 }), /jobId/i);
+    assert.throws(() => session.issueAnalysisToken({ ...valid, jobId: new String('job-3') }), /jobId/i);
+    assert.throws(() => session.issueAnalysisToken({ ...valid, algorithmVersion: 'Analysis.V1' }), /algorithmVersion/i);
+    assert.throws(() => session.issueAnalysisToken(Object.create(valid)), /tuple|sourceId/i,
+      'inherited request fields cannot issue an authentic token');
+
+    const token = session.issueAnalysisToken(valid);
+    assert.equal(session.isActive(token, Object.create(valid)), false,
+      'an inherited tuple-less reply cannot pass');
+    assert.equal(session.isActive(token, { sourceId: SOURCE_A, jobId: 'job-3' }), false,
+      'all three own fields are required');
+    const partlyInherited = Object.create({ algorithmVersion: 'analysis.v1' });
+    partlyInherited.sourceId = SOURCE_A;
+    partlyInherited.jobId = 'job-3';
+    assert.equal(session.isActive(token, partlyInherited), false,
+      'prototype completion cannot fill a missing tuple field');
+    assert.equal(session.isActive(token, { ...valid, jobId: new String('job-3') }), false);
+    assert.equal(session.isActive(token, { ...valid, jobId: 3 }), false);
+  },
+
+  async function authenticTokensAreReusableForOneJobsProgressAndDoneButNotAcrossSessions() {
+    const first = await sourceSessionFixture();
+    const second = await sourceSessionFixture();
+    const tuple = { sourceId: SOURCE_A, jobId: 'job-4', algorithmVersion: 'analysis.v1' };
+    const token = first.session.issueAnalysisToken(tuple);
+    assert.equal(first.session.isActive(token, { type: 'progress', pct: 50, ...tuple }), true);
+    assert.equal(first.session.isActive(token, { type: 'done', analysis: {}, ...tuple }), true,
+      'terminal replay ownership belongs to the future controller, not this helper');
+    assert.equal(second.session.isActive(token, tuple), false, 'session brands cannot be forged across instances');
   },
 ];
 
