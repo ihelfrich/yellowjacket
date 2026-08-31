@@ -95,6 +95,7 @@ if (typeof globalThis.CustomEvent === 'undefined') {
     }
   };
 }
+const { sourceRegistryCases } = await import('./multisource-core.mjs');
 const { processLimiter } = await import('../js/dsp/limiter.js');
 const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
 
@@ -4137,6 +4138,7 @@ const soundscapeCases = [
 ];
 
 const groups = [
+  ['source registry', sourceRegistryCases],
   ['soundscape', soundscapeCases],
   ['starter groove', grooveCases],
   ['kit levelling', kitLevelCases],
