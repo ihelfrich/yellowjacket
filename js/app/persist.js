@@ -550,7 +550,8 @@ function validProvenance(document, asset) {
   const matches = Array.isArray(document.clips)
     ? document.clips.filter((clip) => clip && clip.id === provenance.clipId) : [];
   const source = isPlain(document.sources) ? document.sources[provenance.sourceId] : null;
-  if (matches.length !== 1 || !source || matches[0].sourceId !== provenance.sourceId
+  if (matches.length !== 1 || !isPlain(source) || !isPlain(source.audio)
+      || matches[0].sourceId !== provenance.sourceId
       || matches[0].start !== provenance.sourceSpan.start || matches[0].end !== provenance.sourceSpan.end) return false;
   const startScaled = provenance.sourceSpan.start * source.audio.sampleRate;
   const endScaled = provenance.sourceSpan.end * source.audio.sampleRate;

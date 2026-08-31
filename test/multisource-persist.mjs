@@ -545,6 +545,33 @@ export const projectFormatCases = [
     assert.ok(result.issues.some((issue) => issue.code === 'PROVENANCE'));
   },
 
+  async function returnsStableIssuesForMalformedReferencedSources() {
+    const fixture = await v3Fixture();
+    const base = persist.serializeProjectV3(fixture.project, fixture.runtime, {
+      savedAt: 1788134400999,
+    }).json;
+    const thrown = [];
+    for (const [name, malformed] of [
+      ['empty object', {}],
+      ['array', []],
+      ['null audio', { audio: null }],
+    ]) {
+      const json = copy(base);
+      json.sources[json.activeSourceId] = malformed;
+      let result;
+      try {
+        result = persist.validateProjectDocument(json);
+      } catch (error) {
+        thrown.push([name, error && error.message]);
+        continue;
+      }
+      assert.equal(result.ok, false, name);
+      assert.ok(result.issues.some((issue) => issue.code === 'SOURCE_RECORD'), name);
+      assert.ok(result.issues.some((issue) => issue.code === 'PROVENANCE'), name);
+    }
+    assert.deepEqual(thrown, [], 'malformed referenced sources never throw');
+  },
+
   async function acceptsUnknownCoreOnlyAssetKindsWithoutFreight() {
     const fixture = await v3Fixture();
     const json = persist.serializeProjectV3(fixture.project, fixture.runtime, {
