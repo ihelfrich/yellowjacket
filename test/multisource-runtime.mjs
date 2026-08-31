@@ -34,6 +34,35 @@ function prepared(buffer, mono, decodeReport) {
   return { buffer, mono, decodeReport };
 }
 
+function oneSecondChannel(...samples) {
+  const channel = new Float32Array(48000);
+  channel.set(samples);
+  return channel;
+}
+
+function installedState(engine) {
+  return {
+    buffer: engine.buffer,
+    mono: engine.mono,
+    alt: engine._alt,
+    position: engine._position,
+    cuts: engine._lastCuts,
+    decodeReport: engine.decodeReport,
+    playing: engine.playing,
+  };
+}
+
+function assertInstalledState(engine, expected, events, expectedEvents, label) {
+  assert.equal(engine.buffer, expected.buffer, label + ' preserves buffer reference');
+  assert.equal(engine.mono, expected.mono, label + ' preserves mono reference');
+  assert.equal(engine._alt, expected.alt, label + ' preserves alt reference');
+  assert.equal(engine._position, expected.position, label + ' preserves position');
+  assert.equal(engine._lastCuts, expected.cuts, label + ' preserves cuts reference');
+  assert.equal(engine.decodeReport, expected.decodeReport, label + ' preserves report reference');
+  assert.equal(engine.playing, expected.playing, label + ' preserves playback state');
+  assert.deepEqual(events, expectedEvents, label + ' emits nothing');
+}
+
 async function withFakeDecodeContext(decodedBuffers, run) {
   const priorWindow = globalThis.window;
   const priorOffline = globalThis.OfflineAudioContext;
@@ -119,15 +148,15 @@ export const engineTransactionCases = [
     });
   },
 
-  function checkpointRestoresExactReferencesAndMalformedInstallsCannotMutate() {
+  function checkpointRestoresExactReferencesAndRejectsMalformedBoundariesAtomically() {
     const a = new FixtureAudioBuffer({
       sampleRate: 48000,
-      channels: [Float32Array.of(0.25, -0.5, 0.75, -1), Float32Array.of(0.5, -0.25, 1, -0.75)],
+      channels: [oneSecondChannel(0.25, -0.5, 0.75, -1), oneSecondChannel(0.5, -0.25, 1, -0.75)],
     });
-    const monoA = Float32Array.of(0.375, -0.375, 0.875, -0.875);
-    const reportA = { nativeRate: 96000, decodedRate: 48000, downgraded: true, reason: 'fixture fallback' };
-    const b = new FixtureAudioBuffer({ sampleRate: 48000, channels: [Float32Array.of(1, 0, -1, 0.5)] });
-    const monoB = Float32Array.of(1, 0, -1, 0.5);
+    const monoA = oneSecondChannel(0.375, -0.375, 0.875, -0.875);
+    const reportA = { nativeRate: 48000, decodedRate: 48000, downgraded: false, reason: null };
+    const b = new FixtureAudioBuffer({ sampleRate: 48000, channels: [oneSecondChannel(1, 0, -1, 0.5)] });
+    const monoB = oneSecondChannel(1, 0, -1, 0.5);
     const reportB = { nativeRate: 48000, decodedRate: 48000, downgraded: false, reason: null };
     const engine = new Engine();
     const events = [];
@@ -148,14 +177,75 @@ export const engineTransactionCases = [
     assert.equal(engine._lastCuts, checkpoint.lastCuts, 'restore returns the exact A cuts object');
     assert.deepEqual(events, ['loaded'], 'restore does not emit a second loaded event');
 
-    const before = engine.captureInstalled();
-    assert.doesNotThrow(() => assert.equal(engine.install({ buffer: b }), false),
-      'malformed prepared input is a no-throw failure');
-    assert.equal(engine.buffer, before.buffer, 'malformed input cannot replace the buffer');
-    assert.equal(engine.mono, before.mono, 'malformed input cannot replace mono');
-    assert.equal(engine.decodeReport, before.decodeReport, 'malformed input cannot replace report');
-    assert.equal(engine._position, before.position, 'malformed input cannot change transport');
-    assert.equal(engine._lastCuts, before.lastCuts, 'malformed input cannot change cuts');
-    assert.deepEqual(events, ['loaded'], 'malformed input emits nothing');
+    const before = installedState(engine);
+    const beforeEvents = [...events];
+    const malformedPrepared = [
+      ['missing mono and report', { buffer: b }],
+      ['nonpositive native rate', prepared(b, monoB, { ...reportB, nativeRate: 0 })],
+      ['decoded rate mismatches buffer', prepared(b, monoB, { ...reportB, decodedRate: 8 })],
+    ];
+    for (const [label, malformed] of malformedPrepared) {
+      assert.doesNotThrow(() => assert.equal(engine.install(malformed), false),
+        label + ' install is a no-throw failure');
+      assertInstalledState(engine, before, events, beforeEvents, label + ' install');
+    }
+
+    const validCheckpoint = engine.captureInstalled();
+    const malformedCheckpoints = [
+      ['negative position', { ...validCheckpoint, position: -0.1 }],
+      ['position outside active timeline', { ...validCheckpoint, position: 1.1 }],
+      ['unordered cut bounds', { ...validCheckpoint, lastCuts: [{ start: 0.4, end: 0.2 }] }],
+      ['cuts are not in timeline order', {
+        ...validCheckpoint, lastCuts: [{ start: 0.4, end: 0.5 }, { start: 0.2, end: 0.3 }],
+      }],
+      ['out-of-range cut bounds', { ...validCheckpoint, lastCuts: [{ start: 0.2, end: 1.1 }] }],
+      ['non-finite cut bound', { ...validCheckpoint, lastCuts: [{ start: 0.2, end: Infinity }] }],
+      ['report mismatches buffer', { ...validCheckpoint, decodeReport: { ...reportA, decodedRate: 8 } }],
+      ['source-free checkpoint carries a report', {
+        buffer: null, mono: null, alt: null, position: 0, lastCuts: [], decodeReport: reportA,
+      }],
+    ];
+    for (const [label, malformed] of malformedCheckpoints) {
+      assert.doesNotThrow(() => assert.equal(engine.restoreInstalled(malformed), false),
+        label + ' restore is a no-throw failure');
+      assertInstalledState(engine, before, events, beforeEvents, label + ' restore');
+    }
+
+    const sourceFree = new Engine();
+    const sourceFreeCheckpoint = sourceFree.captureInstalled();
+    assert.deepEqual(sourceFreeCheckpoint, {
+      buffer: null, mono: null, alt: null, position: 0, lastCuts: [], decodeReport: undefined,
+    }, 'capture defines the source-free checkpoint shape');
+    assert.doesNotThrow(() => assert.equal(sourceFree.restoreInstalled(sourceFreeCheckpoint), true),
+      'the defined source-free checkpoint restores synchronously');
+  },
+
+  function checkpointCapturesTheLivePositionBeforeAnInstallCanHaltIt() {
+    const a = new FixtureAudioBuffer({
+      sampleRate: 48000,
+      channels: [oneSecondChannel(0.25, -0.5, 0.75, -1)],
+    });
+    const b = new FixtureAudioBuffer({
+      sampleRate: 48000,
+      channels: [oneSecondChannel(1, 0, -1, 0.5)],
+    });
+    const report = { nativeRate: 48000, decodedRate: 48000, downgraded: false, reason: null };
+    const engine = new Engine();
+    assert.equal(engine.install(prepared(a, oneSecondChannel(0.25, -0.5, 0.75, -1), report)), true);
+    engine._ctx = { currentTime: 10 };
+    engine._position = 0.25;
+    engine._playing = true;
+    engine._t0 = 9.5;
+    engine._editedStart = 0.25;
+    engine._totalKept = 1;
+    engine._segs = [{ start: 0, end: 1 }];
+    const checkpoint = engine.captureInstalled();
+
+    assert.equal(engine.currentTime, 0.75, 'fixture supplies a live transport clock');
+    assert.equal(checkpoint.position, 0.75, 'checkpoint records the live transport position');
+    assert.equal(engine.install(prepared(b, oneSecondChannel(1, 0, -1, 0.5), report)), true);
+    assert.equal(engine.restoreInstalled(checkpoint), true);
+    assert.equal(engine.playing, false, 'rollback restores a stopped transport');
+    assert.equal(engine.currentTime, 0.75, 'rollback restores the checkpointed live position');
   },
 ];

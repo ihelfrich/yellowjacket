@@ -103,11 +103,21 @@ export class Engine extends EventTarget {
   }
 
   captureInstalled() {
+    if (!this._buffer) {
+      return {
+        buffer: null,
+        mono: null,
+        alt: null,
+        position: 0,
+        lastCuts: [],
+        decodeReport: undefined,
+      };
+    }
     return {
       buffer: this._buffer,
       mono: this._mono,
       alt: this._alt,
-      position: this._position,
+      position: this.currentTime,
       lastCuts: this._lastCuts,
       decodeReport: this.decodeReport,
     };
@@ -383,10 +393,27 @@ function isAudioBufferLike(buffer) {
     && typeof buffer.getChannelData === 'function';
 }
 
-function isDecodeReport(report) {
+function bufferDuration(buffer) {
+  if (Number.isFinite(buffer.duration) && buffer.duration >= 0) return buffer.duration;
+  return buffer.length / buffer.sampleRate;
+}
+
+function hasValidCuts(cuts, duration) {
+  if (!Array.isArray(cuts)) return false;
+  let previousEnd = 0;
+  for (const cut of cuts) {
+    if (!cut
+      || !Number.isFinite(cut.start) || !Number.isFinite(cut.end)
+      || cut.start < previousEnd || cut.end <= cut.start || cut.end > duration) return false;
+    previousEnd = cut.end;
+  }
+  return true;
+}
+
+function isDecodeReport(report, buffer) {
   return !!report
-    && (report.nativeRate == null || Number.isFinite(report.nativeRate))
-    && Number.isFinite(report.decodedRate)
+    && (report.nativeRate === null || (Number.isFinite(report.nativeRate) && report.nativeRate > 0))
+    && report.decodedRate === buffer.sampleRate
     && typeof report.downgraded === 'boolean'
     && (report.reason == null || typeof report.reason === 'string');
 }
@@ -396,7 +423,7 @@ function isPreparedSource(prepared) {
     && isAudioBufferLike(prepared.buffer)
     && prepared.mono instanceof Float32Array
     && prepared.mono.length === prepared.buffer.length
-    && isDecodeReport(prepared.decodeReport);
+    && isDecodeReport(prepared.decodeReport, prepared.buffer);
 }
 
 function isInstalledCheckpoint(checkpoint) {
@@ -404,10 +431,15 @@ function isInstalledCheckpoint(checkpoint) {
     return false;
   }
   if (checkpoint.buffer === null) {
-    return checkpoint.mono === null && checkpoint.alt === null;
+    return checkpoint.mono === null && checkpoint.alt === null
+      && checkpoint.position === 0 && checkpoint.lastCuts.length === 0
+      && checkpoint.decodeReport === undefined;
   }
   return isPreparedSource(checkpoint)
-    && (checkpoint.alt === null || isAudioBufferLike(checkpoint.alt));
+    && (checkpoint.alt === null || isAudioBufferLike(checkpoint.alt))
+    && checkpoint.position >= 0
+    && checkpoint.position <= bufferDuration(checkpoint.alt || checkpoint.buffer)
+    && hasValidCuts(checkpoint.lastCuts, bufferDuration(checkpoint.buffer));
 }
 
 // A suspended context returns a promise that can reject (autoplay policy), and
