@@ -234,12 +234,79 @@ export const clipIdentityCases = [
     const a = sourceId('a');
     const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const target = project.clips;
+    let writes = 0;
     project.clips = new Proxy(target, {
-      set() { return true; },
+      set() {
+        writes++;
+        return true;
+      },
     });
     assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /commit|Atlas/i);
+    assert.equal(writes, 0, 'an unbranded Proxy rejects before its no-op trap');
     assert.equal(project.allocators.clip, 0, 'a successful no-op cannot burn c1');
     assert.deepEqual(target, [], 'a successful no-op cannot be reported as an appended clip');
+  },
+
+  function rejectsAProxyWrappedCanonicalAtlasBeforeAllocation() {
+    // Mutation caught: treating a Proxy view as the canonical Atlas even
+    // though its rollback observations can diverge from the branded target.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const atlas = project.clips;
+    project.clips = new Proxy(atlas, {});
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /Atlas/i);
+    assert.equal(project.allocators.clip, 0);
+    assert.deepEqual(atlas, []);
+  },
+
+  function rejectsAnUnbrandedReplacementAtlasBeforeAllocation() {
+    // Mutation caught: accepting an arbitrary lookalike Array installed after
+    // createProject instead of the one canonical branded identity.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const replacementAtlas = [];
+    project.clips = replacementAtlas;
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /Atlas/i);
+    assert.equal(project.allocators.clip, 0);
+    assert.deepEqual(replacementAtlas, []);
+  },
+
+  function rejectsDroppedAllocatorWritesBeforeManualClipCommit() {
+    // Mutation caught: appending c1 after a lying allocator reports issuance
+    // while its authoritative clip counter remains zero.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const counters = project.allocators;
+    project.allocators = new Proxy(counters, {
+      set() { return true; },
+    });
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }));
+    assert.equal(counters.clip, 0);
+    assert.deepEqual(project.clips, [], 'no clip commits behind an unissued suffix');
+  },
+
+  function rejectsCounterChangesDuringABrandedAppendAndRollsBackTheClip() {
+    // Mutation caught: caller code reached by the intrinsic Array write resets
+    // the counter after c1 issuance while still creating an exact own c1 slot.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const atlas = project.clips;
+    const counters = project.allocators;
+    const inheritedSetter = Object.create(Array.prototype);
+    Object.defineProperty(inheritedSetter, '0', {
+      configurable: true,
+      set(clip) {
+        Object.defineProperty(atlas, '0', {
+          value: clip, writable: true, enumerable: true, configurable: true,
+        });
+        counters.clip = 0;
+      },
+    });
+    Object.setPrototypeOf(atlas, inheritedSetter);
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }));
+    assert.equal(counters.clip, 0);
+    assert.equal(atlas.length, 0);
+    assert.equal(Object.hasOwn(atlas, '0'), false);
   },
 
   function usesTheIntrinsicArrayAppendInsteadOfAnAtlasMethodOverride() {
@@ -266,12 +333,66 @@ export const clipIdentityCases = [
     const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const original = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'prior' });
     const target = project.clips;
+    let writes = 0;
     project.clips = new Proxy(target, {
-      set() { return true; },
+      set() {
+        writes++;
+        return true;
+      },
     });
     assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }), /commit|Atlas/i);
+    assert.equal(writes, 0, 'an unbranded Proxy rejects before its no-op trap');
     assert.equal(project.allocators.clip, 1, 'a successful no-op cannot burn c2');
     assert.strictEqual(target[0], original);
+  },
+
+  function rejectsDroppedAllocatorWritesBeforeReplacementCommit() {
+    // Mutation caught: installing c2 while the counter remains one, allowing a
+    // later call to recycle c2 over another logical replacement.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const original = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const counters = project.allocators;
+    project.allocators = new Proxy(counters, {
+      set() { return true; },
+    });
+    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }));
+    assert.equal(counters.clip, 1);
+    assert.strictEqual(project.clips[0], original, 'the old slot remains until c2 is verifiably issued');
+  },
+
+  function rejectsCounterChangesDuringABrandedReplacementAndRestoresTheOldClip() {
+    // Mutation caught: an exact own c2 replacement becoming visible after its
+    // write path resets the counter to one, making c2 recyclable.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const original = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const atlas = project.clips;
+    const counters = project.allocators;
+    let armCounterReset = true;
+    project.allocators = new Proxy(counters, {
+      set(target, property, value) {
+        Reflect.set(target, property, value, target);
+        if (property === 'clip' && value === 2 && armCounterReset) {
+          armCounterReset = false;
+          Object.defineProperty(atlas, '0', {
+            configurable: true,
+            enumerable: true,
+            get() { return original; },
+            set(replacement) {
+              Object.defineProperty(atlas, '0', {
+                value: replacement, writable: true, enumerable: true, configurable: true,
+              });
+              counters.clip = 1;
+            },
+          });
+        }
+        return true;
+      },
+    });
+    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }));
+    assert.equal(counters.clip, 1);
+    assert.strictEqual(atlas[0], original);
   },
 
   function rejectsACounterfeitReplacementDescriptorBeforeAllocation() {
@@ -302,43 +423,97 @@ export const clipIdentityCases = [
     assert.strictEqual(target[0], original, 'the exact prior ClipRef remains authoritative');
   },
 
-  function rollsBackAProxyAppendOrReplacementTrapWithoutTouchingPriorAtlasState() {
-    // Mutation caught: a trap throws after the underlying array write has already become visible.
+  function rejectsAProxyThatCanCounterfeitReplacementRollbackObservations() {
+    // Mutation caught: a Proxy commits c2 to its raw target, then lies that the
+    // attempted rollback restored c1 through descriptor and value reads.
     const a = sourceId('a');
-    const appendProject = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
-    const appendTarget = appendProject.clips;
-    let failLength = true;
-    appendProject.clips = new Proxy(appendTarget, {
-      set(target, property, value, receiver) {
-        const result = Reflect.set(target, property, value, receiver);
-        if (property === 'length' && failLength) {
-          failLength = false;
-          throw new Error('append commit fault');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const original = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const target = project.clips;
+    let counterfeitingRollback = false;
+    let writes = 0;
+    project.clips = new Proxy(target, {
+      set(array, property, value) {
+        if (property === '0') {
+          writes++;
+          Reflect.set(array, property, value, array);
+          counterfeitingRollback = true;
+          throw new Error('replacement write fault');
         }
-        return result;
+        return Reflect.set(array, property, value, array);
+      },
+      defineProperty(array, property, descriptor) {
+        if (property === '0' && counterfeitingRollback) return true;
+        return Reflect.defineProperty(array, property, descriptor);
+      },
+      getOwnPropertyDescriptor(array, property) {
+        if (property === '0' && counterfeitingRollback) {
+          return { value: original, writable: true, enumerable: true, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(array, property);
+      },
+      get(array, property, receiver) {
+        if (property === '0' && counterfeitingRollback) return original;
+        return Reflect.get(array, property, receiver);
       },
     });
-    assert.throws(() => createClipRef(appendProject, { sourceId: a, start: 0, end: 1 }), /commit fault/);
+    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }));
+    assert.equal(writes, 0, 'an unforgeable Atlas boundary rejects before issuing c2');
+    assert.equal(project.allocators.clip, 1);
+    assert.strictEqual(target[0], original, 'the raw authoritative Atlas remains unchanged');
+  },
+
+  function rollsBackFailuresOnTheExactBrandedAtlasAndAllocator() {
+    // Mutation caught: dropping an intrinsic append or throwing after a raw
+    // replacement write without restoring exact Atlas/counter state.
+    const a = sourceId('a');
+    const appendProject = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const appendAtlas = appendProject.clips;
+    let appendWrites = 0;
+    const inheritedSetter = Object.create(Array.prototype);
+    Object.defineProperty(inheritedSetter, '0', {
+      configurable: true,
+      set() {
+        appendWrites++;
+      },
+    });
+    Object.setPrototypeOf(appendAtlas, inheritedSetter);
+    assert.throws(() => createClipRef(appendProject, { sourceId: a, start: 0, end: 1 }), /commit/i);
+    assert.equal(appendWrites, 1, 'the raw branded Array exercises the commit postcondition');
     assert.equal(appendProject.allocators.clip, 0);
-    assert.deepEqual(appendTarget, [], 'partially exposed appended element is removed');
+    assert.equal(appendAtlas.length, 0);
+    assert.equal(Object.hasOwn(appendAtlas, '0'), false, 'the failed own suffix is absent');
 
     const replaceProject = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const original = createClipRef(replaceProject, { sourceId: a, start: 0, end: 1, label: 'prior' });
-    const replaceTarget = replaceProject.clips;
-    let failSlot = true;
-    replaceProject.clips = new Proxy(replaceTarget, {
-      set(target, property, value, receiver) {
-        const result = Reflect.set(target, property, value, receiver);
-        if (property === '0' && failSlot) {
-          failSlot = false;
-          throw new Error('replace commit fault');
+    const replaceAtlas = replaceProject.clips;
+    const counters = replaceProject.allocators;
+    let armReplacementFault = true;
+    replaceProject.allocators = new Proxy(counters, {
+      set(target, property, value) {
+        Reflect.set(target, property, value, target);
+        if (property === 'clip' && value === 2 && armReplacementFault) {
+          armReplacementFault = false;
+          Object.defineProperty(replaceAtlas, '0', {
+            configurable: true,
+            enumerable: true,
+            get() { return original; },
+            set(replacement) {
+              Object.defineProperty(replaceAtlas, '0', {
+                value: replacement, writable: true, enumerable: true, configurable: true,
+              });
+              throw new Error('replacement write fault');
+            },
+          });
         }
-        return result;
+        return true;
       },
     });
-    assert.throws(() => replaceClipBounds(replaceProject, original.id, { start: 0, end: 2 }), /commit fault/);
-    assert.equal(replaceProject.allocators.clip, 1);
-    assert.strictEqual(replaceTarget[0], original, 'the exact prior ClipRef is restored');
+    assert.throws(() => replaceClipBounds(replaceProject, original.id, { start: 0, end: 2 }), /write fault/i);
+    assert.equal(counters.clip, 1);
+    assert.strictEqual(replaceAtlas[0], original, 'the exact prior ClipRef is restored');
+    assert.equal(Object.getOwnPropertyDescriptor(replaceAtlas, '0').value, original,
+      'rollback restores the exact own data descriptor value');
   },
 
   function projectsAFilteredSourceViewWithoutReorderingTheAtlas() {
@@ -432,29 +607,31 @@ export const clipIdentityCases = [
     assert.deepEqual(project.clips, []);
   },
 
-  async function harvestCommitsEveryClipOrRollsBackTheWholeBatch() {
-    // Mutation caught: the second append fails after the first clip and both ID allocations become visible.
+  async function harvestRollsBackAPartialBatchOnTheExactBrandedAtlas() {
+    // Mutation caught: a failed second intrinsic append leaving c1 visible or
+    // the two issued suffixes burned on the raw branded Atlas.
     const a = sourceId('a');
     const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
-    const target = project.clips;
-    let failed = false;
-    project.clips = new Proxy(target, {
-      set(array, property, value, receiver) {
-        const result = Reflect.set(array, property, value, receiver);
-        if (property === '1' && !failed) {
-          failed = true;
-          throw new Error('second append fault');
-        }
-        return result;
+    const atlas = project.clips;
+    let writes = 0;
+    const inheritedSetter = Object.create(Array.prototype);
+    Object.defineProperty(inheritedSetter, '1', {
+      configurable: true,
+      set() {
+        writes++;
       },
     });
+    Object.setPrototypeOf(atlas, inheritedSetter);
     await assert.rejects(() => prepareHarvestRun(project,
       decodedBuffer([new Float32Array(100)], 10), [
         { t0: 0, t1: 1, role: 'kick', label: 'one' },
         { t0: 2, t1: 3, role: 'snare', label: 'two' },
-      ], { sourceId: a, runId: 'atomic-run', buffer: 'original' }), /second append fault/);
+      ], { sourceId: a, runId: 'atomic-run', buffer: 'original' }), /commit/i);
+    assert.equal(writes, 1, 'the first clip committed before the second postcondition failed');
     assert.equal(project.allocators.clip, 0, 'the failed batch burns no suffixes');
-    assert.deepEqual(target, [], 'the failed batch exposes no partial Atlas');
+    assert.equal(atlas.length, 0, 'the failed batch exposes no partial Atlas');
+    assert.equal(Object.hasOwn(atlas, '0'), false);
+    assert.equal(Object.hasOwn(atlas, '1'), false);
   },
 
   async function harvestRejectsSuccessfulNoOpAppendTrapsWithoutBurningTheBatch() {
@@ -463,16 +640,38 @@ export const clipIdentityCases = [
     const a = sourceId('a');
     const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const target = project.clips;
+    let writes = 0;
     project.clips = new Proxy(target, {
-      set() { return true; },
+      set() {
+        writes++;
+        return true;
+      },
     });
     await assert.rejects(() => prepareHarvestRun(project,
       decodedBuffer([new Float32Array(100)], 10), [
         { t0: 0, t1: 1, role: 'kick', label: 'one' },
         { t0: 2, t1: 3, role: 'snare', label: 'two' },
       ], { sourceId: a, runId: 'no-op-run', buffer: 'original' }), /commit|Atlas/i);
+    assert.equal(writes, 0, 'an unbranded Proxy rejects before batch issuance');
     assert.equal(project.allocators.clip, 0, 'a dropped run burns neither c1 nor c2');
     assert.deepEqual(target, [], 'a dropped run exposes no Atlas suffix');
+  },
+
+  async function harvestRejectsDroppedAllocatorWritesBeforeItsFirstClipCommit() {
+    // Mutation caught: a one-pick run can match its preview ID and previously
+    // commit c1 even though the real allocator silently stayed at zero.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const counters = project.allocators;
+    project.allocators = new Proxy(counters, {
+      set() { return true; },
+    });
+    await assert.rejects(() => prepareHarvestRun(project,
+      decodedBuffer([new Float32Array(100)], 10), [
+        { t0: 0, t1: 1, role: 'kick', label: 'one' },
+      ], { sourceId: a, runId: 'allocator-no-op', buffer: 'original' }), /allocator|counter/i);
+    assert.equal(counters.clip, 0);
+    assert.deepEqual(project.clips, [], 'HARVEST cannot commit behind an unissued c1');
   },
 ];
 

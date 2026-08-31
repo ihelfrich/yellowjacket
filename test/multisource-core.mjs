@@ -27,6 +27,7 @@ import {
   ProjectStore,
   allocateProjectId,
   createProject,
+  isProjectClipAtlas,
   registerAsset,
   registerPreparedAsset,
   resolveTrackSamples,
@@ -621,6 +622,25 @@ export const projectStoreV3Cases = [
     assert.strictEqual(project.chain, chain, 'legacy chain facade remains in place');
   },
 
+  function brandsOnlyTheCreateProjectAtlasAndPreservesItAcrossV2Restore() {
+    // Mutation caught: exposing a public branding path, accepting a Proxy or
+    // lookalike Array, or replacing the canonical Atlas during v2 apply.
+    const project = createProject([]);
+    const atlas = project.clips;
+    assert.equal(isProjectClipAtlas(atlas), true);
+    assert.equal(isProjectClipAtlas([]), false);
+    assert.equal(isProjectClipAtlas(new Proxy(atlas, {})), false);
+    const json = snapshotDoc(project, { sourceBytes: null, repairs: [], analysis: null });
+    json.clips = [{ id: 'c1', sourceId: sourceId('a'), start: 0, end: 1 }];
+    applySnapshot(json, {
+      project,
+      runtime: { sourceBytes: null, repairs: [], analysis: null },
+    });
+    assert.strictEqual(project.clips, atlas);
+    assert.equal(isProjectClipAtlas(project.clips), true);
+    assert.equal(project.clips[0].id, 'c1');
+  },
+
   function allocatesProjectLocalIdsMonotonicallyWithoutScanningOrReuse() {
     // Mutation caught: returning the current counter, repairing a stale counter
     // by scanning state, or relying on a module-global allocator.
@@ -650,6 +670,38 @@ export const projectStoreV3Cases = [
     const second = createProject([]);
     assert.equal(allocateProjectId(first, 'asset'), 'a1');
     assert.equal(allocateProjectId(second, 'asset'), 'a1', 'projects do not share allocation state');
+  },
+
+  function rejectsDroppedAllocatorWritesBeforeReturningOrRegisteringAnAsset() {
+    // Mutation caught: trusting a truthy Proxy set result and returning an ID
+    // whose canonical counter never advanced.
+    const project = createProject([]);
+    const counters = project.allocators;
+    project.allocators = new Proxy(counters, {
+      set() { return true; },
+    });
+    assert.throws(() => allocateProjectId(project, 'clip'), /allocator|counter/i);
+    assert.equal(counters.clip, 0);
+    assert.deepEqual(project.clips, []);
+    assert.throws(() => registerAsset(project, { kind: 'sample' }), /allocator|counter/i);
+    assert.equal(counters.asset, 0);
+    assert.deepEqual(project.assets, {}, 'asset metadata never commits behind an unissued ID');
+  },
+
+  function restoresTheExactCounterWhenAnAllocatorWriteThrowsAfterCommitting() {
+    // Mutation caught: a Proxy mutates the target and then throws, leaving the
+    // failed allocation's suffix burned for the next caller.
+    const project = createProject([]);
+    const counters = project.allocators;
+    project.allocators = new Proxy(counters, {
+      set(target, property, value) {
+        Reflect.set(target, property, value, target);
+        throw new Error('allocator write fault');
+      },
+    });
+    assert.throws(() => allocateProjectId(project, 'clip'), /write fault/);
+    assert.equal(counters.clip, 0, 'failed c1 issuance restores the exact prior counter');
+    assert.deepEqual(project.clips, []);
   },
 
   function legacyAssetMetadataCannotOverrideTheAllocatedRecordId() {

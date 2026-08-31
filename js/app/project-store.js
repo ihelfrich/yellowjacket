@@ -8,6 +8,11 @@ import { createStudio } from '../studio/model.js';
 // route. Retain the owners we install so synchronous playback resolution can
 // distinguish them from arbitrary values inserted into the public runtime map.
 const verifiedAssetPcm = new WeakSet();
+// Task 9 mutators need an unforgeable identity boundary: observations through
+// an arbitrary Proxy cannot prove that rollback restored its hidden target.
+// Only createProject can mint the canonical Atlas; consumers get a read-only
+// predicate and persistence/history continue mutating this exact Array in place.
+const projectClipAtlases = new WeakSet();
 
 export function createVoice() {
   return {
@@ -132,6 +137,8 @@ export function createLoom() {
 }
 
 export function createProject(chainDefaults) {
+  const clips = [];
+  projectClipAtlases.add(clips);
   return {
     // No formatVersion here on purpose: the serialized format is stamped by
     // persist.js (FORMAT_VERSION, currently 2). A second version field on the
@@ -143,13 +150,17 @@ export function createProject(chainDefaults) {
     activeSourceId: null,
     sources: {},
     allocators: { clip: 0, asset: 0 },
-    clips: [],
+    clips,
     assets: {},            // id -> {id, kind, label, sampleRate, frames}; pcm lives on runtime refs
     machine: createMachine(),
     studio: createStudio(), // six polyphonic melodic parts; WebAudio lives in studio/engine.js
     wire: createWire(),
     loom: createLoom(),     // semantic source/MIDI provenance and render map
   };
+}
+
+export function isProjectClipAtlas(value) {
+  return Array.isArray(value) && projectClipAtlases.has(value);
 }
 
 function allocatedSuffixes(project, kind) {
@@ -171,12 +182,42 @@ function allocatedSuffixes(project, kind) {
   return highest;
 }
 
+function allocatorCounterDescriptor(counters, kind) {
+  if (!counters || typeof counters !== 'object' || Array.isArray(counters)) return null;
+  try {
+    const prototype = Reflect.getPrototypeOf(counters);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptor = Reflect.getOwnPropertyDescriptor(counters, kind);
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        || descriptor.writable !== true || Reflect.get(counters, kind) !== descriptor.value) return null;
+    return descriptor;
+  } catch {
+    return null;
+  }
+}
+
+function exactAllocatorCounter(counters, kind, expected, template) {
+  const descriptor = allocatorCounterDescriptor(counters, kind);
+  return descriptor && descriptor.value === expected
+    && descriptor.writable === template.writable
+    && descriptor.enumerable === template.enumerable
+    && descriptor.configurable === template.configurable;
+}
+
+export function hasExactProjectIdCounter(project, kind, expected) {
+  if (!project || typeof project !== 'object' || (kind !== 'clip' && kind !== 'asset')
+      || !Number.isSafeInteger(expected) || expected < 0) return false;
+  const descriptor = allocatorCounterDescriptor(project.allocators, kind);
+  return !!descriptor && descriptor.value === expected;
+}
+
 export function allocateProjectId(project, kind) {
   if (!project || typeof project !== 'object' || (kind !== 'clip' && kind !== 'asset')) {
     throw new RangeError('Project allocator is invalid');
   }
   const counters = project.allocators;
-  const counter = counters && counters[kind];
+  const descriptor = allocatorCounterDescriptor(counters, kind);
+  const counter = descriptor && descriptor.value;
   if (!Number.isSafeInteger(counter) || counter < 0 || counter >= Number.MAX_SAFE_INTEGER) {
     throw new RangeError(`Project ${kind} counter is unsafe`);
   }
@@ -184,8 +225,27 @@ export function allocateProjectId(project, kind) {
     throw new RangeError(`Project ${kind} counter is stale`);
   }
   const next = counter + 1;
-  counters[kind] = next;
-  return (kind === 'clip' ? 'c' : 'a') + next;
+  try {
+    if (!Reflect.set(counters, kind, next)
+        || !exactAllocatorCounter(counters, kind, next, descriptor)) {
+      throw new TypeError(`Project ${kind} allocator commit failed`);
+    }
+    return (kind === 'clip' ? 'c' : 'a') + next;
+  } catch (error) {
+    let rollbackError = null;
+    try {
+      if (!Reflect.defineProperty(counters, kind, { ...descriptor, value: counter })
+          || !exactAllocatorCounter(counters, kind, counter, descriptor)) {
+        throw new Error(`Project ${kind} allocator rollback failed`);
+      }
+    } catch (caught) {
+      rollbackError = caught;
+    }
+    if (rollbackError) {
+      throw new AggregateError([error, rollbackError], `Project ${kind} allocation and rollback failed`);
+    }
+    throw error;
+  }
 }
 
 export function registerAsset(project, meta) {

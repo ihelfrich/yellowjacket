@@ -6,7 +6,9 @@
 // Keep the public page's static preload graph stable until Task 12 activates
 // these primitives. The allocator is still the one canonical project-store
 // implementation; this inactive module resolves it before exposing behavior.
-const [{ allocateProjectId }, { SOURCE_ID_RE }] = await Promise.all([
+const [{
+  allocateProjectId, createProject, hasExactProjectIdCounter, isProjectClipAtlas,
+}, { SOURCE_ID_RE }] = await Promise.all([
   import('../app/project-store.js'),
   import('../app/source-registry.js'),
 ]);
@@ -140,9 +142,10 @@ function snapshotClipInput(input) {
 }
 
 function finalizeClipInput(project, input) {
-  if (!project || typeof project !== 'object' || !Array.isArray(project.clips)) {
+  if (!project || typeof project !== 'object') {
     throw new TypeError('Clip project is invalid');
   }
+  if (!isProjectClipAtlas(project.clips)) throw new TypeError('Clip Atlas is not canonical');
   const snapshot = snapshotClipInput(input);
   if (!knownSource(project, snapshot.sourceId)) throw new TypeError('Clip source is unknown');
   validateSpan(snapshot.start, snapshot.end);
@@ -176,11 +179,14 @@ function clipWithId(id, finalized) {
 
 function rollbackClipCounter(project, before, issued) {
   if (!issued) return;
-  if (!project.allocators || project.allocators.clip !== before + issued) {
+  if (hasExactProjectIdCounter(project, 'clip', before)) return;
+  if (!hasExactProjectIdCounter(project, 'clip', before + issued)) {
     throw new Error('Clip allocator changed during rollback');
   }
   project.allocators.clip = before;
-  if (project.allocators.clip !== before) throw new Error('Clip allocator rollback failed');
+  if (!hasExactProjectIdCounter(project, 'clip', before)) {
+    throw new Error('Clip allocator rollback failed');
+  }
 }
 
 function exactArrayLength(atlas, expected, writable = undefined) {
@@ -228,7 +234,7 @@ function rollbackAppends(atlas, beforeLength, count, lengthDescriptor) {
 
 function appendFinalizedClips(project, finalizedClips, expectedIds = null) {
   const atlas = project && project.clips;
-  if (!Array.isArray(atlas) || !Array.isArray(finalizedClips)) {
+  if (!isProjectClipAtlas(atlas) || !Array.isArray(finalizedClips)) {
     throw new TypeError('Clip Atlas append is invalid');
   }
   if (!finalizedClips.length) return [];
@@ -244,7 +250,13 @@ function appendFinalizedClips(project, finalizedClips, expectedIds = null) {
     for (const finalized of finalizedClips) {
       const id = allocateProjectId(project, 'clip');
       issued++;
+      if (!hasExactProjectIdCounter(project, 'clip', beforeCounter + issued)) {
+        throw new TypeError('Clip allocator commit failed');
+      }
       clips.push(clipWithId(id, finalized));
+    }
+    if (!hasExactProjectIdCounter(project, 'clip', beforeCounter + issued)) {
+      throw new TypeError('Clip allocator changed before Atlas commit');
     }
     if (expectedIds && clips.some((clip, index) => clip.id !== expectedIds[index])) {
       throw new Error('Clip allocation changed during preparation');
@@ -254,9 +266,13 @@ function appendFinalizedClips(project, finalizedClips, expectedIds = null) {
       const expectedLength = beforeLength + index + 1;
       const result = Reflect.apply(Array.prototype.push, atlas, [clip]);
       if (result !== expectedLength || !exactAppendedSlot(atlas, expectedLength - 1, clip)
-          || !exactArrayLength(atlas, expectedLength, true)) {
+          || !exactArrayLength(atlas, expectedLength, true)
+          || !hasExactProjectIdCounter(project, 'clip', beforeCounter + issued)) {
         throw new TypeError('Clip Atlas append commit failed');
       }
+    }
+    if (!hasExactProjectIdCounter(project, 'clip', beforeCounter + issued)) {
+      throw new TypeError('Clip allocator changed after Atlas commit');
     }
     return clips;
   } catch (error) {
@@ -333,10 +349,11 @@ export function clipReferences(project, clipId) {
 }
 
 export function replaceClipBounds(project, oldId, nextBounds) {
-  if (!project || !Array.isArray(project.clips) || typeof oldId !== 'string'
+  if (!project || typeof oldId !== 'string'
       || !nextBounds || typeof nextBounds !== 'object') {
     throw new TypeError('Clip replacement is invalid');
   }
+  if (!isProjectClipAtlas(project.clips)) throw new TypeError('Clip Atlas is not canonical');
   const matches = [];
   for (let index = 0; index < project.clips.length; index++) {
     if (project.clips[index] && project.clips[index].id === oldId) matches.push(index);
@@ -368,11 +385,15 @@ export function replaceClipBounds(project, oldId, nextBounds) {
   try {
     const replacement = clipWithId(allocateProjectId(project, 'clip'), finalized);
     issued = 1;
+    if (!hasExactProjectIdCounter(project, 'clip', beforeCounter + issued)) {
+      throw new TypeError('Clip allocator commit failed');
+    }
     if (!Reflect.set(project.clips, String(index), replacement)) {
       throw new TypeError('Clip Atlas cannot replace');
     }
     if (!exactSlot(project.clips, index, replacement, restoreDescriptor)
-        || !exactArrayLength(project.clips, beforeLength)) {
+        || !exactArrayLength(project.clips, beforeLength)
+        || !hasExactProjectIdCounter(project, 'clip', beforeCounter + issued)) {
       throw new TypeError('Clip Atlas replacement commit failed');
     }
     return { kind: 'replaced', oldId, clip: replacement };
@@ -646,11 +667,12 @@ export async function prepareHarvestRun(project, decoded, picks, options = {}) {
   const removeClipIds = planGeneratedClipReplacement(project, { sourceId, generator }).removeClipIds;
   const startingAllocator = project.allocators.clip;
   const startingClips = project.clips.slice();
-  const preview = {
-    ...project,
-    allocators: { ...project.allocators },
-    clips: project.clips.slice(),
-  };
+  const preview = createProject([]);
+  preview.sources = project.sources;
+  preview.allocators = { ...project.allocators };
+  for (const clip of project.clips) {
+    Reflect.apply(Array.prototype.push, preview.clips, [clip]);
+  }
   const previewClips = appendFinalizedClips(preview, finalized);
   const { peakOfChannels, kitGainFor } = await import('../analysis/harvest.js');
   const preparedAssets = [];
