@@ -45,7 +45,7 @@ import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '..
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
 import {
-  harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS, planKitAssignment,
+  harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS, planKitAssignment, kitGainFor, peakOfChannels,
 } from '../js/analysis/harvest.js';
 import { project2d, standardize, axisLabel } from '../js/analysis/constellation.js';
 import { stretchSamples, stretchMode } from '../js/dsp/stretch.js';
@@ -3939,7 +3939,61 @@ const autoKitCases = [
   },
 ];
 
+// ---------- kit levelling ----------
+//
+// Measured on the live site: a frog-chorus kit rendered at -23.7 dBFS peak.
+// Field recordings sit low and uneven, so a harvested kit arrives too quiet to
+// play against anything. track.gainDb cannot fix it — the compiler clamps it to
+// +6 dB — so the seated slice itself is brought up, with a bounded boost so
+// near-silence is not amplified into noise.
+
+const dbToPeak = (db) => Math.pow(10, db / 20);
+const peakToDb = (p) => 20 * Math.log10(p);
+
+const kitLevelCases = [
+  function liftsAQuietSliceTowardTheTarget() {
+    const g = kitGainFor(dbToPeak(-30), { targetDb: -6, maxBoostDb: 18 });
+    assert.ok(Math.abs(peakToDb(g) - 18) < 0.01, 'boost capped at 18 dB');
+    assert.ok(Math.abs(peakToDb(dbToPeak(-30) * g) - -12) < 0.01, 'lands at -12, not -6');
+  },
+  function reachesTheTargetWhenTheBoostFits() {
+    const g = kitGainFor(dbToPeak(-14), { targetDb: -6, maxBoostDb: 18 });
+    assert.ok(Math.abs(peakToDb(dbToPeak(-14) * g) - -6) < 0.01);
+  },
+  function attenuatesAHotSliceWithoutLimit() {
+    // Pulling a loud slice down cannot raise a noise floor, so it is uncapped:
+    // eight tracks summing at full scale would clip the mix.
+    const g = kitGainFor(dbToPeak(-1), { targetDb: -6, maxBoostDb: 18 });
+    assert.ok(g < 1, 'attenuates');
+    assert.ok(Math.abs(peakToDb(dbToPeak(-1) * g) - -6) < 0.01);
+  },
+  function leavesSilenceAlone() {
+    // A digitally silent slice has no peak to normalise against; scaling it by
+    // anything is still silence, and dividing by it would be a fault.
+    assert.equal(kitGainFor(0), 1);
+    assert.equal(kitGainFor(-1), 1, 'a negative peak is nonsense, not a signal');
+    assert.equal(kitGainFor(NaN), 1);
+  },
+  function neverPushesASliceAboveTheTarget() {
+    for (const db of [-60, -40, -24, -12, -6, -3, -0.5]) {
+      const p = dbToPeak(db);
+      const out = peakToDb(p * kitGainFor(p, { targetDb: -6, maxBoostDb: 18 }));
+      assert.ok(out <= -6 + 0.01, db + ' dBFS stays at or below the target');
+    }
+  },
+  function measuresPeakAcrossEveryChannel() {
+    // A slice can be quiet on the left and loud on the right; normalising per
+    // channel would shift the stereo image.
+    const left = Float32Array.from([0.1, -0.1]);
+    const right = Float32Array.from([0.8, -0.2]);
+    assert.ok(Math.abs(peakOfChannels([left, right]) - 0.8) < 1e-6);
+    assert.equal(peakOfChannels([]), 0);
+    assert.equal(peakOfChannels(null), 0);
+  },
+];
+
 const groups = [
+  ['kit levelling', kitLevelCases],
   ['auto kit', autoKitCases],
   ['update safety', updateSafetyCases],
   ['wav export', wavExportCases],

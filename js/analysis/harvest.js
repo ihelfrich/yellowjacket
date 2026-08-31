@@ -85,6 +85,44 @@ export const ROLES = Object.freeze(Object.keys(QUOTAS));
 export const ROLE_QUOTAS = QUOTAS;
 export const HARVEST_MAX_PICKS = MAX_PICKS;
 
+// Kit levelling. A field recording sits low and uneven — a harvested frog
+// chorus rendered at -23.7 dBFS peak — so a seated kit is too quiet to play
+// against anything. track.gainDb cannot rescue it because the compiler clamps
+// that to +6 dB, so the slice itself is scaled on the way onto the track.
+const KIT_TARGET_DB = -6;      // headroom for eight tracks summing
+const KIT_MAX_BOOST_DB = 18;   // beyond this, a quiet slice is mostly noise
+
+/** Largest absolute sample across every channel, so stereo imaging is preserved. */
+export function peakOfChannels(channels) {
+  if (!Array.isArray(channels) || !channels.length) return 0;
+  let peak = 0;
+  for (const chan of channels) {
+    if (!chan || !chan.length) continue;
+    for (let i = 0; i < chan.length; i++) {
+      const v = chan[i] < 0 ? -chan[i] : chan[i];
+      if (v > peak) peak = v;
+    }
+  }
+  return peak;
+}
+
+/**
+ * Linear multiplier that brings a slice toward a playable level.
+ *
+ * Boost is capped: lifting a near-silent slice to full scale just amplifies its
+ * noise floor, which on a nature recording is most of what is there.
+ * Attenuation is uncapped, because pulling a hot slice down cannot raise a
+ * noise floor and eight tracks summing at full scale would clip.
+ */
+export function kitGainFor(peak, opts = {}) {
+  const target = Number.isFinite(opts.targetDb) ? opts.targetDb : KIT_TARGET_DB;
+  const maxBoost = Number.isFinite(opts.maxBoostDb) ? opts.maxBoostDb : KIT_MAX_BOOST_DB;
+  if (!Number.isFinite(peak) || peak <= 0) return 1;
+  const wantedDb = target - 20 * Math.log10(peak);
+  const appliedDb = wantedDb > maxBoost ? maxBoost : wantedDb;
+  return Math.pow(10, appliedDb / 20);
+}
+
 // The order a kit is laid out on the eight machine tracks. Kick and snare first
 // because that is what a person reaches for; the colour roles fill in behind.
 const KIT_ROLE_ORDER = Object.freeze(['kick', 'snare', 'hat', 'bass', 'tone', 'vox', 'fx', 'crash']);

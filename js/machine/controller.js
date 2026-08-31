@@ -11,7 +11,7 @@ import { patternLoopSteps, normalizeVoice } from './compile.js';
 import { CrateStore } from '../app/crate.js';
 import { renderFormula } from './synth.js';
 import { fitModal, synthModal } from '../analysis/modal.js';
-import { planKitAssignment } from '../analysis/harvest.js';
+import { planKitAssignment, kitGainFor, peakOfChannels } from '../analysis/harvest.js';
 import {
   FACTORY_KITS, drumAssetId, getFactoryKit, grooveFor, renderFactoryKit,
 } from './kits.js';
@@ -487,7 +487,8 @@ export function initMachineController(ctx) {
   // Seat a whole harvest at once. One store.update, so the whole kit is a single
   // undo step rather than eight.
   function assignHarvestToTracks(clips, occupied) {
-    if (!R.buffer) return 0;
+    const nothing = { seated: 0, lifted: 0 };
+    if (!R.buffer) return nothing;
     const plan = planKitAssignment(clips, P.machine.tracks.length, occupied);
     const byId = new Map((clips || []).map((c) => [c.id, c]));
     const cut = [];
@@ -497,7 +498,19 @@ export function initMachineController(ctx) {
       const slice = sliceForTrack(clip);
       if (slice) cut.push({ track, clip, slice });
     }
-    if (!cut.length) return 0;
+    if (!cut.length) return nothing;
+    // Level the seated slices. Only on this path: HARVEST's promise is a kit
+    // that plays, whereas a manual assignment is a deliberate choice of one clip
+    // and keeps whatever level it had.
+    let lifted = 0;
+    for (const { slice } of cut) {
+      const gain = kitGainFor(peakOfChannels(slice.channels));
+      if (gain === 1) continue;
+      if (gain > 1) lifted++;
+      for (const chan of slice.channels) {
+        for (let i = 0; i < chan.length; i++) chan[i] *= gain;
+      }
+    }
     store.update('machine', (p) => {
       for (const { track, clip, slice } of cut) {
         const label = clip.label || clip.tag;
@@ -512,7 +525,7 @@ export function initMachineController(ctx) {
     });
     for (const { track } of cut) sequencer.bumpTrack(track);
     patternView.setMachine(P.machine);
-    return cut.length;
+    return { seated: cut.length, lifted };
   }
 
   patternView.addEventListener('assign', (e) => {
@@ -967,13 +980,14 @@ export function initMachineController(ctx) {
       // Free tracks are filled here; occupied ones are left alone, so this adds
       // to a kit rather than overwriting one.
       const occupied = P.machine.tracks.map((t) => !!t.sample);
-      const seated = assignHarvestToTracks(P.clips, occupied);
+      const { seated, lifted } = assignHarvestToTracks(P.clips, occupied);
       const roles = {};
       for (const pick of picks) roles[pick.role] = (roles[pick.role] || 0) + 1;
       const spread = picks[picks.length - 1].t0 - picks[0].t0;
       status('HARVEST · ' + picks.length + ' SLICES ACROSS ' + spread.toFixed(0) + 'S · '
         + Object.keys(roles).map((r) => r + ' ' + roles[r]).join(' ')
-        + (seated ? ' · ' + seated + ' ON TRACKS, READY TO PLAY' : ''));
+        + (seated ? ' · ' + seated + ' ON TRACKS, READY TO PLAY' : '')
+        + (lifted ? ' · ' + lifted + ' LEVELLED UP' : ''));
     };
     harvestWorker.onerror = () => {
       btn.disabled = false;

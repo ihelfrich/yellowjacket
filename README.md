@@ -194,7 +194,12 @@ and snare first, the other roles behind them, and the best of whatever is left
 backfilling the tracks a source could not fill. A frog chorus has no hi-hats; it
 still comes back as a kit you can play rather than a list you have to place by
 hand. Tracks that already hold a sound are left alone, so a second harvest adds
-to a kit instead of overwriting one.
+to a kit instead of overwriting one. Each seated slice is also brought up to a
+playable level on the way in, with the boost capped at 18 dB so a near-silent
+slice is not amplified into its own noise floor: the frog kit went from a -24
+dBFS render to -6 without clipping. A slice you assign by hand keeps whatever
+level it had, because that is a deliberate choice rather than a kit being
+built for you.
 
 Every track's sample is an editable VOICE: trim its start and end on a
 waveform, pitch it up to two octaves either way, shape attack and release,
