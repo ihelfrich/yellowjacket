@@ -376,15 +376,21 @@ export const samplePayloadCases = [
   },
 
   async function verifiesBeforeHydrateAndKeepsCanonicalStoragePrivate() {
-    // Mutation caught: hydrating before digest verification or sharing mutable bytes/channels.
+    // Mutation caught: public raw-byte hydration bypassing digest verification or sharing mutable storage.
     const tampered = PCM_BYTES.slice();
     tampered[0] = 1;
     const rejected = await validateSamplePayload(pcmMeta(), tampered);
     assert.equal(rejected.ok, false, 'same-length one-float tamper fails digest verification');
     assert.equal('sample' in rejected, false, 'failed verification exposes no partial hydration');
+    assert.equal(await CanonicalPcm.fromVerified(pcmMeta(), tampered), null,
+      'raw CanonicalPcm construction cannot bypass digest verification');
+    assert.equal(await hydrateCanonicalPcm(pcmMeta(), tampered), null,
+      'raw hydration cannot bypass digest verification');
+    assert.throws(() => new CanonicalPcm(pcmMeta(), tampered), /verified CanonicalPcm/,
+      'direct raw construction cannot bypass digest verification');
 
     const supplied = PCM_BYTES.slice();
-    const canonical = CanonicalPcm.fromVerified(pcmMeta(), supplied);
+    const canonical = await CanonicalPcm.fromVerified(pcmMeta(), supplied);
     assert.ok(canonical instanceof CanonicalPcm);
     supplied[0] = 1;
     const copied = canonical.copyBytes();
@@ -395,7 +401,26 @@ export const samplePayloadCases = [
     a.channels[0][0] = 9;
     assert.equal(b.channels[0][0], 0, 'hydrations do not share channels');
     assert.equal(canonical.hydrate().channels[0][0], 0, 'playback cannot alter canonical PCM');
-    assert.equal(hydrateCanonicalPcm(pcmMeta(), PCM_BYTES) instanceof CanonicalPcm, true);
+    assert.equal((await hydrateCanonicalPcm(pcmMeta(), PCM_BYTES)) instanceof CanonicalPcm, true);
+  },
+
+  async function rejectsNonStringDigestsAndDescriptorsWithoutThrowing() {
+    // Mutation caught: passing Symbols into RegExp.test and throwing instead of returning an invalid result.
+    const digest = await validateSamplePayload(pcmMeta({
+      payload: { byteLength: 16, sha256: Symbol('digest') },
+    }), PCM_BYTES);
+    assert.deepEqual(digest.ok, false, 'a non-string digest is invalid, not exceptional');
+    const project = provenanceProject();
+    const asset = projectAsset();
+    assert.equal(validateAssetProvenance(project, projectAsset({
+      provenance: { ...asset.provenance, kind: Symbol('kind') },
+    })).ok, false, 'a non-string provenance descriptor is invalid');
+    assert.equal(validateAssetProvenance(project, projectAsset({
+      provenance: {
+        ...asset.provenance,
+        transforms: [{ schemaVersion: 1, kind: Symbol('transform'), gain: 1 }],
+      },
+    })).ok, false, 'a non-string transform descriptor is invalid');
   },
 
   function deduplicatesReachableAssetsAndRejectsEveryOwnershipMismatch() {

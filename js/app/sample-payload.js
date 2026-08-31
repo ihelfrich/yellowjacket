@@ -6,6 +6,7 @@ const DESCRIPTOR_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_TRANSFORMS = 32;
 const MAX_TRANSFORM_BYTES = 64 * 1024;
 const textEncoder = new TextEncoder();
+const verifiedConstruction = Symbol('verified CanonicalPcm');
 
 function isObject(value) {
   return value != null && typeof value === 'object' && !Array.isArray(value);
@@ -57,7 +58,7 @@ function metaShape(meta) {
   if (!isObject(meta) || !isPositiveSafeInteger(meta.sampleRate)
       || !isPositiveSafeInteger(meta.channelCount) || !isSafeInteger(meta.frames)
       || !isObject(meta.payload) || !isSafeInteger(meta.payload.byteLength)
-      || !SHA256_RE.test(meta.payload.sha256)) return null;
+      || typeof meta.payload.sha256 !== 'string' || !SHA256_RE.test(meta.payload.sha256)) return null;
   const byteLength = byteLengthFor(meta.frames, meta.channelCount);
   if (byteLength === null || byteLength !== meta.payload.byteLength) return null;
   return { byteLength };
@@ -108,7 +109,8 @@ export class CanonicalPcm {
   #meta;
   #bytes;
 
-  constructor(meta, bytes) {
+  constructor(meta, bytes, token) {
+    if (token !== verifiedConstruction) throw new TypeError('Use a verified CanonicalPcm factory');
     this.#meta = {
       sampleRate: meta.sampleRate,
       channelCount: meta.channelCount,
@@ -117,14 +119,22 @@ export class CanonicalPcm {
     this.#bytes = bytes.slice();
   }
 
-  static fromVerified(meta, bytes) {
+  // Raw bytes are untrusted, so this remains asynchronous until SHA-256 verification completes.
+  static async fromVerified(meta, bytes) {
     const shape = metaShape(meta);
     if (!shape) return null;
     const copied = copiedBytes(bytes);
     if (!copied || copied.byteLength !== shape.byteLength || !bytesContainOnlyFiniteFloat32(copied)) {
       return null;
     }
-    return new CanonicalPcm(meta, copied);
+    let digest;
+    try {
+      digest = await hashName(copied);
+    } catch {
+      return null;
+    }
+    if (digest !== meta.payload.sha256) return null;
+    return new CanonicalPcm(meta, copied, verifiedConstruction);
   }
 
   get byteLength() {
@@ -150,7 +160,8 @@ export class CanonicalPcm {
   }
 }
 
-export function hydrateCanonicalPcm(meta, bytes) {
+// Raw-byte hydration has the same asynchronous verification boundary as fromVerified().
+export async function hydrateCanonicalPcm(meta, bytes) {
   return CanonicalPcm.fromVerified(meta, bytes);
 }
 
@@ -167,8 +178,7 @@ export async function validateSamplePayload(meta, bytes) {
     return { ok: false, issue: 'digest' };
   }
   if (digest !== meta.payload.sha256) return { ok: false, issue: 'digest' };
-  const sample = CanonicalPcm.fromVerified(meta, copied);
-  return sample ? { ok: true, sample } : { ok: false, issue: 'pcm' };
+  return { ok: true, sample: new CanonicalPcm(meta, copied, verifiedConstruction) };
 }
 
 export function reachableAssetIds(machine) {
@@ -249,7 +259,8 @@ function validateTransforms(transforms) {
   if (!bytes || bytes.byteLength > MAX_TRANSFORM_BYTES) return null;
   let replayable = true;
   for (const transform of transforms) {
-    if (!isObject(transform) || !DESCRIPTOR_RE.test(transform.kind) || !isPositiveSafeInteger(transform.schemaVersion)) {
+    if (!isObject(transform) || typeof transform.kind !== 'string' || !DESCRIPTOR_RE.test(transform.kind)
+        || !isPositiveSafeInteger(transform.schemaVersion)) {
       return null;
     }
     if (transform.kind === 'linear-gain' && transform.schemaVersion === 1) {
@@ -293,7 +304,8 @@ function matchingProjectExtraction(project, asset, provenance) {
 export function validateAssetProvenance(project, asset) {
   if (!isObject(asset) || !isObject(asset.provenance)) return { ok: false, issue: 'provenance' };
   const provenance = asset.provenance;
-  if (!DESCRIPTOR_RE.test(provenance.kind) || (provenance.binding !== 'project' && provenance.binding !== 'external')) {
+  if (typeof provenance.kind !== 'string' || !DESCRIPTOR_RE.test(provenance.kind)
+      || (provenance.binding !== 'project' && provenance.binding !== 'external')) {
     return { ok: false, issue: 'provenance' };
   }
   const encoded = serializedBytes(provenance);
