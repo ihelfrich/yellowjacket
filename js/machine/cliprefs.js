@@ -7,7 +7,7 @@
 // these primitives. The allocator is still the one canonical project-store
 // implementation; this inactive module resolves it before exposing behavior.
 const [{
-  allocateProjectId, createProject, hasExactProjectIdCounter, isProjectClipAtlas,
+  allocateProjectId, createProject, hasCanonicalProjectState, hasExactProjectIdCounter,
 }, { SOURCE_ID_RE }] = await Promise.all([
   import('../app/project-store.js'),
   import('../app/source-registry.js'),
@@ -145,7 +145,7 @@ function finalizeClipInput(project, input) {
   if (!project || typeof project !== 'object') {
     throw new TypeError('Clip project is invalid');
   }
-  if (!isProjectClipAtlas(project.clips)) throw new TypeError('Clip Atlas is not canonical');
+  if (!hasCanonicalProjectState(project)) throw new TypeError('Clip project state is not canonical');
   const snapshot = snapshotClipInput(input);
   if (!knownSource(project, snapshot.sourceId)) throw new TypeError('Clip source is unknown');
   validateSpan(snapshot.start, snapshot.end);
@@ -233,10 +233,10 @@ function rollbackAppends(atlas, beforeLength, count, lengthDescriptor) {
 }
 
 function appendFinalizedClips(project, finalizedClips, expectedIds = null) {
-  const atlas = project && project.clips;
-  if (!isProjectClipAtlas(atlas) || !Array.isArray(finalizedClips)) {
+  if (!hasCanonicalProjectState(project) || !Array.isArray(finalizedClips)) {
     throw new TypeError('Clip Atlas append is invalid');
   }
+  const atlas = project.clips;
   if (!finalizedClips.length) return [];
   const beforeLength = atlas.length;
   const lengthDescriptor = ownDataDescriptor(atlas, 'length');
@@ -353,7 +353,7 @@ export function replaceClipBounds(project, oldId, nextBounds) {
       || !nextBounds || typeof nextBounds !== 'object') {
     throw new TypeError('Clip replacement is invalid');
   }
-  if (!isProjectClipAtlas(project.clips)) throw new TypeError('Clip Atlas is not canonical');
+  if (!hasCanonicalProjectState(project)) throw new TypeError('Clip project state is not canonical');
   const matches = [];
   for (let index = 0; index < project.clips.length; index++) {
     if (project.clips[index] && project.clips[index].id === oldId) matches.push(index);
@@ -665,11 +665,13 @@ export async function prepareHarvestRun(project, decoded, picks, options = {}) {
     }
   }
   const removeClipIds = planGeneratedClipReplacement(project, { sourceId, generator }).removeClipIds;
+  if (!hasCanonicalProjectState(project)) throw new TypeError('Clip project state is not canonical');
   const startingAllocator = project.allocators.clip;
   const startingClips = project.clips.slice();
   const preview = createProject([]);
   preview.sources = project.sources;
-  preview.allocators = { ...project.allocators };
+  preview.allocators.clip = project.allocators.clip;
+  preview.allocators.asset = project.allocators.asset;
   for (const clip of project.clips) {
     Reflect.apply(Array.prototype.push, preview.clips, [clip]);
   }

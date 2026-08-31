@@ -241,7 +241,7 @@ export const clipIdentityCases = [
         return true;
       },
     });
-    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /commit|Atlas/i);
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /project|canonical|Atlas/i);
     assert.equal(writes, 0, 'an unbranded Proxy rejects before its no-op trap');
     assert.equal(project.allocators.clip, 0, 'a successful no-op cannot burn c1');
     assert.deepEqual(target, [], 'a successful no-op cannot be reported as an appended clip');
@@ -254,7 +254,7 @@ export const clipIdentityCases = [
     const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const atlas = project.clips;
     project.clips = new Proxy(atlas, {});
-    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /Atlas/i);
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /project|canonical|Atlas/i);
     assert.equal(project.allocators.clip, 0);
     assert.deepEqual(atlas, []);
   },
@@ -266,9 +266,74 @@ export const clipIdentityCases = [
     const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const replacementAtlas = [];
     project.clips = replacementAtlas;
-    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /Atlas/i);
+    assert.throws(() => createClipRef(project, { sourceId: a, start: 0, end: 1 }), /project|canonical|Atlas/i);
     assert.equal(project.allocators.clip, 0);
     assert.deepEqual(replacementAtlas, []);
+  },
+
+  function rejectsAProjectProxyBeforeAnyClipAllocationOrAtlasMutation() {
+    // Mutation caught: trusting branded child containers reached through an
+    // unowned Proxy wrapper around the project object itself.
+    const a = sourceId('a');
+    const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const wrapper = new Proxy(project, {});
+    assert.throws(() => createClipRef(wrapper, { sourceId: a, start: 0, end: 1 }), /project|canonical|Atlas/i);
+    assert.equal(project.allocators.clip, 0);
+    assert.deepEqual(project.clips, []);
+  },
+
+  function rejectsAnotherProjectsAtlasBeforeAllocation() {
+    // Mutation caught: a module-global Atlas brand authorizing Project B to
+    // append into Project A's exact array with B's divergent counter.
+    const a = sourceId('a');
+    const owner = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const borrower = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const borrowerAtlas = borrower.clips;
+    borrower.clips = owner.clips;
+    assert.throws(() => createClipRef(borrower, { sourceId: a, start: 0, end: 1 }), /project|canonical|Atlas/i);
+    assert.equal(owner.allocators.clip, 0);
+    assert.equal(borrower.allocators.clip, 0);
+    assert.deepEqual(owner.clips, []);
+    assert.deepEqual(borrowerAtlas, []);
+  },
+
+  function rejectsAnotherProjectsAllocatorBeforeAtlasCommit() {
+    // Mutation caught: Project B issuing through Project A's allocator while
+    // appending to B's own Atlas, splitting one transaction across owners.
+    const a = sourceId('a');
+    const owner = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const borrower = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const borrowerCounters = borrower.allocators;
+    borrower.allocators = owner.allocators;
+    assert.throws(() => createClipRef(borrower, { sourceId: a, start: 0, end: 1 }), /project|canonical|allocator/i);
+    assert.equal(owner.allocators.clip, 0);
+    assert.equal(borrowerCounters.clip, 0);
+    assert.deepEqual(owner.clips, []);
+    assert.deepEqual(borrower.clips, []);
+  },
+
+  function rejectsAnotherProjectsCombinedStateAndKeepsIndependentProjectsUsable() {
+    // Mutation caught: accepting a matching foreign Atlas/allocator pair
+    // because each container is globally plausible rather than project-owned.
+    const a = sourceId('a');
+    const owner = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const borrower = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
+    const borrowerAtlas = borrower.clips;
+    const borrowerCounters = borrower.allocators;
+    borrower.clips = owner.clips;
+    borrower.allocators = owner.allocators;
+    assert.throws(() => createClipRef(borrower, { sourceId: a, start: 0, end: 1 }), /project|canonical|Atlas|allocator/i);
+    assert.equal(owner.allocators.clip, 0);
+    assert.deepEqual(owner.clips, []);
+
+    borrower.clips = borrowerAtlas;
+    borrower.allocators = borrowerCounters;
+    const ownerClip = createClipRef(owner, { sourceId: a, start: 0, end: 1 });
+    const borrowerClip = createClipRef(borrower, { sourceId: a, start: 1, end: 2 });
+    assert.equal(ownerClip.id, 'c1');
+    assert.equal(borrowerClip.id, 'c1');
+    assert.strictEqual(owner.clips[0], ownerClip);
+    assert.strictEqual(borrower.clips[0], borrowerClip);
   },
 
   function rejectsDroppedAllocatorWritesBeforeManualClipCommit() {
@@ -340,7 +405,7 @@ export const clipIdentityCases = [
         return true;
       },
     });
-    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }), /commit|Atlas/i);
+    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }), /project|canonical|Atlas/i);
     assert.equal(writes, 0, 'an unbranded Proxy rejects before its no-op trap');
     assert.equal(project.allocators.clip, 1, 'a successful no-op cannot burn c2');
     assert.strictEqual(target[0], original);
@@ -367,14 +432,16 @@ export const clipIdentityCases = [
     const a = sourceId('a');
     const project = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const original = createClipRef(project, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const originalId = original.id;
     const atlas = project.clips;
     const counters = project.allocators;
-    let armCounterReset = true;
-    project.allocators = new Proxy(counters, {
-      set(target, property, value) {
-        Reflect.set(target, property, value, target);
-        if (property === 'clip' && value === 2 && armCounterReset) {
-          armCounterReset = false;
+    let idReads = 0;
+    Object.defineProperty(original, 'id', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        idReads++;
+        if (idReads === 2) {
           Object.defineProperty(atlas, '0', {
             configurable: true,
             enumerable: true,
@@ -387,10 +454,10 @@ export const clipIdentityCases = [
             },
           });
         }
-        return true;
+        return originalId;
       },
     });
-    assert.throws(() => replaceClipBounds(project, original.id, { start: 0, end: 2 }));
+    assert.throws(() => replaceClipBounds(project, originalId, { start: 0, end: 2 }));
     assert.equal(counters.clip, 1);
     assert.strictEqual(atlas[0], original);
   },
@@ -486,14 +553,16 @@ export const clipIdentityCases = [
 
     const replaceProject = projectWithSources([{ id: a, sampleRate: 10, channelCount: 1, frames: 100 }]);
     const original = createClipRef(replaceProject, { sourceId: a, start: 0, end: 1, label: 'prior' });
+    const originalId = original.id;
     const replaceAtlas = replaceProject.clips;
     const counters = replaceProject.allocators;
-    let armReplacementFault = true;
-    replaceProject.allocators = new Proxy(counters, {
-      set(target, property, value) {
-        Reflect.set(target, property, value, target);
-        if (property === 'clip' && value === 2 && armReplacementFault) {
-          armReplacementFault = false;
+    let idReads = 0;
+    Object.defineProperty(original, 'id', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        idReads++;
+        if (idReads === 2) {
           Object.defineProperty(replaceAtlas, '0', {
             configurable: true,
             enumerable: true,
@@ -506,10 +575,10 @@ export const clipIdentityCases = [
             },
           });
         }
-        return true;
+        return originalId;
       },
     });
-    assert.throws(() => replaceClipBounds(replaceProject, original.id, { start: 0, end: 2 }), /write fault/i);
+    assert.throws(() => replaceClipBounds(replaceProject, originalId, { start: 0, end: 2 }), /write fault/i);
     assert.equal(counters.clip, 1);
     assert.strictEqual(replaceAtlas[0], original, 'the exact prior ClipRef is restored');
     assert.equal(Object.getOwnPropertyDescriptor(replaceAtlas, '0').value, original,
@@ -651,7 +720,7 @@ export const clipIdentityCases = [
       decodedBuffer([new Float32Array(100)], 10), [
         { t0: 0, t1: 1, role: 'kick', label: 'one' },
         { t0: 2, t1: 3, role: 'snare', label: 'two' },
-      ], { sourceId: a, runId: 'no-op-run', buffer: 'original' }), /commit|Atlas/i);
+      ], { sourceId: a, runId: 'no-op-run', buffer: 'original' }), /project|canonical|Atlas/i);
     assert.equal(writes, 0, 'an unbranded Proxy rejects before batch issuance');
     assert.equal(project.allocators.clip, 0, 'a dropped run burns neither c1 nor c2');
     assert.deepEqual(target, [], 'a dropped run exposes no Atlas suffix');
@@ -669,7 +738,7 @@ export const clipIdentityCases = [
     await assert.rejects(() => prepareHarvestRun(project,
       decodedBuffer([new Float32Array(100)], 10), [
         { t0: 0, t1: 1, role: 'kick', label: 'one' },
-      ], { sourceId: a, runId: 'allocator-no-op', buffer: 'original' }), /allocator|counter/i);
+      ], { sourceId: a, runId: 'allocator-no-op', buffer: 'original' }), /project|canonical|allocator|counter/i);
     assert.equal(counters.clip, 0);
     assert.deepEqual(project.clips, [], 'HARVEST cannot commit behind an unissued c1');
   },

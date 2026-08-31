@@ -27,7 +27,7 @@ import {
   ProjectStore,
   allocateProjectId,
   createProject,
-  isProjectClipAtlas,
+  hasCanonicalProjectState,
   registerAsset,
   registerPreparedAsset,
   resolveTrackSamples,
@@ -622,14 +622,15 @@ export const projectStoreV3Cases = [
     assert.strictEqual(project.chain, chain, 'legacy chain facade remains in place');
   },
 
-  function brandsOnlyTheCreateProjectAtlasAndPreservesItAcrossV2Restore() {
-    // Mutation caught: exposing a public branding path, accepting a Proxy or
-    // lookalike Array, or replacing the canonical Atlas during v2 apply.
+  function recognizesOnlyTheExactProjectAndPreservesOwnedContainersAcrossV2Restore() {
+    // Mutation caught: keying trust by a globally branded container instead
+    // of the exact createProject object and both of its original containers.
     const project = createProject([]);
     const atlas = project.clips;
-    assert.equal(isProjectClipAtlas(atlas), true);
-    assert.equal(isProjectClipAtlas([]), false);
-    assert.equal(isProjectClipAtlas(new Proxy(atlas, {})), false);
+    const allocators = project.allocators;
+    assert.equal(hasCanonicalProjectState(project), true);
+    assert.equal(hasCanonicalProjectState(new Proxy(project, {})), false);
+    assert.equal(hasCanonicalProjectState({ ...project }), false);
     const json = snapshotDoc(project, { sourceBytes: null, repairs: [], analysis: null });
     json.clips = [{ id: 'c1', sourceId: sourceId('a'), start: 0, end: 1 }];
     applySnapshot(json, {
@@ -637,15 +638,53 @@ export const projectStoreV3Cases = [
       runtime: { sourceBytes: null, repairs: [], analysis: null },
     });
     assert.strictEqual(project.clips, atlas);
-    assert.equal(isProjectClipAtlas(project.clips), true);
+    assert.strictEqual(project.allocators, allocators);
+    assert.equal(hasCanonicalProjectState(project), true);
     assert.equal(project.clips[0].id, 'c1');
+  },
+
+  function rejectsCrossProjectAndReplacementContainerOwnershipBeforeAllocation() {
+    // Mutation caught: treating any globally branded Atlas or plausible
+    // allocator object as belonging to whichever project currently points at it.
+    const first = createProject([]);
+    const second = createProject([]);
+    const firstAtlas = first.clips;
+    const firstAllocators = first.allocators;
+    const secondAtlas = second.clips;
+    const secondAllocators = second.allocators;
+
+    second.clips = firstAtlas;
+    assert.equal(hasCanonicalProjectState(second), false);
+    assert.throws(() => allocateProjectId(second, 'clip'), /project|allocator|canonical/i);
+    assert.equal(firstAllocators.clip, 0);
+    second.clips = secondAtlas;
+
+    second.allocators = firstAllocators;
+    assert.equal(hasCanonicalProjectState(second), false);
+    assert.throws(() => allocateProjectId(second, 'clip'), /project|allocator|canonical/i);
+    assert.equal(firstAllocators.clip, 0);
+
+    second.clips = firstAtlas;
+    assert.throws(() => allocateProjectId(second, 'clip'), /project|allocator|canonical/i);
+    assert.equal(firstAllocators.clip, 0);
+    assert.deepEqual(firstAtlas, []);
+
+    second.clips = [];
+    second.allocators = { clip: 0, asset: 0 };
+    assert.equal(hasCanonicalProjectState(second), false);
+    assert.throws(() => allocateProjectId(second, 'clip'), /project|allocator|canonical/i);
+    assert.strictEqual(first.clips, firstAtlas);
+    assert.strictEqual(first.allocators, firstAllocators);
+    assert.strictEqual(secondAtlas.length, 0);
+    assert.strictEqual(secondAllocators.clip, 0);
   },
 
   function allocatesProjectLocalIdsMonotonicallyWithoutScanningOrReuse() {
     // Mutation caught: returning the current counter, repairing a stale counter
     // by scanning state, or relying on a module-global allocator.
     const project = createProject([]);
-    project.allocators = { clip: 8, asset: 13 };
+    project.allocators.clip = 8;
+    project.allocators.asset = 13;
     assert.equal(allocateProjectId(project, 'clip'), 'c9');
     assert.equal(registerAsset(project, { kind: 'sample' }), 'a14');
     project.clips.push({ id: 'c9' });
@@ -672,36 +711,70 @@ export const projectStoreV3Cases = [
     assert.equal(allocateProjectId(second, 'asset'), 'a1', 'projects do not share allocation state');
   },
 
-  function rejectsDroppedAllocatorWritesBeforeReturningOrRegisteringAnAsset() {
-    // Mutation caught: trusting a truthy Proxy set result and returning an ID
-    // whose canonical counter never advanced.
-    const project = createProject([]);
-    const counters = project.allocators;
-    project.allocators = new Proxy(counters, {
-      set() { return true; },
-    });
-    assert.throws(() => allocateProjectId(project, 'clip'), /allocator|counter/i);
-    assert.equal(counters.clip, 0);
-    assert.deepEqual(project.clips, []);
-    assert.throws(() => registerAsset(project, { kind: 'sample' }), /allocator|counter/i);
-    assert.equal(counters.asset, 0);
-    assert.deepEqual(project.assets, {}, 'asset metadata never commits behind an unissued ID');
-  },
-
-  function restoresTheExactCounterWhenAnAllocatorWriteThrowsAfterCommitting() {
-    // Mutation caught: a Proxy mutates the target and then throws, leaving the
-    // failed allocation's suffix burned for the next caller.
-    const project = createProject([]);
-    const counters = project.allocators;
-    project.allocators = new Proxy(counters, {
+  function rejectsAllocatorProxyCounterfeitCommitAndRollbackBeforeAnyTrap() {
+    // Mutation caught: trusting a Proxy that fabricates descriptor/read
+    // postconditions for a dropped commit or a dropped rollback.
+    const commitProject = createProject([]);
+    const commitCounters = commitProject.allocators;
+    let reported = 0;
+    let commitWrites = 0;
+    commitProject.allocators = new Proxy(commitCounters, {
+      get(target, property, receiver) {
+        if (property === 'clip') return reported;
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'clip') {
+          return { value: reported, writable: true, enumerable: true, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
       set(target, property, value) {
-        Reflect.set(target, property, value, target);
-        throw new Error('allocator write fault');
+        commitWrites++;
+        if (property === 'clip') reported = value;
+        return true;
       },
     });
-    assert.throws(() => allocateProjectId(project, 'clip'), /write fault/);
-    assert.equal(counters.clip, 0, 'failed c1 issuance restores the exact prior counter');
-    assert.deepEqual(project.clips, []);
+    assert.throws(() => allocateProjectId(commitProject, 'clip'), /project|allocator|canonical/i);
+    assert.equal(commitWrites, 0, 'a counterfeit commit boundary is never entered');
+    assert.equal(commitCounters.clip, 0);
+
+    const rollbackProject = createProject([]);
+    const rollbackCounters = rollbackProject.allocators;
+    let counterfeitingRollback = false;
+    let rollbackWrites = 0;
+    rollbackProject.allocators = new Proxy(rollbackCounters, {
+      get(target, property, receiver) {
+        if (property === 'clip' && counterfeitingRollback) return 0;
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'clip' && counterfeitingRollback) {
+          return { value: 0, writable: true, enumerable: true, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+      set(target, property, value) {
+        rollbackWrites++;
+        Reflect.set(target, property, value, target);
+        counterfeitingRollback = true;
+        throw new Error('allocator write fault');
+      },
+      defineProperty() {
+        return true;
+      },
+    });
+    assert.throws(() => allocateProjectId(rollbackProject, 'clip'), /project|allocator|canonical/i);
+    assert.equal(rollbackWrites, 0, 'a counterfeit rollback boundary is never entered');
+    assert.equal(rollbackCounters.clip, 0, 'the authoritative counter remains unchanged');
+    assert.deepEqual(rollbackProject.clips, []);
+
+    const assetProject = createProject([]);
+    const assetCounters = assetProject.allocators;
+    assetProject.allocators = new Proxy(assetCounters, {});
+    assert.throws(() => registerAsset(assetProject, { kind: 'sample' }), /project|allocator|canonical/i);
+    assert.equal(assetCounters.asset, 0);
+    assert.deepEqual(assetProject.assets, {}, 'asset metadata never commits through a foreign allocator');
   },
 
   function legacyAssetMetadataCannotOverrideTheAllocatedRecordId() {

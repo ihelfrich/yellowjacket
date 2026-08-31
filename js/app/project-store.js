@@ -8,11 +8,11 @@ import { createStudio } from '../studio/model.js';
 // route. Retain the owners we install so synchronous playback resolution can
 // distinguish them from arbitrary values inserted into the public runtime map.
 const verifiedAssetPcm = new WeakSet();
-// Task 9 mutators need an unforgeable identity boundary: observations through
-// an arbitrary Proxy cannot prove that rollback restored its hidden target.
-// Only createProject can mint the canonical Atlas; consumers get a read-only
-// predicate and persistence/history continue mutating this exact Array in place.
-const projectClipAtlases = new WeakSet();
+// Task 9 mutators need an unforgeable ownership boundary: neither a Proxy nor
+// another project's otherwise-canonical containers can prove a transaction.
+// Keep the exact project -> Atlas/allocator association private. Persistence
+// and history continue mutating both containers in place.
+const projectOwnership = new WeakMap();
 
 export function createVoice() {
   return {
@@ -138,8 +138,8 @@ export function createLoom() {
 
 export function createProject(chainDefaults) {
   const clips = [];
-  projectClipAtlases.add(clips);
-  return {
+  const allocators = { clip: 0, asset: 0 };
+  const project = {
     // No formatVersion here on purpose: the serialized format is stamped by
     // persist.js (FORMAT_VERSION, currently 2). A second version field on the
     // live object read 1 forever and invited a maintainer to bump the wrong one.
@@ -149,7 +149,7 @@ export function createProject(chainDefaults) {
     chain: chainDefaults,
     activeSourceId: null,
     sources: {},
-    allocators: { clip: 0, asset: 0 },
+    allocators,
     clips,
     assets: {},            // id -> {id, kind, label, sampleRate, frames}; pcm lives on runtime refs
     machine: createMachine(),
@@ -157,16 +157,32 @@ export function createProject(chainDefaults) {
     wire: createWire(),
     loom: createLoom(),     // semantic source/MIDI provenance and render map
   };
+  projectOwnership.set(project, { clips, allocators });
+  return project;
 }
 
-export function isProjectClipAtlas(value) {
-  return Array.isArray(value) && projectClipAtlases.has(value);
+function canonicalProjectState(project) {
+  if (!project || typeof project !== 'object') return null;
+  const state = projectOwnership.get(project);
+  if (!state) return null;
+  const clipsDescriptor = Reflect.getOwnPropertyDescriptor(project, 'clips');
+  const allocatorsDescriptor = Reflect.getOwnPropertyDescriptor(project, 'allocators');
+  if (!clipsDescriptor || !Object.prototype.hasOwnProperty.call(clipsDescriptor, 'value')
+      || clipsDescriptor.value !== state.clips
+      || !allocatorsDescriptor || !Object.prototype.hasOwnProperty.call(allocatorsDescriptor, 'value')
+      || allocatorsDescriptor.value !== state.allocators
+      || project.clips !== state.clips || project.allocators !== state.allocators) return null;
+  return state;
 }
 
-function allocatedSuffixes(project, kind) {
+export function hasCanonicalProjectState(project) {
+  return canonicalProjectState(project) !== null;
+}
+
+function allocatedSuffixes(project, kind, state) {
   const prefix = kind === 'clip' ? 'c' : 'a';
   const ids = kind === 'clip'
-    ? (Array.isArray(project.clips) ? project.clips.map((entry) => entry && entry.id) : null)
+    ? (Array.isArray(state.clips) ? state.clips.map((entry) => entry && entry.id) : null)
     : (project.assets && typeof project.assets === 'object' && !Array.isArray(project.assets)
       ? Object.keys(project.assets) : null);
   if (!ids) throw new RangeError(`Project ${kind} state is invalid`);
@@ -207,7 +223,9 @@ function exactAllocatorCounter(counters, kind, expected, template) {
 export function hasExactProjectIdCounter(project, kind, expected) {
   if (!project || typeof project !== 'object' || (kind !== 'clip' && kind !== 'asset')
       || !Number.isSafeInteger(expected) || expected < 0) return false;
-  const descriptor = allocatorCounterDescriptor(project.allocators, kind);
+  const state = canonicalProjectState(project);
+  if (!state) return false;
+  const descriptor = allocatorCounterDescriptor(state.allocators, kind);
   return !!descriptor && descriptor.value === expected;
 }
 
@@ -215,18 +233,24 @@ export function allocateProjectId(project, kind) {
   if (!project || typeof project !== 'object' || (kind !== 'clip' && kind !== 'asset')) {
     throw new RangeError('Project allocator is invalid');
   }
-  const counters = project.allocators;
+  const state = canonicalProjectState(project);
+  if (!state) throw new RangeError('Project allocator is not canonical');
+  const counters = state.allocators;
   const descriptor = allocatorCounterDescriptor(counters, kind);
   const counter = descriptor && descriptor.value;
   if (!Number.isSafeInteger(counter) || counter < 0 || counter >= Number.MAX_SAFE_INTEGER) {
     throw new RangeError(`Project ${kind} counter is unsafe`);
   }
-  if (counter < allocatedSuffixes(project, kind)) {
+  if (counter < allocatedSuffixes(project, kind, state)) {
     throw new RangeError(`Project ${kind} counter is stale`);
+  }
+  if (canonicalProjectState(project) !== state) {
+    throw new RangeError('Project allocator ownership changed');
   }
   const next = counter + 1;
   try {
     if (!Reflect.set(counters, kind, next)
+        || canonicalProjectState(project) !== state
         || !exactAllocatorCounter(counters, kind, next, descriptor)) {
       throw new TypeError(`Project ${kind} allocator commit failed`);
     }
