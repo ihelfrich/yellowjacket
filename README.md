@@ -105,7 +105,13 @@ The **RACK** stacks the repair chain in signal order: high-pass, de-hum (mains f
 plus harmonics), spectral denoise, de-esser, four-band EQ, gate, compressor, lookahead
 limiter, and loudness normalization to a LUFS target (-16 for podcasts is the default).
 Every module has a power switch and a few honest parameters. Render, then A/B the result
-against the original before exporting WAV at 16, 24, or 32-bit float — at the session's own
+against the original — and see it, not just hear it. The waveform draws the take
+you are hearing in yellow over the one you are not in light blue, so the blue
+that survives is exactly what the rack changed: a compressor shows as tall blue
+lobes with the yellow squeezed inside them, and loudness normalisation shows as
+yellow standing proud of the blue through the quiet passages. An all-bypass rack
+renders sample-identical audio and shows no blue at all, which is the honest
+answer. Export WAV at 16, 24, or 32-bit float — at the session's own
 sample rate, so a 96 kHz load is still 96 kHz on the way out. The float export writes a
 spec-correct IEEE header and keeps samples above full scale instead of clamping them, so a
 hot bounce can still be pulled back down in whatever you open it with next.

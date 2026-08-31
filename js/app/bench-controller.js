@@ -6,6 +6,8 @@ import { MODELS } from '../transcribe.js';
 import { REGISTRY, renderChain, spliceCuts } from '../dsp/chain.js';
 import { encodeWavWithStats, toSrt, toVtt, toTxt, download, editedTime } from '../export.js';
 import { LOOM_TRANSCRIPT_MAX_WORDS } from '../loom/compile.js';
+import { mixdownMono } from '../audio-engine.js';
+import { buildPeakPyramid } from '../render/peaks.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -15,6 +17,10 @@ export function initBenchController(ctx) {
 
   let abState = 'a';           // 'a' original, 'b' rendered
   let renderFresh = false;
+  // Peaks for the rendered take, built once per render and reused by both A/B
+  // sides so the blue ghost costs nothing on toggle. Null until a render exists.
+  let renderedMono = null;
+  let renderedPeaks = null;
   let cuts = [];
   let meterHooked = false;
   let deviceLabel = '—';
@@ -413,6 +419,10 @@ export function initBenchController(ctx) {
       });
       if (gen !== R.generation) return; // another file loaded mid-render; drop the stale result
       R.renderedBuffer = rendered;
+      // Build the rendered take's peaks now, so A/B can draw it against the
+      // original without re-scanning the samples on every toggle.
+      renderedMono = mixdownMono(rendered);
+      renderedPeaks = buildPeakPyramid(renderedMono);
       const after = (await measureViaWorker(R.renderedBuffer)).integrated;
       const delta = after - before;
       $('roDelta').textContent = (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' LU';
@@ -420,6 +430,7 @@ export function initBenchController(ctx) {
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
       setRenderState(COPY.renderFresh, 'on');
       $('abToggle').hidden = false;
+      if ($('abKey')) $('abKey').hidden = false;
       status(COPY.renderOk + ' · ' + secs + 's');
       setAb('b');
     } catch (e) {
@@ -441,7 +452,25 @@ export function initBenchController(ctx) {
     for (const b of $('abToggle').querySelectorAll('button')) {
       b.classList.toggle('is-active', b.dataset.ab === side);
     }
+    // Yellow is whatever you are hearing; blue is the take you are not. Before
+    // this the waveform showed the original whichever side was selected, so the
+    // only evidence of what the RACK did was your ears.
+    showComparison(side);
     if (wasPlaying) engine.play(activeCuts());
+  }
+
+  function showComparison(side) {
+    if (!R.mono) return;
+    const hasRender = !!(renderedMono && R.renderedBuffer);
+    const live = hasRender && side === 'b'
+      ? { mono: renderedMono, peaks: renderedPeaks }
+      : { mono: R.mono, peaks: R.peaks };
+    const other = !hasRender ? null : (side === 'b'
+      ? { mono: R.mono, peaks: R.peaks }
+      : { mono: renderedMono, peaks: renderedPeaks });
+    waveMain.setBuffer(live.mono, R.sampleRate, live.peaks);
+    waveMain.setGhost(other ? other.mono : null, other ? other.peaks : null);
+    waveMain.setCuts(activeCuts());
   }
   $('abToggle').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-ab]');
@@ -501,9 +530,12 @@ export function initBenchController(ctx) {
   function resetForSource(hasSource = true) {
     cuts = [];
     renderFresh = false;
+    renderedMono = null;
+    renderedPeaks = null;
     liftRange = null;
     setAb('a');
     $('abToggle').hidden = true;
+    if ($('abKey')) $('abKey').hidden = true;
     transcript.setWords([]);
     $('transcriptHint').hidden = false;
     $('transcriptHost').prepend($('transcriptHint'));

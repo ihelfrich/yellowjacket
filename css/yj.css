@@ -19,6 +19,12 @@
   --yj-select:    rgba(255, 212, 0, 0.14);
   --yj-cut:       rgba(255, 92, 69, 0.10);
   --yj-wave:      #D9B830;
+  /* The other take. Yellow is always what you are hearing; blue is the version
+     you are not — the original behind a render, or the render behind the
+     original. Cyan-leaning so it separates from the yellow at any overlap
+     rather than muddying toward green. */
+  --yj-blue:      #7FD4F5;
+  --yj-blue-dim:  #2E5C6E;
 
   --yj-hazard: repeating-linear-gradient(-45deg,
       var(--yj-yellow) 0 5.66px, #0B0A07 5.66px 11.31px);
@@ -592,6 +598,23 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-ab .yj-btn { flex: 1; border-radius: 0; }
 .yj-ab .yj-btn:first-child { border-radius: 2px 0 0 2px; }
 .yj-ab .yj-btn:last-child { border-radius: 0 2px 2px 0; border-left: none; }
+
+/* A/B legend: which colour is which take. Only shown once a render exists,
+   because before that there is no other take to compare against. */
+.yj-ab-key {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.1em;
+  margin-top: 4px;
+}
+.yj-ab-key[hidden] { display: none; }
+.yj-ab-key span::before {
+  content: ''; display: inline-block;
+  width: 7px; height: 7px; margin-right: 5px; vertical-align: middle;
+}
+.yj-ab-key-live { color: var(--yj-ink-dim); }
+.yj-ab-key-live::before { background: var(--yj-wave); }
+.yj-ab-key-ghost { color: var(--yj-ink-dim); }
+.yj-ab-key-ghost::before { background: var(--yj-blue); }
 
 /* ---------- update offer ---------- */
 /* Sits above the status bar, never over the benches: an update is an offer, not

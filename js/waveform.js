@@ -33,6 +33,10 @@ export class WaveformView extends EventTarget {
 
     this._pyr = null;          // static min/max pyramid over the whole buffer
     this._peaks = null;        // per-column min/max at current zoom + width
+    // The other take, drawn behind in blue: the original behind a render, or
+    // the render behind the original. Null unless something to compare exists.
+    this._ghostPyr = null;
+    this._ghostPeaks = null;
     this._peaksDirty = true;
     this._staticReady = false;
     this._w = 0;               // backing store size, device px
@@ -70,6 +74,21 @@ export class WaveformView extends EventTarget {
     this._cuts = [];
     this._sel = null;
     this._playhead = 0;
+    this._peaksDirty = true;
+    this.render();
+  }
+
+  /**
+   * The version you are NOT hearing, drawn behind the live waveform in blue.
+   * Where the two agree the yellow covers it completely; where an edit changed
+   * the signal the blue shows through, so what the rack did is visible instead
+   * of only audible. Pass null to clear.
+   */
+  setGhost(mono, pyramid) {
+    const usable = mono && mono.length ? mono : null;
+    this._ghostMono = usable;
+    this._ghostPyr = usable ? (pyramid || buildPeakPyramid(usable)) : null;
+    this._ghostPeaks = null;
     this._peaksDirty = true;
     this.render();
   }
@@ -160,6 +179,15 @@ export class WaveformView extends EventTarget {
     const sr = this.sampleRate;
     queryPeaks(this._pyr, this._view.start * sr, this._view.end * sr, w,
       this._peaks.mins, this._peaks.maxs);
+
+    if (!this._ghostPyr) { this._ghostPeaks = null; return; }
+    if (!this._ghostPeaks || this._ghostPeaks.mins.length !== w) {
+      this._ghostPeaks = { mins: new Float32Array(w), maxs: new Float32Array(w) };
+    }
+    // Same time window as the live waveform, so the two are directly comparable
+    // column for column rather than merely similar in shape.
+    queryPeaks(this._ghostPyr, this._view.start * sr, this._view.end * sr, w,
+      this._ghostPeaks.mins, this._ghostPeaks.maxs);
   }
 
   // ---------- drawing ----------
@@ -174,6 +202,7 @@ export class WaveformView extends EventTarget {
       bg: v('--yj-well', '#070604'),
       line: v('--yj-line', '#262418'),
       wave: v('--yj-wave', '#D9B830'),
+      ghost: v('--yj-blue', '#7FD4F5'),
       playhead: v('--yj-yellow', '#FFD400'),
       sel: v('--yj-select-fill', '') || v('--yj-select', 'rgba(255,212,0,0.14)'),
       cut: v('--yj-cut-fill', '') || v('--yj-cut', 'rgba(255,92,69,0.10)'),
@@ -198,6 +227,23 @@ export class WaveformView extends EventTarget {
     }
     const mid = Math.round(h / 2);
     g.fillRect(0, mid, w, 1);
+
+    // The other take first, so the live waveform paints over it. Where the two
+    // agree nothing blue survives; where an edit moved the signal, blue is
+    // exactly the difference.
+    if (this._ghostPeaks) {
+      const { mins, maxs } = this._ghostPeaks;
+      const amp = h / 2 - 1;
+      g.fillStyle = c.ghost;
+      for (let x = 0; x < w; x++) {
+        let lo = mins[x], hi = maxs[x];
+        if (lo < -1) lo = -1;
+        if (hi > 1) hi = 1;
+        const y0 = h / 2 - hi * amp;
+        const y1 = h / 2 - lo * amp;
+        g.fillRect(x, y0, 1, Math.max(1, y1 - y0));
+      }
+    }
 
     // waveform body: one min/max column per device pixel
     if (this._peaks) {

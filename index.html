@@ -245,10 +245,15 @@
             <span class="yj-led" id="ledRender"></span>
             <span class="yj-led-text" id="renderState">NO RENDER</span>
           </div>
-          <div class="yj-ab" id="abToggle" hidden>
+          <div class="yj-ab" id="abToggle" hidden
+               title="Yellow is what you are hearing. Blue behind it is the other take, so the difference is the blue you can see.">
             <button class="yj-btn is-active" data-ab="a">ORIGINAL</button>
             <button class="yj-btn" data-ab="b">BENCH</button>
           </div>
+          <p class="yj-ab-key" id="abKey" hidden>
+            <span class="yj-ab-key-live">YELLOW · HEARD</span>
+            <span class="yj-ab-key-ghost">BLUE · THE OTHER TAKE</span>
+          </p>
           <dl class="yj-readouts">
             <div><dt>LOUDNESS Δ</dt><dd class="yj-well" id="roDelta">—</dd></div>
           </dl>
