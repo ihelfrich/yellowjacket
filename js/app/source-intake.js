@@ -34,20 +34,79 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function plainDataCopy(value, seen = new Map()) {
-  if (value === null || typeof value !== 'object') return value;
-  if (seen.has(value)) return seen.get(value);
-  const copy = Array.isArray(value) ? [] : {};
-  seen.set(value, copy);
-  for (const key of Object.keys(value)) {
-    Object.defineProperty(copy, key, {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: plainDataCopy(value[key], seen),
-    });
+function arrayIndex(key, length) {
+  if (key === '') return null;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === key
+    ? index : null;
+}
+
+function canonicalPlainData(value, ancestors = new Set()) {
+  if (value === null) return null;
+  const type = typeof value;
+  if (type === 'boolean' || type === 'string') return value;
+  if (type === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('non-finite number');
+    return value;
   }
-  return copy;
+  if (type !== 'object') throw new TypeError('unsupported plain-data value');
+  if (ancestors.has(value)) throw new TypeError('cyclic plain data');
+
+  const isArray = Array.isArray(value);
+  if (!isArray) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError('non-plain object');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key === 'symbol')) throw new TypeError('symbol property');
+
+  ancestors.add(value);
+  try {
+    if (isArray) {
+      const lengthDescriptor = descriptors.length;
+      if (!lengthDescriptor || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+          || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+        throw new TypeError('invalid array length');
+      }
+      const copy = new Array(lengthDescriptor.value);
+      for (const key of keys) {
+        if (key === 'length') continue;
+        const index = arrayIndex(key, lengthDescriptor.value);
+        const descriptor = descriptors[key];
+        if (index === null || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          throw new TypeError('non-data array property');
+        }
+        copy[index] = canonicalPlainData(descriptor.value, ancestors);
+      }
+      return copy;
+    }
+
+    const copy = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        throw new TypeError('accessor property');
+      }
+      Object.defineProperty(copy, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: canonicalPlainData(descriptor.value, ancestors),
+      });
+    }
+    return copy;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function canonicalizePlainData(value) {
+  try {
+    return { ok: true, value: canonicalPlainData(value) };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function deepFreeze(value, seen = new Set()) {
@@ -60,7 +119,9 @@ function deepFreeze(value, seen = new Set()) {
 function observeResult(observer, authoritative) {
   let outcome;
   try {
-    outcome = observer(deepFreeze(plainDataCopy(authoritative)));
+    const snapshot = canonicalizePlainData(authoritative);
+    if (!snapshot.ok) return;
+    outcome = observer(deepFreeze(snapshot.value));
   } catch {
     return;
   }
@@ -69,6 +130,31 @@ function observeResult(observer, authoritative) {
   } catch {
     // A hostile thenable cannot become a batch failure or an unhandled rejection.
   }
+}
+
+function nonPlainResultFailure() {
+  return deepFreeze({
+    kind: 'failed',
+    status: 'FAILED',
+    code: 'NON_PLAIN_RESULT',
+    message: 'Source result must be JSON-safe plain data',
+  });
+}
+
+function thrownRunFailure(item, error) {
+  const itemSnapshot = canonicalizePlainData(item);
+  let message;
+  try {
+    message = error && typeof error.message === 'string' ? error.message : String(error);
+  } catch {
+    message = 'Source transaction failed';
+  }
+  return {
+    kind: 'failed',
+    status: 'FAILED',
+    ...(itemSnapshot.ok ? { item: itemSnapshot.value } : {}),
+    message,
+  };
 }
 
 function fileItem(file) {
@@ -181,14 +267,10 @@ export async function processSourceBatch(items, {
         activation: hasActivatedAddition ? 'registry-only' : 'activate',
       });
     } catch (error) {
-      result = {
-        kind: 'failed',
-        status: 'FAILED',
-        item,
-        message: error && error.message ? error.message : String(error),
-      };
+      result = thrownRunFailure(item, error);
     }
-    const authoritative = plainDataCopy(result);
+    const canonical = canonicalizePlainData(result);
+    const authoritative = canonical.ok ? canonical.value : nonPlainResultFailure();
     results.push(authoritative);
     if (authoritative && authoritative.kind === 'added') hasActivatedAddition = true;
     observeResult(onResult, authoritative);

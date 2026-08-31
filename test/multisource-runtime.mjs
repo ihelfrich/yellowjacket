@@ -146,9 +146,9 @@ export const sourceIntakeCases = [
     const settled = await processSourceBatch([{ id: 'a' }, { id: 'b' }], {
       run: async (item, mode) => {
         modes.push([item.id, mode.activation]);
-        const row = Object.assign(Object.create({ inherited: 'not row data' }), {
+        const row = {
           kind: 'added', id: item.id, detail: { nested: { value: item.id } },
-        });
+        };
         runRows.push(row);
         return row;
       },
@@ -167,7 +167,6 @@ export const sourceIntakeCases = [
       { kind: 'added', id: 'a', detail: { nested: { value: 'a' } } },
       { kind: 'added', id: 'b', detail: { nested: { value: 'b' } } },
     ], 'runner and observer retain no reference into authoritative rows');
-    assert.equal(Object.hasOwn(settled.results[0], 'inherited'), false);
     for (const row of observed) {
       assert.notEqual(row, settled.results.find((result) => result.id === row.id));
       assert.equal(Object.getPrototypeOf(row), Object.prototype, 'observer row is plain data');
@@ -200,6 +199,81 @@ export const sourceIntakeCases = [
     held.reject(new Error('late observer rejection'));
     await nextTurn();
     await nextTurn();
+  },
+
+  async function nonPlainResolvedRowsBecomeFrozenFailuresWithoutReferencesOrActivation() {
+    const callable = function callableResult() {};
+    callable.kind = 'added';
+    callable.detail = { mutable: 'callable root' };
+    const nestedCallable = function nestedCallable() {};
+    nestedCallable.mutable = { value: 'nested callable' };
+    const nestedFunctionRow = { kind: 'added', nestedCallable };
+    const cycle = { kind: 'added' };
+    cycle.self = cycle;
+    let accessorReads = 0;
+    const accessorRow = { kind: 'added' };
+    Object.defineProperty(accessorRow, 'secret', {
+      enumerable: true,
+      get() { accessorReads++; return 'must not run'; },
+    });
+    const throwingProxy = new Proxy({ kind: 'added' }, {
+      ownKeys() { throw new Error('proxy descriptor trap'); },
+    });
+    const symbolRow = { kind: 'added' };
+    symbolRow[Symbol('hidden')] = 'not JSON data';
+    class ResultRow { constructor() { this.kind = 'added'; } }
+    const rawRows = [
+      callable,
+      nestedFunctionRow,
+      cycle,
+      accessorRow,
+      throwingProxy,
+      symbolRow,
+      { kind: 'added', amount: 1n },
+      { kind: 'added', amount: Infinity },
+      { kind: 'added', bytes: new Uint8Array([1, 2, 3]) },
+      new ResultRow(),
+    ];
+    const validA = { kind: 'added', id: 'valid-a', detail: { mutable: 'original' } };
+    const validB = { kind: 'added', id: 'valid-b' };
+    const inputs = [...rawRows, validA, validB].map((row, index) => ({ row, index }));
+    const modes = [];
+    const observed = [];
+    const settled = await processSourceBatch(inputs, {
+      run: async (item, mode) => {
+        modes.push(mode.activation);
+        return item.row;
+      },
+      onResult: (row) => observed.push(row),
+    });
+
+    assert.deepEqual(modes.slice(0, rawRows.length), Array(rawRows.length).fill('activate'),
+      'unsupported results never consume first-added activation');
+    assert.deepEqual(modes.slice(-2), ['activate', 'registry-only']);
+    for (let index = 0; index < rawRows.length; index++) {
+      const row = settled.results[index];
+      assert.equal(row.kind, 'failed');
+      assert.equal(row.code, 'NON_PLAIN_RESULT');
+      assert.equal(Object.isFrozen(row), true, 'non-plain failure is frozen');
+      assert.notEqual(row, rawRows[index], 'no rejected caller root is retained');
+      assert.notEqual(observed[index], row, 'observer gets a separate failure snapshot');
+      assert.equal(Object.isFrozen(observed[index]), true);
+    }
+    assert.equal(accessorReads, 0, 'canonicalization rejects accessors without invoking them');
+
+    callable.kind = 'duplicate';
+    callable.detail.mutable = 'late callable mutation';
+    nestedCallable.mutable.value = 'late nested callable mutation';
+    validA.kind = 'duplicate';
+    validA.detail.mutable = 'late valid mutation';
+    assert.deepEqual(settled.results.slice(-2), [
+      { kind: 'added', id: 'valid-a', detail: { mutable: 'original' } },
+      { kind: 'added', id: 'valid-b' },
+    ], 'late raw mutations cannot change authoritative supported rows');
+    assert.deepEqual(observed.slice(-2), [
+      { kind: 'added', id: 'valid-a', detail: { mutable: 'original' } },
+      { kind: 'added', id: 'valid-b' },
+    ], 'late raw mutations cannot change observer snapshots');
   },
 
   async function cancellationAtAnItemBoundaryKeepsPriorRowsAndStartsNothingFurther() {
@@ -1407,6 +1481,51 @@ export const analysisTokenCases = [
     assert.equal(first.session.isActive(token, { type: 'done', analysis: {}, ...tuple }), true,
       'terminal replay ownership belongs to the future controller, not this helper');
     assert.equal(second.session.isActive(token, tuple), false, 'session brands cannot be forged across instances');
+  },
+
+  async function tupleAccessorsAndDescriptorProxiesRejectWithoutReadsOrTimeOfCheckUse() {
+    const { session } = await sourceSessionFixture();
+    let issuanceReads = 0;
+    const changingIssue = {
+      jobId: 'job-5',
+      algorithmVersion: 'analysis.v1',
+    };
+    Object.defineProperty(changingIssue, 'sourceId', {
+      enumerable: true,
+      get() {
+        issuanceReads++;
+        return issuanceReads < 3 ? SOURCE_A : 'source-a';
+      },
+    });
+    assert.throws(() => session.issueAnalysisToken(changingIssue), /sourceId|tuple/i);
+    assert.equal(issuanceReads, 0, 'issuance rejects an accessor descriptor without calling it');
+
+    let throwingReads = 0;
+    const throwingIssue = { sourceId: SOURCE_A, jobId: 'job-5' };
+    Object.defineProperty(throwingIssue, 'algorithmVersion', {
+      enumerable: true,
+      get() { throwingReads++; throw new Error('getter ran'); },
+    });
+    assert.throws(() => session.issueAnalysisToken(throwingIssue), /algorithmVersion|tuple/i);
+    assert.equal(throwingReads, 0);
+    const descriptorProxy = new Proxy({
+      sourceId: SOURCE_A, jobId: 'job-5', algorithmVersion: 'analysis.v1',
+    }, {
+      ownKeys() { throw new Error('descriptor snapshot blocked'); },
+    });
+    assert.throws(() => session.issueAnalysisToken(descriptorProxy), /tuple|sourceId/i);
+
+    const tuple = { sourceId: SOURCE_A, jobId: 'job-5', algorithmVersion: 'analysis.v1' };
+    const token = session.issueAnalysisToken(tuple);
+    let replyReads = 0;
+    const changingReply = { jobId: 'job-5', algorithmVersion: 'analysis.v1' };
+    Object.defineProperty(changingReply, 'sourceId', {
+      enumerable: true,
+      get() { replyReads++; return SOURCE_A; },
+    });
+    assert.equal(session.isActive(token, changingReply), false);
+    assert.equal(replyReads, 0, 'reply accessors are rejected without TOCTOU reads');
+    assert.equal(session.isActive(token, descriptorProxy), false, 'descriptor proxy failure is an inactive reply');
   },
 ];
 

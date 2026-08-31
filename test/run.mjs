@@ -2796,6 +2796,72 @@ const workerProtocolCases = [
     assert.ok(sent.some((message) => message.type === 'done' && message.job === 37),
       'the later canonical tuple can reuse only that valid cache');
   },
+  async function tupleAccessorsAndDescriptorProxiesCannotSeedOrRedirectWorkerCaches() {
+    const mono = new Float32Array(4096);
+    mono[96] = 1;
+    let changingReads = 0;
+    const changing = {
+      type: 'analyze', job: 40, generation: 40,
+      jobId: 'job-40', algorithmVersion: 'analysis.v4',
+      mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+    };
+    Object.defineProperty(changing, 'sourceId', {
+      enumerable: true,
+      get() {
+        changingReads++;
+        return changingReads < 3 ? WORKER_SOURCE_A : WORKER_SOURCE_B;
+      },
+    });
+    let throwingReads = 0;
+    const throwing = {
+      type: 'analyze', job: 41, generation: 41,
+      sourceId: WORKER_SOURCE_A, jobId: 'job-41',
+      mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+    };
+    Object.defineProperty(throwing, 'algorithmVersion', {
+      enumerable: true,
+      get() { throwingReads++; throw new Error('tuple getter executed'); },
+    });
+    const descriptorProxy = new Proxy({
+      type: 'analyze', job: 42, generation: 42,
+      sourceId: WORKER_SOURCE_A, jobId: 'job-42', algorithmVersion: 'analysis.v4',
+      mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+    }, {
+      ownKeys() { throw new Error('tuple descriptor snapshot blocked'); },
+    });
+    const sent = await runWorkerMessages('../workers/analysis-worker.js', [
+      changing,
+      throwing,
+      descriptorProxy,
+      {
+        type: 'analyze', job: 43, generation: 43,
+        sourceId: WORKER_SOURCE_A, jobId: 'job-43', algorithmVersion: 'analysis.v4',
+        sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 44, generation: 44,
+        sourceId: WORKER_SOURCE_A, jobId: 'job-44', algorithmVersion: 'analysis.v4',
+        mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 45, generation: 999,
+        sourceId: WORKER_SOURCE_A, jobId: 'job-45', algorithmVersion: 'analysis.v4',
+        sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+    ], 'analysis-tuple-descriptors');
+    assert.equal(changingReads, 0, 'worker rejects changing accessors without invoking them');
+    assert.equal(throwingReads, 0, 'worker rejects throwing accessors without invoking them');
+    for (const job of [40, 41, 42, 43]) {
+      const error = sent.find((message) => message.type === 'error' && message.job === job);
+      assert.ok(error, 'invalid or unseeded job ' + job + ' is an error');
+      if (job !== 43) {
+        assert.equal(Object.hasOwn(error, 'sourceId'), false, 'invalid tuples emit no untrusted tuple metadata');
+      }
+    }
+    assert.ok(sent.some((message) => message.type === 'done' && message.job === 44));
+    assert.ok(sent.some((message) => message.type === 'done' && message.job === 45),
+      'only the canonical data tuple seeds the reusable cache');
+  },
 ];
 
 // ---------- portable .yjkt project bundles ----------

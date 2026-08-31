@@ -20,8 +20,9 @@ import { onsetAnalysis } from '../js/analysis/onsets.js';
 import { trackBeats } from '../js/analysis/beattrack.js';
 import {
   analysisTupleCacheKey,
-  hasOwnAnalysisTupleField,
-  isAnalysisTuple,
+  isAnalysisTupleSnapshot,
+  NO_ANALYSIS_TUPLE,
+  snapshotAnalysisTuple,
 } from '../js/app/analysis-tuple.js';
 
 const MIN_SAMPLES = 2048;   // below this there is no meaningful STFT frame to analyze
@@ -36,31 +37,39 @@ let tupleCache = null; // { key, envelope, envelopeRate, onsets }
 
 self.onmessage = (e) => {
   const msg = e.data;
-  if (!msg || msg.type !== 'analyze') return;
+  const type = ownDataField(msg, 'type');
+  if (!type.present || type.value !== 'analyze') return;
 
-  const reply = replyMetadata(msg);
-  const generation = msg.generation ?? null;
-  const anchors = normalizeAnchors(msg.anchors);
-  const hasMono = msg.mono instanceof Float32Array;
-  const tuple = analysisTuple(msg);
+  const tuple = snapshotAnalysisTuple(msg);
+  const reply = replyMetadata(msg, tuple);
 
   try {
-    if (tuple.kind === 'invalid') throw new TypeError('Analysis tuple is invalid');
+    if (tuple !== NO_ANALYSIS_TUPLE && !isAnalysisTupleSnapshot(tuple)) {
+      throw new TypeError('Analysis tuple is invalid');
+    }
+    const generationField = ownDataField(msg, 'generation');
+    const generation = generationField.present ? generationField.value : null;
+    const anchorsField = ownDataField(msg, 'anchors');
+    const anchors = normalizeAnchors(anchorsField.present ? anchorsField.value : null);
+    const monoField = ownDataField(msg, 'mono');
+    const mono = monoField.present ? monoField.value : null;
+    const hasMono = mono instanceof Float32Array;
     postProgress(reply, 5);
 
     let envelope;
     let envelopeRate;
     let onsets;
 
-    const cached = tuple.kind === 'tuple'
-      ? (tupleCache !== null && tupleCache.key === tuple.key ? tupleCache : null)
+    const tupleKey = isAnalysisTupleSnapshot(tuple) ? analysisTupleCacheKey(tuple) : null;
+    const cached = tupleKey !== null
+      ? (tupleCache !== null && tupleCache.key === tupleKey ? tupleCache : null)
       : generation !== null && legacyCache !== null && legacyCache.generation === generation
         ? legacyCache : null;
     if (cached) {
       ({ envelope, envelopeRate, onsets } = cached);
     } else if (hasMono) {
-      const mono = msg.mono;
-      const sampleRate = Number(msg.sampleRate);
+      const sampleRateField = ownDataField(msg, 'sampleRate');
+      const sampleRate = Number(sampleRateField.present ? sampleRateField.value : NaN);
       if (!Number.isFinite(sampleRate) || sampleRate <= 0 || mono.length < MIN_SAMPLES) {
         // Empty or too-short source: a valid, explicitly empty result, not a crash.
         envelope = new Float32Array(0);
@@ -73,7 +82,7 @@ self.onmessage = (e) => {
         onsets = res.onsets;
       }
       const cacheValue = { envelope, envelopeRate, onsets };
-      if (tuple.kind === 'tuple') tupleCache = { key: tuple.key, ...cacheValue };
+      if (tupleKey !== null) tupleCache = { key: tupleKey, ...cacheValue };
       else legacyCache = generation !== null ? { generation, ...cacheValue } : null;
     } else {
       self.postMessage({
@@ -120,18 +129,28 @@ self.onmessage = (e) => {
   }
 };
 
-function replyMetadata(msg) {
-  const reply = { job: msg.job ?? null };
-  for (const key of ['generation', 'sourceId', 'jobId', 'algorithmVersion']) {
-    if (Object.hasOwn(msg, key)) reply[key] = msg[key];
+function ownDataField(value, key) {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return { present: false, value: undefined };
   }
-  return reply;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      return { present: false, value: undefined };
+    }
+    return { present: true, value: descriptor.value };
+  } catch {
+    return { present: false, value: undefined };
+  }
 }
 
-function analysisTuple(msg) {
-  if (!hasOwnAnalysisTupleField(msg)) return { kind: 'legacy' };
-  if (!isAnalysisTuple(msg)) return { kind: 'invalid' };
-  return { kind: 'tuple', key: analysisTupleCacheKey(msg) };
+function replyMetadata(msg, tuple) {
+  const job = ownDataField(msg, 'job');
+  const reply = { job: job.present ? job.value : null };
+  const generation = ownDataField(msg, 'generation');
+  if (generation.present) reply.generation = generation.value;
+  if (isAnalysisTupleSnapshot(tuple)) Object.assign(reply, tuple);
+  return reply;
 }
 
 function postProgress(reply, pct) {

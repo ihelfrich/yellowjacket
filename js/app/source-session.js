@@ -1,4 +1,8 @@
-import { isAnalysisTuple, requireAnalysisTuple } from './analysis-tuple.js';
+import {
+  isAnalysisTupleSnapshot,
+  requireAnalysisTupleSnapshot,
+  snapshotAnalysisTuple,
+} from './analysis-tuple.js';
 import { validateSourceGraph, validateSourceRecord } from './source-registry.js';
 
 const NOOP = () => {};
@@ -418,7 +422,7 @@ export class SourceSession extends EventTarget {
   }
 
   issueAnalysisToken(value) {
-    const { sourceId, jobId, algorithmVersion } = requireAnalysisTuple(value);
+    const { sourceId, jobId, algorithmVersion } = requireAnalysisTupleSnapshot(value);
     const token = Object.freeze({
       sourceId,
       jobId,
@@ -431,13 +435,13 @@ export class SourceSession extends EventTarget {
   }
 
   isActive(token, replyTuple) {
+    const reply = snapshotAnalysisTuple(replyTuple);
     return isObject(token)
-      && isObject(replyTuple)
       && this.#analysisTokens.has(token)
-      && isAnalysisTuple(replyTuple)
-      && token.sourceId === replyTuple.sourceId
-      && token.jobId === replyTuple.jobId
-      && token.algorithmVersion === replyTuple.algorithmVersion
+      && isAnalysisTupleSnapshot(reply)
+      && token.sourceId === reply.sourceId
+      && token.jobId === reply.jobId
+      && token.algorithmVersion === reply.algorithmVersion
       && token.sourceId === token.activeSourceId
       && token.activeSourceId === this.store.project.activeSourceId
       && token.facadeEpoch === this.store.runtime.facadeEpoch;
