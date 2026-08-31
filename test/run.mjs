@@ -104,7 +104,7 @@ const {
   sourceSessionCases,
 } = await import('./multisource-runtime.mjs');
 const { assetProvenanceCases, clipIdentityCases, crateAssetCases } = await import('./multisource-music.mjs');
-const { migrationCases, projectFormatCases } = await import('./multisource-persist.mjs');
+const { migrationCases, projectBundleV3Cases, projectFormatCases } = await import('./multisource-persist.mjs');
 const { processLimiter } = await import('../js/dsp/limiter.js');
 const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
 
@@ -4373,6 +4373,7 @@ const groups = [
   ['multisource crate assets', crateAssetCases],
   ['multisource project format v3', projectFormatCases],
   ['multisource v2 migration', migrationCases],
+  ['multisource project bundle v3', projectBundleV3Cases],
   ['soundscape', soundscapeCases],
   ['starter groove', grooveCases],
   ['kit levelling', kitLevelCases],

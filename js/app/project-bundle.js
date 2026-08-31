@@ -20,9 +20,16 @@ const MAX_ENTRIES = 1024;
 const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 768 * 1024 * 1024;
 const MAX_NAME_BYTES = 240;
+const MAX_PROJECT_JSON_BYTES = 16 * 1024 * 1024;
+const ZIP64_EXTRA_ID = 0x0001;
+const ZIP64_U16 = 0xffff;
+const ZIP64_U32 = 0xffffffff;
+const V3_SAMPLE_ID = /^a([1-9][0-9]*)$/;
+const SOURCE_ID = /^sha256:[0-9a-f]{64}$/;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
+const mapSize = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
 
 let crcTable = null;
 
@@ -62,6 +69,105 @@ function safeName(name) {
   const encoded = encoder.encode(s);
   if (encoded.length > MAX_NAME_BYTES) throw new Error('project entry name is too long');
   return { text: s, bytes: encoded };
+}
+
+// Kept dependency-free because this transport module is part of the established
+// preload graph. This is the same canonical mapping exposed by source-registry.
+function sourceEntryName(sourceId) {
+  return SOURCE_ID.test(sourceId) ? 'sources/' + sourceId.slice('sha256:'.length) + '.bin' : null;
+}
+
+function hasZip64Extra(view, start, length) {
+  const end = start + length;
+  let at = start;
+  while (at < end) {
+    if (at + 4 > end) throw new Error('project ZIP extra field is corrupt');
+    const id = view.getUint16(at, true);
+    const size = view.getUint16(at + 2, true);
+    at += 4;
+    if (at + size > end) throw new Error('project ZIP extra field is corrupt');
+    if (id === ZIP64_EXTRA_ID) return true;
+    at += size;
+  }
+  return false;
+}
+
+function exactMapEntries(value, label, copyValues = false) {
+  try {
+    mapSize.call(value); // Reject proxies before any caller-controlled property dispatch.
+  } catch {
+    throw new TypeError(label + ' must be an exact Map');
+  }
+  if (Object.getPrototypeOf(value) !== Map.prototype || Reflect.ownKeys(value).length !== 0) {
+    throw new TypeError(label + ' must be an exact Map');
+  }
+  const out = [];
+  try {
+    Map.prototype.forEach.call(value, (entryValue, key) => {
+      out.push([key, copyValues ? ownedBytes(entryValue, label) : entryValue]);
+    });
+  } catch {
+    throw new TypeError(label + ' must be an exact Map');
+  }
+  return out;
+}
+
+function ownedBytes(value, label) {
+  try {
+    if (Object.getPrototypeOf(value) === Uint8Array.prototype) {
+      return Uint8Array.prototype.slice.call(value);
+    }
+    if (Object.getPrototypeOf(value) === ArrayBuffer.prototype) {
+      return new Uint8Array(ArrayBuffer.prototype.slice.call(value));
+    }
+  } catch {
+    // Fall through to the stable boundary error below.
+  }
+  throw new TypeError(label + ' values must be exact byte arrays');
+}
+
+function exactStringArray(value, label) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    throw new TypeError(label + ' must be an Array');
+  }
+  const out = [];
+  for (let index = 0; index < value.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'string') {
+      throw new TypeError(label + ' must contain exact strings');
+    }
+    out.push(descriptor.value);
+  }
+  return out;
+}
+
+function reachableSampleIds(machine) {
+  const ids = [];
+  const seen = new Set();
+  const scenes = machine && Array.isArray(machine.scenes) ? machine.scenes : [];
+  for (const scene of scenes) {
+    const tracks = scene && Array.isArray(scene.tracks) ? scene.tracks : [];
+    for (const track of tracks) {
+      const id = track && track.sampleId;
+      if (typeof id === 'string' && id && !seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+  }
+  return ids;
+}
+
+function compareCanonicalSampleIds(left, right) {
+  return Number(V3_SAMPLE_ID.exec(left)[1]) - Number(V3_SAMPLE_ID.exec(right)[1]);
+}
+
+function sameOrderedStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function exactMapFromBytes(value, label) {
+  return new Map(exactMapEntries(value, label, true));
 }
 
 function dosStamp(date = new Date()) {
@@ -170,11 +276,17 @@ export function readBundle(input) {
   if (eocd < 0) throw new Error('project bundle has no ZIP directory');
   const disk = view.getUint16(eocd + 4, true);
   const centralDisk = view.getUint16(eocd + 6, true);
+  const diskCount = view.getUint16(eocd + 8, true);
   const count = view.getUint16(eocd + 10, true);
   const centralSize = view.getUint32(eocd + 12, true);
   const centralOffset = view.getUint32(eocd + 16, true);
   const comment = view.getUint16(eocd + 20, true);
+  if (disk === ZIP64_U16 || centralDisk === ZIP64_U16 || diskCount === ZIP64_U16
+      || count === ZIP64_U16 || centralSize === ZIP64_U32 || centralOffset === ZIP64_U32) {
+    throw new Error('ZIP64 project bundles are not supported');
+  }
   if (disk || centralDisk) throw new Error('split ZIP projects are not supported');
+  if (diskCount !== count) throw new Error('project ZIP directory entry counts disagree');
   if (!count || count > MAX_ENTRIES) throw new Error('project entry count is invalid');
   if (eocd + 22 + comment > bytes.length || centralOffset + centralSize > eocd) {
     throw new Error('project ZIP directory is truncated');
@@ -198,6 +310,10 @@ export function readBundle(input) {
     const localOffset = view.getUint32(at + 42, true);
     const end = at + 46 + nameLen + extraLen + commentLen;
     if (end > bytes.length) throw new Error('project ZIP name is truncated');
+    if (compressed === ZIP64_U32 || size === ZIP64_U32 || localOffset === ZIP64_U32
+        || hasZip64Extra(view, at + 46 + nameLen, extraLen)) {
+      throw new Error('ZIP64 project entries are not supported');
+    }
     if (method !== STORE || compressed !== size) throw new Error('compressed project entries are not supported');
     if (flags & ~UTF8_FLAG) throw new Error('project entry uses unsupported ZIP flags');
     if (size > MAX_ENTRY_BYTES) throw new Error('project entry is too large');
@@ -221,6 +337,13 @@ export function readBundle(input) {
     const localNameLen = view.getUint16(localOffset + 26, true);
     const localExtraLen = view.getUint16(localOffset + 28, true);
     const dataAt = localOffset + 30 + localNameLen + localExtraLen;
+    if (localCompressed === ZIP64_U32 || localSize === ZIP64_U32) {
+      throw new Error('ZIP64 project entries are not supported');
+    }
+    if (dataAt > bytes.length) throw new Error('project local entry header is truncated: ' + name);
+    if (hasZip64Extra(view, localOffset + 30 + localNameLen, localExtraLen)) {
+      throw new Error('ZIP64 project entries are not supported');
+    }
     if (dataAt + size > bytes.length) throw new Error('project entry is truncated: ' + name);
     let localName;
     try { localName = decoder.decode(bytes.subarray(localOffset + 30, localOffset + 30 + localNameLen)); }
@@ -251,22 +374,162 @@ export function projectEntries(serialized, sourceBytes = null) {
   return entries;
 }
 
+export function expectedProjectEntryNames(json) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    throw new Error('project.json must contain a project document');
+  }
+  if (json.formatVersion === 3) {
+    if (!json.sources || Object.getPrototypeOf(json.sources) !== Object.prototype) {
+      throw new Error('version 3 project sources are invalid');
+    }
+    const sourceNames = Object.keys(json.sources).map((id) => {
+      const name = sourceEntryName(id);
+      if (!name) throw new Error('version 3 project source ID is invalid');
+      return name;
+    }).sort();
+    const sampleIds = reachableSampleIds(json.machine);
+    for (const id of sampleIds) {
+      const match = V3_SAMPLE_ID.exec(id);
+      const suffix = match && Number(match[1]);
+      if (!match || !Number.isSafeInteger(suffix)) {
+        throw new Error('version 3 project sample ID is invalid: ' + String(id));
+      }
+    }
+    sampleIds.sort(compareCanonicalSampleIds);
+    return ['project.json', ...sourceNames, ...sampleIds.map((id) => 'samples/' + id + '.f32')];
+  }
+  if (json.formatVersion === 2) {
+    const names = ['project.json'];
+    if (json.sourceBytes !== null && json.sourceBytes !== undefined) names.push('source.bin');
+    for (const id of reachableSampleIds(json.machine)) {
+      if (typeof id !== 'string' || !id || id.includes('/') || id.includes('\\') || id.includes('\0')) {
+        throw new Error('legacy project sample ID is invalid');
+      }
+      const name = 'samples/' + id + '.f32';
+      safeName(name);
+      names.push(name);
+    }
+    return names;
+  }
+  throw new Error('unsupported project formatVersion ' + String(json.formatVersion));
+}
+
+export function assertExactProjectEntrySet(entries, expectedNames) {
+  const actual = exactMapEntries(entries, 'project entries').map(([name]) => name);
+  const expected = exactStringArray(expectedNames, 'expected project entry names');
+  const expectedSet = new Set(expected);
+  if (expectedSet.size !== expected.length || actual.some((name) => typeof name !== 'string')
+      || actual.length !== expected.length || actual.some((name) => !expectedSet.has(name))) {
+    throw new Error('project archive entry set does not match project.json');
+  }
+  return true;
+}
+
+function exactSampleFileIndex(serialized, json, expectedSampleIds) {
+  if (!Array.isArray(serialized.sampleFiles)
+      || Object.getPrototypeOf(serialized.sampleFiles) !== Array.prototype
+      || serialized.sampleFiles.length !== expectedSampleIds.length) {
+    throw new TypeError('serialized sample index is invalid');
+  }
+  for (let index = 0; index < expectedSampleIds.length; index++) {
+    const slot = Object.getOwnPropertyDescriptor(serialized.sampleFiles, String(index));
+    const file = slot && Object.hasOwn(slot, 'value') ? slot.value : null;
+    if (!file || Object.getPrototypeOf(file) !== Object.prototype) {
+      throw new TypeError('serialized sample index is invalid');
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(file);
+    const keys = Object.keys(descriptors).sort();
+    if (!sameOrderedStrings(keys, ['byteLength', 'bytes', 'id', 'sha256'])
+        || !Object.hasOwn(descriptors.id, 'value') || !Object.hasOwn(descriptors.byteLength, 'value')
+        || !Object.hasOwn(descriptors.sha256, 'value')) {
+      throw new TypeError('serialized sample metadata is invalid');
+    }
+    const id = descriptors.id.value;
+    const meta = json.assets && json.assets[id];
+    if (id !== expectedSampleIds[index] || !meta || !meta.payload
+        || descriptors.byteLength.value !== meta.payload.byteLength
+        || descriptors.sha256.value !== meta.payload.sha256) {
+      throw new Error('serialized sample metadata does not match project assets');
+    }
+  }
+}
+
+export function projectEntriesV3(serialized, { sourcePayloads, samplePayloads } = {}) {
+  // Copy all externally held bytes before inspecting the manifest. Subsequent
+  // validation and archive construction operate only on these owned snapshots.
+  const sources = exactMapFromBytes(sourcePayloads, 'sourcePayloads');
+  const samples = exactMapFromBytes(samplePayloads, 'samplePayloads');
+  if (!serialized || typeof serialized !== 'object' || Array.isArray(serialized)
+      || !serialized.json || serialized.json.formatVersion !== 3) {
+    throw new TypeError('projectEntriesV3 needs serializeProjectV3() output');
+  }
+  const expectedNames = expectedProjectEntryNames(serialized.json);
+  const expectedSourceIds = Object.keys(serialized.json.sources).sort();
+  const sourceIds = exactStringArray(serialized.sourceIds, 'serialized source IDs');
+  if (!sameOrderedStrings(sourceIds, expectedSourceIds)) {
+    throw new Error('serialized source index does not match project sources');
+  }
+  const expectedSampleIds = expectedNames.filter((name) => name.startsWith('samples/'))
+    .map((name) => name.slice('samples/'.length, -'.f32'.length));
+  exactSampleFileIndex(serialized, serialized.json, expectedSampleIds);
+
+  const actualSourceIds = Array.from(Map.prototype.keys.call(sources));
+  if (!actualSourceIds.every((id) => typeof id === 'string' && SOURCE_ID.test(id))) {
+    throw new Error('source payload keys are invalid');
+  }
+  actualSourceIds.sort();
+  const actualSampleIds = Array.from(Map.prototype.keys.call(samples));
+  if (!actualSampleIds.every((id) => typeof id === 'string' && V3_SAMPLE_ID.test(id))) {
+    throw new Error('sample payload keys are invalid');
+  }
+  actualSampleIds.sort(compareCanonicalSampleIds);
+  if (!sameOrderedStrings(actualSourceIds, expectedSourceIds)) {
+    throw new Error('source payload keys do not match project sources');
+  }
+  if (!sameOrderedStrings(actualSampleIds, expectedSampleIds)) {
+    throw new Error('sample payload keys do not match project samples');
+  }
+
+  const entries = [['project.json', JSON.stringify(serialized.json)]];
+  for (const id of expectedSourceIds) {
+    entries.push([sourceEntryName(id), Map.prototype.get.call(sources, id)]);
+  }
+  for (const id of expectedSampleIds) {
+    entries.push(['samples/' + id + '.f32', Map.prototype.get.call(samples, id)]);
+  }
+  return entries;
+}
+
 export function parseProjectEntries(entries) {
-  if (!(entries instanceof Map)) throw new TypeError('parseProjectEntries needs a Map');
-  const doc = entries.get('project.json');
-  if (!doc) throw new Error('project.json is missing');
+  const snapshot = exactMapFromBytes(entries, 'project entries');
+  if (!Map.prototype.has.call(snapshot, 'project.json')) throw new Error('project.json is missing');
+  const doc = Map.prototype.get.call(snapshot, 'project.json');
+  if (doc.byteLength > MAX_PROJECT_JSON_BYTES) throw new Error('project.json exceeds the 16 MiB limit');
   let json;
   try { json = JSON.parse(decoder.decode(doc)); }
   catch (e) { throw new Error('project.json is not valid JSON'); }
-  const sourceEntry = entries.get('source.bin') || null;
-  const source = sourceEntry
-    ? sourceEntry.buffer.slice(sourceEntry.byteOffset, sourceEntry.byteOffset + sourceEntry.byteLength)
-    : null;
+  const expectedNames = expectedProjectEntryNames(json);
+  assertExactProjectEntrySet(snapshot, expectedNames);
+  if (json.formatVersion === 3) {
+    const sourcePayloads = new Map();
+    for (const id of Object.keys(json.sources).sort()) {
+      sourcePayloads.set(id, Map.prototype.get.call(snapshot, sourceEntryName(id)));
+    }
+    const samplePayloads = new Map();
+    for (const name of expectedNames) {
+      const match = /^samples\/(a[1-9][0-9]*)\.f32$/.exec(name);
+      if (match) samplePayloads.set(match[1], Map.prototype.get.call(snapshot, name));
+    }
+    return { json, sourcePayloads, samplePayloads };
+  }
+  const sourceEntry = Map.prototype.get.call(snapshot, 'source.bin') || null;
+  const source = sourceEntry ? sourceEntry.buffer.slice(
+    sourceEntry.byteOffset, sourceEntry.byteOffset + sourceEntry.byteLength,
+  ) : null;
   const samples = new Map();
-  for (const [name, value] of entries) {
-    const match = /^samples\/([^/]+)\.f32$/.exec(name);
-    if (match) samples.set(match[1],
-      value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  for (const id of reachableSampleIds(json.machine)) {
+    const value = Map.prototype.get.call(snapshot, 'samples/' + id + '.f32');
+    samples.set(id, value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
   }
   return { json, source, samples };
 }

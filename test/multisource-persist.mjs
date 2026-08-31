@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import * as persist from '../js/app/persist.js';
+import * as projectBundle from '../js/app/project-bundle.js';
 import * as projectStore from '../js/app/project-store.js';
 import { CanonicalPcm } from '../js/app/sample-payload.js';
 import { createSourceRecord, VALIDATION_LIMITS } from '../js/app/source-registry.js';
@@ -188,6 +189,326 @@ function assertIssue(result, code) {
   assert.equal(result.ok, false, `${code} must reject`);
   assert.ok(issueCodes(result).has(code), `${code} must be stable and machine-readable`);
 }
+
+const bundleEncoder = new TextEncoder();
+
+function archiveFixture() {
+  const sourceIds = [
+    'sha256:' + '3'.repeat(64),
+    'sha256:' + '1'.repeat(64),
+    'sha256:' + '2'.repeat(64),
+  ];
+  const sampleIds = ['a1', 'a2', 'a10'];
+  const sourcePayloads = new Map([
+    [sourceIds[0], Uint8Array.of(30, 31)],
+    [sourceIds[1], Uint8Array.of(10)],
+    [sourceIds[2], Uint8Array.of(20, 21, 22)],
+  ]);
+  const samplePayloads = new Map([
+    ['a1', Uint8Array.of(1, 2, 3, 4)],
+    ['a2', Uint8Array.of(5, 6, 7, 8)],
+    ['a10', Uint8Array.of(9, 10, 11, 12)],
+  ]);
+  const assets = {};
+  for (const id of sampleIds) {
+    assets[id] = {
+      id,
+      payload: { byteLength: samplePayloads.get(id).byteLength, sha256: 'sha256:' + id.slice(1).padStart(64, '0') },
+    };
+  }
+  const json = {
+    formatVersion: 3,
+    sources: Object.fromEntries(sourceIds.map((id) => [id, { id }])),
+    assets,
+    machine: {
+      scenes: [
+        { tracks: [{ sampleId: 'a10' }, { sampleId: 'a1' }] },
+        { tracks: [{ sampleId: 'a2' }, { sampleId: 'a1' }] },
+      ],
+    },
+  };
+  const sampleFiles = sampleIds.map((id) => ({
+    id,
+    bytes: Uint8Array.of(255), // deliberately non-authoritative
+    byteLength: assets[id].payload.byteLength,
+    sha256: assets[id].payload.sha256,
+  }));
+  return { json, sourceIds, sampleIds, sourcePayloads, samplePayloads, serialized: { json, sourceIds: sourceIds.slice().sort(), sampleFiles } };
+}
+
+function entryMap(entries) {
+  return new Map(entries.map(([name, value]) => [name,
+    typeof value === 'string' ? bundleEncoder.encode(value) : new Uint8Array(value).slice()]));
+}
+
+function zipOffsets(zip) {
+  const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  const eocd = zip.byteLength - 22;
+  return { view, eocd, central: view.getUint32(eocd + 16, true) };
+}
+
+function insertZipBytes(zip, at, inserted) {
+  const out = new Uint8Array(zip.byteLength + inserted.byteLength);
+  out.set(zip.subarray(0, at));
+  out.set(inserted, at);
+  out.set(zip.subarray(at), at + inserted.byteLength);
+  return out;
+}
+
+function zipWithZip64Extra(where) {
+  const base = projectBundle.buildBundle([['project.json', '{"formatVersion":2}']], {
+    date: new Date(2026, 0, 1),
+  });
+  const before = zipOffsets(base);
+  const extra = Uint8Array.of(0x01, 0x00, 0x00, 0x00);
+  if (where === 'local') {
+    const nameLen = before.view.getUint16(26, true);
+    const out = insertZipBytes(base, 30 + nameLen, extra);
+    const { view, eocd } = zipOffsets(out);
+    view.setUint16(28, extra.byteLength, true);
+    view.setUint32(eocd + 16, before.central + extra.byteLength, true);
+    return out;
+  }
+  const centralNameLen = before.view.getUint16(before.central + 28, true);
+  const out = insertZipBytes(base, before.central + 46 + centralNameLen, extra);
+  const { view, eocd, central } = zipOffsets(out);
+  view.setUint16(central + 30, extra.byteLength, true);
+  view.setUint32(eocd + 12, before.view.getUint32(before.eocd + 12, true) + extra.byteLength, true);
+  return out;
+}
+
+export const projectBundleV3Cases = [
+  function exposesInactiveV3ArchiveContractsWithoutSwitchingLiveV2Aliases() {
+    assert.equal(typeof projectBundle.projectEntriesV3, 'function');
+    assert.equal(typeof projectBundle.expectedProjectEntryNames, 'function');
+    assert.equal(typeof projectBundle.assertExactProjectEntrySet, 'function');
+    assert.equal(typeof projectBundle.parseProjectEntries, 'function');
+    assert.equal(typeof projectBundle.projectEntries, 'function');
+    assert.equal(persist.FORMAT_VERSION, 2);
+  },
+
+  function writesThreeSourcesAndThreeSamplesInCanonicalOrderFromAuthoritativeMaps() {
+    const fixture = archiveFixture();
+    const entries = projectBundle.projectEntriesV3(fixture.serialized, fixture);
+    assert.deepEqual(entries.map(([name]) => name), [
+      'project.json',
+      'sources/' + '1'.repeat(64) + '.bin',
+      'sources/' + '2'.repeat(64) + '.bin',
+      'sources/' + '3'.repeat(64) + '.bin',
+      'samples/a1.f32', 'samples/a2.f32', 'samples/a10.f32',
+    ]);
+    assert.deepEqual(Array.from(entries.at(-1)[1]), [9, 10, 11, 12],
+      'samplePayloads, not sampleFiles.bytes, supplies archive bytes');
+    fixture.sourcePayloads.get(fixture.sourceIds[1])[0] = 99;
+    fixture.samplePayloads.get('a10')[0] = 99;
+    assert.deepEqual(Array.from(entries[1][1]), [10], 'writer owns one source-byte snapshot');
+    assert.deepEqual(Array.from(entries.at(-1)[1]), [9, 10, 11, 12], 'writer owns one sample-byte snapshot');
+
+    const parsed = projectBundle.parseProjectEntries(projectBundle.readBundle(
+      projectBundle.buildBundle(entries, { date: new Date(2026, 0, 1) }),
+    ));
+    assert.deepEqual(parsed.json, fixture.json);
+    assert.deepEqual([...parsed.sourcePayloads.keys()], fixture.sourceIds.slice().sort());
+    assert.deepEqual([...parsed.samplePayloads.keys()], ['a1', 'a2', 'a10']);
+  },
+
+  function derivesManifestAllowlistAndRejectsEveryMissingExtraOrMismatchedPath() {
+    const fixture = archiveFixture();
+    const expected = projectBundle.expectedProjectEntryNames(fixture.json);
+    assert.deepEqual(expected, [
+      'project.json',
+      'sources/' + '1'.repeat(64) + '.bin',
+      'sources/' + '2'.repeat(64) + '.bin',
+      'sources/' + '3'.repeat(64) + '.bin',
+      'samples/a1.f32', 'samples/a2.f32', 'samples/a10.f32',
+    ]);
+    const canonical = entryMap(projectBundle.projectEntriesV3(fixture.serialized, fixture));
+    projectBundle.assertExactProjectEntrySet(canonical, expected);
+    const invalid = [
+      (map) => map.set('source.bin', Uint8Array.of(1)),
+      (map) => map.set('notes.txt', Uint8Array.of(1)),
+      (map) => map.set('sources/' + '4'.repeat(64) + '.bin', Uint8Array.of(1)),
+      (map) => map.set('samples/a3.f32', Uint8Array.of(1)),
+      (map) => map.delete(expected[1]),
+      (map) => { map.delete('samples/a1.f32'); map.set('samples/a01.f32', Uint8Array.of(1)); },
+      (map) => { map.delete('samples/a2.f32'); map.set('samples/a0.f32', Uint8Array.of(1)); },
+      (map) => { map.delete(expected[1]); map.set('sources/' + 'A'.repeat(64) + '.bin', Uint8Array.of(1)); },
+    ];
+    for (const mutate of invalid) {
+      const entries = new Map([...canonical].map(([name, bytes]) => [name, bytes.slice()]));
+      mutate(entries);
+      assert.throws(() => projectBundle.parseProjectEntries(entries), /entry|archive|project/i);
+    }
+    const unknown = new Map(canonical);
+    unknown.set('project.json', bundleEncoder.encode('{"formatVersion":4}'));
+    assert.throws(() => projectBundle.parseProjectEntries(unknown), /formatVersion|version/i);
+  },
+
+  function requiresExactVanillaPayloadMapsAndExactSerializedSampleIndex() {
+    const fixture = archiveFixture();
+    const extraSource = new Map(fixture.sourcePayloads);
+    extraSource.set('sha256:' + '4'.repeat(64), Uint8Array.of(4));
+    assert.throws(() => projectBundle.projectEntriesV3(fixture.serialized, {
+      sourcePayloads: extraSource, samplePayloads: fixture.samplePayloads,
+    }), /source|key|payload/i);
+    const missingSample = new Map(fixture.samplePayloads); missingSample.delete('a2');
+    assert.throws(() => projectBundle.projectEntriesV3(fixture.serialized, {
+      sourcePayloads: fixture.sourcePayloads, samplePayloads: missingSample,
+    }), /sample|key|payload/i);
+    let keyCoercions = 0;
+    const hostileSourceKey = { toString() { keyCoercions++; throw new Error('source key coerced'); } };
+    const wrongSourceKeys = new Map(fixture.sourcePayloads);
+    wrongSourceKeys.delete(fixture.sourceIds[0]);
+    wrongSourceKeys.set(hostileSourceKey, Uint8Array.of(1));
+    assert.throws(() => projectBundle.projectEntriesV3(fixture.serialized, {
+      sourcePayloads: wrongSourceKeys, samplePayloads: fixture.samplePayloads,
+    }), /source|key|payload/i);
+    assert.equal(keyCoercions, 0, 'non-string source keys reject without caller coercion');
+    for (const mutate of [
+      (serialized) => serialized.sampleFiles.reverse(),
+      (serialized) => { serialized.sampleFiles[0].byteLength++; },
+      (serialized) => { serialized.sampleFiles[0].sha256 = 'sha256:' + 'f'.repeat(64); },
+      (serialized) => { serialized.sampleFiles[0].id = 'a01'; },
+    ]) {
+      const serialized = copy(fixture.serialized);
+      mutate(serialized);
+      assert.throws(() => projectBundle.projectEntriesV3(serialized, fixture), /sample|index|metadata|asset/i);
+    }
+    class MapSubclass extends Map {}
+    assert.throws(() => projectBundle.projectEntriesV3(fixture.serialized, {
+      sourcePayloads: new MapSubclass(fixture.sourcePayloads), samplePayloads: fixture.samplePayloads,
+    }), /Map|payload/i);
+    for (const property of ['get', 'keys', 'values', 'forEach', Symbol.iterator]) {
+      let calls = 0;
+      const shadowed = new Map(fixture.samplePayloads);
+      Object.defineProperty(shadowed, property, { value() { calls++; throw new Error('caller dispatch ran'); } });
+      assert.throws(() => projectBundle.projectEntriesV3(fixture.serialized, {
+        sourcePayloads: fixture.sourcePayloads, samplePayloads: shadowed,
+      }), /Map|payload/i, String(property));
+      assert.equal(calls, 0, `${String(property)} is rejected without caller dispatch`);
+    }
+  },
+
+  function preservesOnlyTheExactReachableV2MigrationShapeAndLegacySamplePaths() {
+    const json = {
+      formatVersion: 2,
+      sourceBytes: { size: 3 },
+      machine: { scenes: [{ tracks: [
+        { sampleId: 'factory-drum-v1-kick' }, { sampleId: 'a9' }, { sampleId: 'factory-drum-v1-kick' },
+      ] }] },
+    };
+    assert.deepEqual(projectBundle.expectedProjectEntryNames(json), [
+      'project.json', 'source.bin', 'samples/factory-drum-v1-kick.f32', 'samples/a9.f32',
+    ]);
+    const entries = entryMap([
+      ['samples/a9.f32', Uint8Array.of(9)],
+      ['source.bin', Uint8Array.of(1, 2, 3)],
+      ['project.json', JSON.stringify(json)],
+      ['samples/factory-drum-v1-kick.f32', Uint8Array.of(4, 5)],
+    ]);
+    const parsed = projectBundle.parseProjectEntries(entries);
+    assert.deepEqual(parsed.json, json);
+    assert.ok(parsed.source instanceof ArrayBuffer);
+    assert.ok(parsed.samples.get('factory-drum-v1-kick') instanceof ArrayBuffer);
+    entries.set('samples/unreferenced.f32', Uint8Array.of(0));
+    assert.throws(() => projectBundle.parseProjectEntries(entries), /entry|archive|project/i);
+
+    const unsafe = copy(json); unsafe.machine.scenes[0].tracks[0].sampleId = '../private';
+    assert.throws(() => projectBundle.expectedProjectEntryNames(unsafe), /sample|unsafe|invalid/i);
+    const sourceFree = copy(json); sourceFree.sourceBytes = null;
+    assert.equal(projectBundle.expectedProjectEntryNames(sourceFree).includes('source.bin'), false);
+  },
+
+  function rejectsOversizeManifestBeforeJsonParseAndCopiesEntryBytesOnce() {
+    const originalParse = JSON.parse;
+    let parses = 0;
+    JSON.parse = (...args) => { parses++; return originalParse(...args); };
+    try {
+      const tooLarge = new Map([['project.json', new Uint8Array(16 * 1024 * 1024 + 1)]]);
+      assert.throws(() => projectBundle.parseProjectEntries(tooLarge), /project\.json|large|16/i);
+      assert.equal(parses, 0, 'oversize bytes never reach JSON.parse');
+      const exact = new Map([['project.json', new Uint8Array(16 * 1024 * 1024)]]);
+      assert.throws(() => projectBundle.parseProjectEntries(exact), /JSON/i);
+      assert.equal(parses, 1, 'the inclusive 16 MiB boundary reaches JSON.parse');
+    } finally {
+      JSON.parse = originalParse;
+    }
+
+    const fixture = archiveFixture();
+    const entries = entryMap(projectBundle.projectEntriesV3(fixture.serialized, fixture));
+    const sourceName = 'sources/' + '1'.repeat(64) + '.bin';
+    const sourceInput = entries.get(sourceName);
+    const parsed = projectBundle.parseProjectEntries(entries);
+    sourceInput[0] = 200;
+    entries.clear();
+    assert.deepEqual(Array.from(parsed.sourcePayloads.get(fixture.sourceIds[1])), [10]);
+    parsed.sourcePayloads.get(fixture.sourceIds[1])[0] = 201;
+    assert.notEqual(sourceInput[0], parsed.sourcePayloads.get(fixture.sourceIds[1])[0]);
+    class MapSubclass extends Map {}
+    assert.throws(() => projectBundle.parseProjectEntries(new MapSubclass()), /Map/i);
+    assert.throws(() => projectBundle.parseProjectEntries(new Proxy(new Map(), {})), /Map/i);
+  },
+
+  function rejectsZip64SentinelsExtrasAndDirectoryCountDisagreementExplicitly() {
+    const base = projectBundle.buildBundle([['project.json', '{"formatVersion":2}']], {
+      date: new Date(2026, 0, 1),
+    });
+    for (const [offset, width] of [[10, 2], [12, 4], [16, 4]]) {
+      const zip = base.slice();
+      const { view, eocd } = zipOffsets(zip);
+      if (width === 2) view.setUint16(eocd + offset, 0xffff, true);
+      else view.setUint32(eocd + offset, 0xffffffff, true);
+      assert.throws(() => projectBundle.readBundle(zip), /ZIP64/i);
+    }
+    for (const where of ['local', 'central']) {
+      assert.throws(() => projectBundle.readBundle(zipWithZip64Extra(where)), /ZIP64/i, where);
+    }
+    const disagreement = base.slice();
+    const { view, eocd } = zipOffsets(disagreement);
+    view.setUint16(eocd + 8, 2, true);
+    assert.throws(() => projectBundle.readBundle(disagreement), /count|directory/i);
+  },
+
+  function retainsStoreCrcPathFlagHeaderCountAndSizeTransportGates() {
+    const make = () => projectBundle.buildBundle([['safe', Uint8Array.of(1, 2, 3)]], {
+      date: new Date(2026, 0, 1),
+    });
+    const corrupt = make();
+    corrupt[34] ^= 1;
+    assert.throws(() => projectBundle.readBundle(corrupt), /checksum/);
+
+    const traversal = make();
+    const t = zipOffsets(traversal);
+    traversal.set(bundleEncoder.encode('../x'), 30);
+    traversal.set(bundleEncoder.encode('../x'), t.central + 46);
+    assert.throws(() => projectBundle.readBundle(traversal), /unsafe/);
+
+    for (const flag of [0x0001, 0x0008]) {
+      const zip = make(); const { view, central } = zipOffsets(zip);
+      view.setUint16(central + 8, 0x0800 | flag, true);
+      assert.throws(() => projectBundle.readBundle(zip), /flags|encrypted|descriptor/i);
+    }
+    const compressed = make();
+    zipOffsets(compressed).view.setUint16(zipOffsets(compressed).central + 10, 8, true);
+    assert.throws(() => projectBundle.readBundle(compressed), /compressed/);
+    const mismatch = make();
+    zipOffsets(mismatch).view.setUint32(zipOffsets(mismatch).central + 16, 0, true);
+    assert.throws(() => projectBundle.readBundle(mismatch), /headers disagree/);
+    assert.throws(() => projectBundle.buildBundle(
+      Array.from({ length: 1025 }, (_, index) => [`e${index}`, new Uint8Array()]),
+    ), /too many/);
+    const zero = make();
+    const zeroLayout = zipOffsets(zero);
+    zeroLayout.view.setUint16(zeroLayout.eocd + 8, 0, true);
+    zeroLayout.view.setUint16(zeroLayout.eocd + 10, 0, true);
+    assert.throws(() => projectBundle.readBundle(zero), /count/);
+    const oversized = make();
+    const oversizedLayout = zipOffsets(oversized);
+    oversizedLayout.view.setUint32(oversizedLayout.central + 20, 512 * 1024 * 1024 + 1, true);
+    oversizedLayout.view.setUint32(oversizedLayout.central + 24, 512 * 1024 * 1024 + 1, true);
+    assert.throws(() => projectBundle.readBundle(oversized), /too large/);
+  },
+];
 
 export const projectFormatCases = [
   function keepsV3InactiveBehindExplicitNamedContracts() {
