@@ -96,6 +96,7 @@ if (typeof globalThis.CustomEvent === 'undefined') {
   };
 }
 const { sourceRegistryCases, samplePayloadCases, projectStoreV3Cases } = await import('./multisource-core.mjs');
+const { engineTransactionCases } = await import('./multisource-runtime.mjs');
 const { processLimiter } = await import('../js/dsp/limiter.js');
 const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
 
@@ -4163,6 +4164,7 @@ const groups = [
   ['update safety', updateSafetyCases],
   ['wav export', wavExportCases],
   ['native rate', nativeRateCases],
+  ['engine transaction', engineTransactionCases],
   ['midi file import', smfCases],
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],

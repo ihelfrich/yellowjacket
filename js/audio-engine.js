@@ -35,7 +35,7 @@ export class Engine extends EventTarget {
   // OfflineAudioContext built at the file's own rate instead and keep every
   // sample; playback resamples on the way out, which costs nothing here.
   // `decodeReport` records what happened so the caller can say so out loud.
-  async load(arrayBuffer) {
+  async decode(arrayBuffer) {
     const ctx = this._ensureCtx();
     const probe = probeContainer(arrayBuffer);
     const plan = planDecodeRate({
@@ -64,19 +64,86 @@ export class Engine extends EventTarget {
       }
     }
     if (!buffer) buffer = await ctx.decodeAudioData(arrayBuffer);
-    this.decodeReport = {
-      nativeRate: probe.sampleRate,
-      decodedRate: buffer.sampleRate,
-      downgraded: !!(probe.sampleRate && buffer.sampleRate < probe.sampleRate),
-      reason: plan.reason,
+    return {
+      buffer,
+      mono: mixdownMono(buffer),
+      decodeReport: {
+        nativeRate: probe.sampleRate,
+        decodedRate: buffer.sampleRate,
+        downgraded: !!(probe.sampleRate && buffer.sampleRate < probe.sampleRate),
+        reason: plan.reason,
+      },
     };
+  }
+
+  // Decoding may take long enough to race with source selection. Installing is
+  // deliberately the short commit point: it either accepts one complete
+  // prepared source or leaves the active transport untouched.
+  install(prepared) {
+    let source;
+    try {
+      source = {
+        buffer: prepared.buffer,
+        mono: prepared.mono,
+        decodeReport: prepared.decodeReport,
+      };
+      if (!isPreparedSource(source)) return false;
+    } catch (error) {
+      return false;
+    }
     this._haltPlayback();
-    this._buffer = buffer;
-    this._mono = mixdownMono(buffer);
+    this._buffer = source.buffer;
+    this._mono = source.mono;
+    this.decodeReport = source.decodeReport;
     this._alt = null;
     this._lastCuts = [];
     this._position = 0;
     this.dispatchEvent(new CustomEvent('loaded', { detail: {} }));
+    return true;
+  }
+
+  captureInstalled() {
+    return {
+      buffer: this._buffer,
+      mono: this._mono,
+      alt: this._alt,
+      position: this._position,
+      lastCuts: this._lastCuts,
+      decodeReport: this.decodeReport,
+    };
+  }
+
+  restoreInstalled(checkpoint) {
+    try {
+      const installed = {
+        buffer: checkpoint.buffer,
+        mono: checkpoint.mono,
+        alt: checkpoint.alt,
+        position: checkpoint.position,
+        lastCuts: checkpoint.lastCuts,
+        decodeReport: checkpoint.decodeReport,
+      };
+      if (!isInstalledCheckpoint(installed)) return false;
+      this._haltPlayback();
+      this._buffer = installed.buffer;
+      this._mono = installed.mono;
+      this._alt = installed.alt;
+      this._position = installed.position;
+      this._lastCuts = installed.lastCuts;
+      this.decodeReport = installed.decodeReport;
+      this._segs = [];
+      this._totalKept = 0;
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Legacy callers still receive the old decode-and-replace operation until
+  // source sessions own source switching.
+  async load(arrayBuffer) {
+    const prepared = await this.decode(arrayBuffer);
+    this.install(prepared);
   }
 
   // Return the bench to a true source-free state. SYNTH and CRATE can still
@@ -306,6 +373,41 @@ export class Engine extends EventTarget {
     if (this._tickTimer) clearInterval(this._tickTimer);
     this._tickTimer = 0;
   }
+}
+
+function isAudioBufferLike(buffer) {
+  return !!buffer
+    && Number.isFinite(buffer.length) && buffer.length >= 0
+    && Number.isFinite(buffer.sampleRate) && buffer.sampleRate > 0
+    && Number.isFinite(buffer.numberOfChannels) && buffer.numberOfChannels > 0
+    && typeof buffer.getChannelData === 'function';
+}
+
+function isDecodeReport(report) {
+  return !!report
+    && (report.nativeRate == null || Number.isFinite(report.nativeRate))
+    && Number.isFinite(report.decodedRate)
+    && typeof report.downgraded === 'boolean'
+    && (report.reason == null || typeof report.reason === 'string');
+}
+
+function isPreparedSource(prepared) {
+  return !!prepared
+    && isAudioBufferLike(prepared.buffer)
+    && prepared.mono instanceof Float32Array
+    && prepared.mono.length === prepared.buffer.length
+    && isDecodeReport(prepared.decodeReport);
+}
+
+function isInstalledCheckpoint(checkpoint) {
+  if (!checkpoint || !Number.isFinite(checkpoint.position) || !Array.isArray(checkpoint.lastCuts)) {
+    return false;
+  }
+  if (checkpoint.buffer === null) {
+    return checkpoint.mono === null && checkpoint.alt === null;
+  }
+  return isPreparedSource(checkpoint)
+    && (checkpoint.alt === null || isAudioBufferLike(checkpoint.alt));
 }
 
 // A suspended context returns a promise that can reject (autoplay policy), and
