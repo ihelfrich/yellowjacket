@@ -5,6 +5,7 @@ import {
   MemorySourcePayloadStore,
   OpfsSourcePayloadStore,
   PayloadCorruptionError,
+  PayloadUnavailableError,
   SourcePayloadRepository,
 } from '../js/app/source-payload-store.js';
 
@@ -41,6 +42,37 @@ class FakeOpfsStore {
 
   async remove(name) {
     this.files.delete(name);
+  }
+
+  async listNames() {
+    return [...this.files.keys()].sort();
+  }
+}
+
+class GatedFakeOpfsStore extends FakeOpfsStore {
+  constructor(gatedName) {
+    super();
+    this._gatedName = gatedName;
+    this._entered = new Promise((resolve) => { this._enteredResolve = resolve; });
+    this._release = new Promise((resolve) => { this._releaseResolve = resolve; });
+    this._gateOpen = false;
+  }
+
+  async writeBytes(name, bytes) {
+    if (name === this._gatedName && !this._gateOpen) {
+      this._enteredResolve();
+      await this._release;
+    }
+    return super.writeBytes(name, bytes);
+  }
+
+  async waitForWrite() {
+    await this._entered;
+  }
+
+  releaseWrite() {
+    this._gateOpen = true;
+    this._releaseResolve();
   }
 }
 
@@ -144,6 +176,118 @@ export const sourcePayloadStoreCases = [
     await repository.put(SOURCE_A, PAYLOAD_A);
     assert.equal(await repository.remove(SOURCE_A), true, 'an owned payload reports its removal');
     assert.equal(await repository.has(SOURCE_A), false, 'removed bytes are no longer retrievable');
+  },
+
+  async function freshDurableRepositoryDiscoversOnlyVerifiedSourceEntries() {
+    const opfs = new FakeOpfsStore();
+    const writer = new OpfsSourcePayloadStore(opfs);
+    await writer.put(SOURCE_A, PAYLOAD_A);
+    opfs.files.set('sources/not-a-source.bin', Uint8Array.of(1));
+    opfs.files.set('notes.txt', Uint8Array.of(2));
+    const repository = new SourcePayloadRepository();
+    assert.deepEqual(await repository.attachDurable(new OpfsSourcePayloadStore(opfs)), { persistent: true });
+    assert.deepEqual(await repository.listIds(), [SOURCE_A], 'restart discovery excludes unrelated OPFS names');
+    assert.deepEqual(Array.from(await repository.get(SOURCE_A)), [0, 1, 2, 3],
+      'restart discovery adopts only bytes that hash to their source ID');
+  },
+
+  async function corruptDiscoveredDurableEntryFailsAttachmentWithoutPersistence() {
+    const opfs = new FakeOpfsStore();
+    opfs.files.set('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin',
+      Uint8Array.of(0, 1, 2, 4));
+    const repository = new SourcePayloadRepository();
+    await assert.rejects(repository.attachDurable(new OpfsSourcePayloadStore(opfs)), PayloadCorruptionError,
+      'a digest-named corrupt entry is an integrity failure, not an ignored name');
+    assert.equal(repository.persistent, false, 'failed discovery cannot claim persistence');
+  },
+
+  async function attachingAndPuttingAreSerializedBeforePersistenceIsClaimed() {
+    const memory = new MemorySourcePayloadStore();
+    const repository = new SourcePayloadRepository(memory);
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    const opfs = new GatedFakeOpfsStore('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin');
+    const attaching = repository.attachDurable(new OpfsSourcePayloadStore(opfs));
+    await opfs.waitForWrite();
+    const putting = repository.put(SOURCE_B, PAYLOAD_B);
+    assert.equal(repository.persistent, false, 'persistence clears while attachment is not yet verified');
+    opfs.releaseWrite();
+    assert.deepEqual(await attaching, { persistent: true });
+    assert.deepEqual(await putting, { reused: false });
+    assert.equal(repository.persistent, true, 'the queued put is durable before persistence returns true');
+    assert.deepEqual(await repository.listIds(), [SOURCE_A, SOURCE_B], 'no memory-only race payload is omitted');
+    assert.equal(await memory.has(SOURCE_B), false, 'the queued payload releases memory only after its durable verification');
+  },
+
+  async function postAttachmentReadFaultsClearPersistenceAndRemainTyped() {
+    const memory = new MemorySourcePayloadStore();
+    const repository = new SourcePayloadRepository(memory);
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    const opfs = new FakeOpfsStore();
+    await repository.attachDurable(new OpfsSourcePayloadStore(opfs));
+    opfs.failReads = true;
+    await assert.rejects(repository.get(SOURCE_A), PayloadUnavailableError,
+      'a durable read exception is not reclassified as an absent payload');
+    assert.equal(repository.persistent, false, 'a durable read exception clears the persistence claim first');
+  },
+
+  async function missingOrCorruptKnownDurablePayloadsClearPersistenceBeforeThrowing() {
+    const missingMemory = new MemorySourcePayloadStore();
+    const missingRepository = new SourcePayloadRepository(missingMemory);
+    await missingRepository.put(SOURCE_A, PAYLOAD_A);
+    const missingOpfs = new FakeOpfsStore();
+    await missingRepository.attachDurable(new OpfsSourcePayloadStore(missingOpfs));
+    missingOpfs.files.delete('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin');
+    await assert.rejects(missingRepository.get(SOURCE_A), PayloadCorruptionError,
+      'a known durable path that disappears is integrity loss');
+    assert.equal(missingRepository.persistent, false, 'missing known bytes clear persistence');
+
+    const corruptMemory = new MemorySourcePayloadStore();
+    const corruptRepository = new SourcePayloadRepository(corruptMemory);
+    await corruptRepository.put(SOURCE_A, PAYLOAD_A);
+    const corruptOpfs = new FakeOpfsStore();
+    await corruptRepository.attachDurable(new OpfsSourcePayloadStore(corruptOpfs));
+    corruptOpfs.files.set('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin',
+      Uint8Array.of(0, 1, 2, 4));
+    await assert.rejects(corruptRepository.get(SOURCE_A), PayloadCorruptionError,
+      'known durable corruption remains typed');
+    assert.equal(corruptRepository.persistent, false, 'known corruption clears persistence');
+  },
+
+  async function distinctDurableReattachmentIsRejectedWithoutChangingOwnership() {
+    const repository = new SourcePayloadRepository();
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    const first = new OpfsSourcePayloadStore(new FakeOpfsStore());
+    await repository.attachDurable(first);
+    await assert.rejects(repository.attachDurable(new OpfsSourcePayloadStore(new FakeOpfsStore())), /different durable/i,
+      'a second backend cannot silently orphan the first durable copy');
+    assert.equal(repository.persistent, true, 'rejection preserves the established durable claim');
+    assert.deepEqual(await repository.listIds(), [SOURCE_A], 'rejection preserves reachable payload ownership');
+  },
+
+  async function durableRemoveDistinguishesPresentAbsentAndLostKnownPayloads() {
+    const emptyRepository = new SourcePayloadRepository();
+    await emptyRepository.attachDurable(new OpfsSourcePayloadStore(new FakeOpfsStore()));
+    assert.equal(await emptyRepository.remove(SOURCE_A), false, 'an absent durable payload is not reported as deleted');
+
+    const repository = new SourcePayloadRepository();
+    const opfs = new FakeOpfsStore();
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    await repository.attachDurable(new OpfsSourcePayloadStore(opfs));
+    assert.equal(await repository.remove(SOURCE_A), true, 'a present durable payload is removed');
+
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    opfs.files.delete('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin');
+    await assert.rejects(repository.remove(SOURCE_A), PayloadCorruptionError,
+      'a tracked payload that vanished is not a successful delete');
+    assert.equal(repository.persistent, false, 'lost known bytes clear persistence during remove');
+  },
+
+  async function durableInterfacesMustBeCompleteBeforeAttachment() {
+    assert.throws(() => new OpfsSourcePayloadStore({ readBytes() {}, writeBytes() {} }), /requires/i,
+      'the OPFS adapter rejects incomplete byte backends');
+    const repository = new SourcePayloadRepository();
+    await assert.rejects(repository.attachDurable({ put() {}, get() {} }), /complete interface/i,
+      'repository attachment rejects a backend that cannot later list or remove');
   },
 ];
 

@@ -606,6 +606,22 @@ export class OpfsStore {
     }
   }
 
+  // Read-only inventory for one directory level. Callers remain responsible for
+  // validating names and file contents before adopting an entry.
+  async listNames() {
+    const names = [];
+    for await (const [name, handle] of this._dir.entries()) {
+      if (handle.kind === 'file') {
+        names.push(name);
+      } else if (handle.kind === 'directory') {
+        for await (const [child, childHandle] of handle.entries()) {
+          if (childHandle.kind === 'file') names.push(name + '/' + child);
+        }
+      }
+    }
+    return names.sort();
+  }
+
   async remove(name) {
     try {
       const { dir, base } = await this._locate(name, false);

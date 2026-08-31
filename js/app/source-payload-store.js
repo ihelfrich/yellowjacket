@@ -11,6 +11,13 @@ export class PayloadCorruptionError extends Error {
   }
 }
 
+export class PayloadUnavailableError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'PayloadUnavailableError';
+  }
+}
+
 function requireSourceId(sourceId) {
   if (!SOURCE_ID_RE.test(sourceId)) throw new TypeError('invalid source ID');
   return sourceId;
@@ -61,6 +68,13 @@ function corruptionForDifference(sourceId) {
   return new PayloadCorruptionError('payload at ' + sourceEntryName(sourceId) + ' differs from immutable source bytes');
 }
 
+function sourceIdFromEntryName(name) {
+  const match = /^sources\/([0-9a-f]{64})\.bin$/.exec(name);
+  if (!match) return null;
+  const sourceId = 'sha256:' + match[1];
+  return sourceEntryName(sourceId) === name ? sourceId : null;
+}
+
 export class MemorySourcePayloadStore {
   constructor() {
     this._entries = new Map();
@@ -103,7 +117,8 @@ export class MemorySourcePayloadStore {
 
 export class OpfsSourcePayloadStore {
   constructor(opfsStore) {
-    if (!opfsStore || typeof opfsStore.readBytes !== 'function' || typeof opfsStore.writeBytes !== 'function') {
+    if (!opfsStore || ['readBytes', 'writeBytes', 'has', 'remove', 'listNames']
+      .some((method) => typeof opfsStore[method] !== 'function')) {
       throw new TypeError('OpfsSourcePayloadStore requires an OpfsStore-like backend');
     }
     this._opfs = opfsStore;
@@ -151,16 +166,26 @@ export class OpfsSourcePayloadStore {
 
   async remove(sourceId) {
     const name = this._name(sourceId);
+    const known = this._ids.has(sourceId);
+    if (!await this._opfs.has(name)) {
+      if (known) throw new PayloadCorruptionError('verified durable payload disappeared');
+      return false;
+    }
     await this._opfs.remove(name);
     this._ids.delete(sourceId);
     return true;
   }
 
   async listIds() {
-    const ids = [...this._ids].sort();
+    const ids = new Set(this._ids);
+    for (const name of await this._opfs.listNames()) {
+      const sourceId = sourceIdFromEntryName(name);
+      if (sourceId) ids.add(sourceId);
+    }
     const present = [];
-    for (const sourceId of ids) {
-      if (await this.get(sourceId)) present.push(sourceId);
+    for (const sourceId of [...ids].sort()) {
+      const bytes = await this.get(sourceId);
+      if (bytes !== null) present.push(sourceId);
     }
     return present;
   }
@@ -172,39 +197,52 @@ export class SourcePayloadRepository {
     this._durable = null;
     this._durableIds = new Set();
     this._persistent = false;
+    this._operations = Promise.resolve();
   }
 
   get persistent() {
     return this._persistent;
   }
 
-  async attachDurable(durable) {
-    if (!durable || typeof durable.put !== 'function' || typeof durable.get !== 'function') {
-      throw new TypeError('durable payload store must implement put() and get()');
+  _enqueue(operation) {
+    const result = this._operations.then(operation, operation);
+    this._operations = result.catch(() => {});
+    return result;
+  }
+
+  attachDurable(durable) {
+    return this._enqueue(() => this._attachDurable(durable));
+  }
+
+  async _attachDurable(durable) {
+    if (!durable || ['put', 'get', 'has', 'remove', 'listIds']
+      .some((method) => typeof durable[method] !== 'function')) {
+      throw new TypeError('durable payload store must implement the complete interface');
     }
+    if (this._durable && this._durable !== durable) {
+      throw new TypeError('a different durable backend is already attached');
+    }
+    this._persistent = false;
     const verified = new Set();
     let ids = [];
     try {
-      // A retry after one quota-limited import must not forget payloads that
-      // were verified before the failure. Stage those durable-only bytes back
-      // into owned memory before asking a backend to prove the complete set.
-      if (this._durable) {
-        for (const sourceId of this._durableIds) {
-          if (await this.memory.has(sourceId)) continue;
-          const bytes = await this._durable.get(sourceId);
-          if (bytes === null) throw new PayloadCorruptionError('verified durable payload disappeared');
-          await this.memory.put(sourceId, bytes);
-        }
-      }
-      ids = await this.memory.listIds();
+      const durableIds = await durable.listIds();
+      ids = [...new Set([
+        ...this._durableIds,
+        ...durableIds,
+        ...await this.memory.listIds(),
+      ])].sort();
       for (const sourceId of ids) {
-        const bytes = await this.memory.get(sourceId);
-        if (bytes === null) throw new PayloadCorruptionError('memory payload disappeared during durable attachment');
-        await durable.put(sourceId, bytes);
-        const readBack = await durable.get(sourceId);
-        if (readBack === null) throw new PayloadCorruptionError('durable payload disappeared during attachment');
-        const durableBytes = await verifiedStored(sourceId, readBack);
-        if (!sameBytes(bytes, durableBytes)) throw corruptionForDifference(sourceId);
+        const memoryBytes = await this.memory.get(sourceId);
+        let durableBytes = await durable.get(sourceId);
+        if (durableBytes === null) {
+          if (memoryBytes === null) throw new PayloadCorruptionError('verified durable payload disappeared');
+          await durable.put(sourceId, memoryBytes);
+          durableBytes = await durable.get(sourceId);
+        }
+        if (durableBytes === null) throw new PayloadCorruptionError('durable payload disappeared during attachment');
+        const verifiedBytes = await verifiedStored(sourceId, durableBytes);
+        if (memoryBytes !== null && !sameBytes(memoryBytes, verifiedBytes)) throw corruptionForDifference(sourceId);
         verified.add(sourceId);
       }
     } catch (error) {
@@ -220,8 +258,14 @@ export class SourcePayloadRepository {
     return { persistent: true };
   }
 
-  async put(sourceId, value) {
+  put(sourceId, value) {
+    return this._enqueue(() => this._put(sourceId, value));
+  }
+
+  async _put(sourceId, value) {
     const bytes = await verifiedIngress(sourceId, value);
+    const wasPersistent = this._persistent;
+    if (this._durable) this._persistent = false;
     const memoryResult = await this.memory.put(sourceId, bytes);
     if (!this._durable) return memoryResult;
 
@@ -238,19 +282,34 @@ export class SourcePayloadRepository {
       return { ...memoryResult, sessionOnly: true };
     }
 
-    if (!this._persistent) return { ...memoryResult, sessionOnly: true };
+    if (!wasPersistent) return { ...memoryResult, sessionOnly: true };
     await this.memory.remove(sourceId);
+    this._persistent = (await this.memory.listIds()).length === 0;
     return memoryResult;
+  }
+
+  _durableFailure(sourceId, error) {
+    this._persistent = false;
+    if (error instanceof PayloadCorruptionError) throw error;
+    throw new PayloadUnavailableError('durable payload is unavailable for ' + sourceId, { cause: error });
   }
 
   async get(sourceId) {
     requireSourceId(sourceId);
-    if (this._durable && this._durableIds.has(sourceId)) {
+    if (this._durable) {
+      const known = this._durableIds.has(sourceId);
       try {
         const bytes = await this._durable.get(sourceId);
-        if (bytes !== null) return copyBytes(bytes);
+        if (bytes !== null) {
+          this._durableIds.add(sourceId);
+          return copyBytes(bytes);
+        }
+        if (known) {
+          return this._durableFailure(sourceId,
+            new PayloadCorruptionError('verified durable payload disappeared'));
+        }
       } catch (error) {
-        if (error instanceof PayloadCorruptionError) throw error;
+        return this._durableFailure(sourceId, error);
       }
     }
     return this.memory.get(sourceId);
@@ -260,21 +319,49 @@ export class SourcePayloadRepository {
     return (await this.get(sourceId)) !== null;
   }
 
-  async remove(sourceId) {
+  remove(sourceId) {
+    return this._enqueue(() => this._remove(sourceId));
+  }
+
+  async _remove(sourceId) {
     requireSourceId(sourceId);
+    const wasPersistent = this._persistent;
+    if (this._durable) this._persistent = false;
     let durableRemoved = false;
-    if (this._durable && this._durableIds.has(sourceId)) {
-      await this._durable.remove(sourceId);
-      this._durableIds.delete(sourceId);
-      durableRemoved = true;
+    if (this._durable) {
+      try {
+        durableRemoved = await this._durable.remove(sourceId);
+        if (!durableRemoved && this._durableIds.has(sourceId)) {
+          throw new PayloadCorruptionError('verified durable payload disappeared');
+        }
+        if (durableRemoved) this._durableIds.delete(sourceId);
+      } catch (error) {
+        return this._durableFailure(sourceId, error);
+      }
     }
     const removed = await this.memory.remove(sourceId);
-    if (this._durable) this._persistent = (await this.memory.listIds()).length === 0;
+    if (this._durable) this._persistent = wasPersistent && (await this.memory.listIds()).length === 0;
     return removed || durableRemoved;
   }
 
   async listIds() {
     const candidates = new Set(await this.memory.listIds());
+    if (this._durable) {
+      let discovered;
+      try {
+        discovered = await this._durable.listIds();
+      } catch (error) {
+        return this._durableFailure('source listing', error);
+      }
+      const discoveredIds = new Set(discovered);
+      for (const sourceId of this._durableIds) {
+        if (!discoveredIds.has(sourceId)) {
+          return this._durableFailure(sourceId,
+            new PayloadCorruptionError('verified durable payload disappeared'));
+        }
+      }
+      for (const sourceId of discovered) this._durableIds.add(sourceId);
+    }
     for (const sourceId of this._durableIds) candidates.add(sourceId);
     const ids = [...candidates].sort();
     const present = [];
