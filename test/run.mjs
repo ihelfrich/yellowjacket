@@ -96,7 +96,13 @@ if (typeof globalThis.CustomEvent === 'undefined') {
   };
 }
 const { sourceRegistryCases, samplePayloadCases, projectStoreV3Cases } = await import('./multisource-core.mjs');
-const { engineTransactionCases, sourcePayloadStoreCases, sourceSessionCases } = await import('./multisource-runtime.mjs');
+const {
+  analysisTokenCases,
+  engineTransactionCases,
+  sourceIntakeCases,
+  sourcePayloadStoreCases,
+  sourceSessionCases,
+} = await import('./multisource-runtime.mjs');
 const { processLimiter } = await import('../js/dsp/limiter.js');
 const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
 
@@ -2600,7 +2606,7 @@ const clampParityCases = [
 // The tag busts the ESM cache: these modules register self.onmessage at import
 // time, so a module already imported by another suite (repair-worker is) would
 // never see the stub, and a second call would reuse the first one's caches.
-async function runWorkerModule(path, message, tag) {
+async function runWorkerMessages(path, messages, tag) {
   const sent = [];
   const prevSelf = Object.getOwnPropertyDescriptor(globalThis, 'self');
   globalThis.self = { postMessage: (m) => sent.push(m), onmessage: null };
@@ -2608,12 +2614,16 @@ async function runWorkerModule(path, message, tag) {
     await import(path + '?probe=' + tag);
     assert.equal(typeof globalThis.self.onmessage, 'function',
       path + ' registered a message handler');
-    globalThis.self.onmessage({ data: message });
+    for (const message of messages) globalThis.self.onmessage({ data: message });
   } finally {
     if (prevSelf) Object.defineProperty(globalThis, 'self', prevSelf);
     else delete globalThis.self;
   }
   return sent;
+}
+
+async function runWorkerModule(path, message, tag) {
+  return runWorkerMessages(path, [message], tag);
 }
 
 const workerProtocolCases = [
@@ -2652,6 +2662,81 @@ const workerProtocolCases = [
     const err = bad.find((m) => m.type === 'error');
     assert.ok(err, 'a cache miss with no audio is an error');
     assert.equal(err.job, 9, 'and the error names its job');
+  },
+  async function theAnalysisWorkerEchoesTheFutureTupleOnProgressNormalEmptyAndErrorReplies() {
+    const tuple = { sourceId: 'source-a', jobId: 'job-3', algorithmVersion: 'analysis.v1' };
+    const mono = new Float32Array(44100);
+    for (let i = 0; i < mono.length; i++) mono[i] = Math.sin(2 * Math.PI * 110 * i / 44100);
+    const normal = await runWorkerModule('../workers/analysis-worker.js', {
+      type: 'analyze', job: 13, generation: 13, ...tuple, mono, sampleRate: 44100,
+      anchors: { bpm: null, barOneTime: null },
+    }, 'analysis-tuple-normal');
+    assert.ok(normal.some((message) => message.type === 'progress'));
+    assert.ok(normal.some((message) => message.type === 'done'
+      && message.analysis.envelope.length > 0), 'the normal analysis completed');
+    for (const message of normal) {
+      assert.equal(message.job, 13, message.type + ' preserves legacy job');
+      assert.equal(message.generation, 13, message.type + ' preserves legacy generation');
+      assert.equal(message.sourceId, tuple.sourceId, message.type + ' echoes source');
+      assert.equal(message.jobId, tuple.jobId, message.type + ' echoes future job');
+      assert.equal(message.algorithmVersion, tuple.algorithmVersion, message.type + ' echoes algorithm');
+    }
+
+    const empty = await runWorkerModule('../workers/analysis-worker.js', {
+      type: 'analyze', job: 14, generation: 14,
+      sourceId: 'source-empty', jobId: 'job-14', algorithmVersion: 'analysis.v1',
+      mono: new Float32Array(0), sampleRate: 44100,
+      anchors: { bpm: null, barOneTime: null },
+    }, 'analysis-tuple-empty');
+    const emptyDone = empty.find((message) => message.type === 'done');
+    assert.ok(emptyDone, 'the short-source path returns an explicit done');
+    assert.equal(emptyDone.job, 14, 'the formerly untagged empty done keeps legacy job');
+    assert.equal(emptyDone.sourceId, 'source-empty');
+    assert.equal(emptyDone.jobId, 'job-14');
+    assert.equal(emptyDone.algorithmVersion, 'analysis.v1');
+    for (const message of empty) {
+      assert.equal(message.sourceId, 'source-empty', message.type + ' echoes source');
+      assert.equal(message.jobId, 'job-14', message.type + ' echoes job');
+      assert.equal(message.algorithmVersion, 'analysis.v1', message.type + ' echoes algorithm');
+    }
+
+    const error = await runWorkerModule('../workers/analysis-worker.js', {
+      type: 'analyze', job: 15, generation: 15,
+      sourceId: 'source-error', jobId: 'job-15', algorithmVersion: 'analysis.v1',
+      sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+    }, 'analysis-tuple-error');
+    const errorReply = error.find((message) => message.type === 'error');
+    assert.ok(errorReply);
+    assert.equal(errorReply.job, 15);
+    assert.equal(errorReply.sourceId, 'source-error');
+    assert.equal(errorReply.jobId, 'job-15');
+    assert.equal(errorReply.algorithmVersion, 'analysis.v1');
+  },
+  async function futureWorkerCacheKeysIncludeSourceAndAlgorithmWithoutHittingLegacyGeneration() {
+    const mono = new Float32Array(4096);
+    mono[100] = 1;
+    const sent = await runWorkerMessages('../workers/analysis-worker.js', [
+      {
+        type: 'analyze', job: 21, generation: 77,
+        sourceId: 'source-a', jobId: 'job-21', algorithmVersion: 'analysis.v1',
+        mono, sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 22, generation: 77,
+        sourceId: 'source-a', jobId: 'job-22', algorithmVersion: 'analysis.v2',
+        sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+      {
+        type: 'analyze', job: 23, generation: 999,
+        sourceId: 'source-a', jobId: 'job-23', algorithmVersion: 'analysis.v1',
+        sampleRate: 44100, anchors: { bpm: null, barOneTime: null },
+      },
+    ], 'analysis-cache-tuple');
+    assert.ok(sent.some((message) => message.type === 'done' && message.jobId === 'job-21'));
+    assert.ok(sent.some((message) => message.type === 'error' && message.jobId === 'job-22'),
+      'a well-formed unknown version is only a cache miss');
+    assert.ok(sent.some((message) => message.type === 'done' && message.jobId === 'job-23'),
+      'the original source/version cache ignores a different legacy generation');
   },
 ];
 
@@ -4166,7 +4251,9 @@ const groups = [
   ['native rate', nativeRateCases],
   ['engine transaction', engineTransactionCases],
   ['source payload store', sourcePayloadStoreCases],
+  ['source intake', sourceIntakeCases],
   ['source session', sourceSessionCases],
+  ['analysis token', analysisTokenCases],
   ['midi file import', smfCases],
   ['BS.1770', loudnessCases],
   ['beat tracking', beatCases],

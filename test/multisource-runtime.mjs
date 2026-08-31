@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 import { Engine } from '../js/audio-engine.js';
 import { ProjectStore } from '../js/app/project-store.js';
 import { createSourceRecord } from '../js/app/source-registry.js';
+import {
+  adapterFailureGuidance,
+  catalogIntakeMetadata,
+  classifySelection,
+  normalizeDirectUrls,
+  processSourceBatch,
+  validateKnownPayloadAddition,
+} from '../js/app/source-intake.js';
 import { SourceSession } from '../js/app/source-session.js';
 import {
   MemorySourcePayloadStore,
@@ -18,6 +26,231 @@ const PAYLOAD_C = Uint8Array.of(8, 9, 10, 11);
 const SOURCE_A = 'sha256:054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8';
 const SOURCE_B = 'sha256:c6d44cf418f610e3fe9e1d9294ff43def81c6cdcad6cbb1820cff48d3aa4355d';
 const SOURCE_C = 'sha256:e0e6e3c1c64422cc76229d0c35ba817a281f8fc4014faa3e9152428a08a73ab3';
+
+function intakeFile(name, type = 'audio/wav') {
+  let reads = 0;
+  return {
+    name,
+    type,
+    path: '/private/should-never-persist/' + name,
+    arrayBuffer() {
+      reads++;
+      return Promise.resolve(new ArrayBuffer(0));
+    },
+    get reads() { return reads; },
+  };
+}
+
+export const sourceIntakeCases = [
+  function audioSelectionReturnsAnOrderedDetachedPlanWithoutReadingFiles() {
+    const files = [intakeFile('one.wav'), intakeFile('two.mp3', 'audio/mpeg'), intakeFile('three.aiff', 'audio/aiff')];
+    const plan = classifySelection(files);
+    assert.equal(plan.kind, 'audio-batch');
+    assert.deepEqual(plan.items.map((item) => item.displayName), ['one.wav', 'two.mp3', 'three.aiff']);
+    assert.deepEqual(plan.items.map((item) => item.origin), [
+      { kind: 'file', url: null }, { kind: 'file', url: null }, { kind: 'file', url: null },
+    ]);
+    assert.equal(plan.items.some((item) => Object.hasOwn(item.origin, 'path')), false,
+      'browser origin metadata never fabricates or retains a path');
+    assert.deepEqual(files.map((file) => file.reads), [0, 0, 0], 'classification performs no reads');
+    files.reverse();
+    assert.deepEqual(plan.items.map((item) => item.displayName), ['one.wav', 'two.mp3', 'three.aiff'],
+      'the returned item list is detached from the caller array');
+  },
+
+  function singularProjectAndMidiPlansRemainDocumentsButMixedDocumentsRejectBeforeReads() {
+    const project = intakeFile('session.yjkt', 'application/octet-stream');
+    const midi = intakeFile('notes.MIDI', 'audio/midi');
+    assert.deepEqual(classifySelection([project]), { kind: 'project', file: project });
+    assert.deepEqual(classifySelection([midi]), { kind: 'midi', file: midi });
+
+    const audio = intakeFile('voice.wav');
+    assert.deepEqual(classifySelection([audio, project]), {
+      kind: 'rejected', code: 'MIXED_DOCUMENT_SELECTION',
+    });
+    assert.deepEqual(classifySelection([project, midi]), {
+      kind: 'rejected', code: 'MULTIPLE_DOCUMENT_SELECTION',
+    });
+    assert.deepEqual(classifySelection([]), { kind: 'rejected', code: 'EMPTY_SELECTION' });
+    assert.deepEqual([audio.reads, project.reads, midi.reads], [0, 0, 0],
+      'every rejected preflight occurs before arrayBuffer');
+  },
+
+  async function batchRunsStrictlySequentiallyAndReportsRowsInInputOrder() {
+    const gates = [];
+    const starts = [];
+    const reported = [];
+    const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    const pending = processSourceBatch(items, {
+      run: async (item, mode) => {
+        starts.push([item.id, mode.activation]);
+        await new Promise((resolve) => gates.push(resolve));
+        return { kind: 'added', id: item.id };
+      },
+      onResult: (row) => reported.push(row.id),
+    });
+    await Promise.resolve();
+    assert.deepEqual(starts, [['a', 'activate']], 'only the first item begins before it settles');
+    gates.shift()();
+    await nextTurn();
+    assert.deepEqual(starts, [['a', 'activate'], ['b', 'registry-only']]);
+    gates.shift()();
+    await nextTurn();
+    assert.deepEqual(starts, [
+      ['a', 'activate'], ['b', 'registry-only'], ['c', 'registry-only'],
+    ]);
+    gates.shift()();
+    const settled = await pending;
+    assert.deepEqual(settled, {
+      results: [
+        { kind: 'added', id: 'a' }, { kind: 'added', id: 'b' }, { kind: 'added', id: 'c' },
+      ],
+      cancelled: false,
+    });
+    assert.deepEqual(reported, ['a', 'b', 'c'], 'callbacks follow row order');
+  },
+
+  async function batchContinuesAfterFailureAndOnlyAddedConsumesFirstActivation() {
+    const modes = [];
+    const writes = [];
+    const settled = await processSourceBatch([
+      { id: 'duplicate' }, { id: 'decode-fault' }, { id: 'first-added' }, { id: 'second-added' },
+    ], {
+      run: async (item, mode) => {
+        modes.push([item.id, mode.activation]);
+        if (item.id === 'duplicate') return { kind: 'duplicate', id: item.id, handling: 'alias-only' };
+        if (item.id === 'decode-fault') throw new Error('decode failed');
+        writes.push(item.id);
+        return { kind: 'added', id: item.id };
+      },
+    });
+    assert.deepEqual(modes, [
+      ['duplicate', 'activate'], ['decode-fault', 'activate'],
+      ['first-added', 'activate'], ['second-added', 'registry-only'],
+    ], 'duplicates and failures do not consume the first-added activation');
+    assert.deepEqual(writes, ['first-added', 'second-added'], 'duplicate performs no decode/write work');
+    assert.equal(settled.results[0].handling, 'alias-only');
+    assert.equal(settled.results[1].kind, 'failed');
+    assert.equal(settled.results[1].status, 'FAILED');
+    assert.equal(settled.results[1].item.id, 'decode-fault');
+    assert.match(settled.results[1].message, /decode failed/);
+    assert.deepEqual(settled.results.slice(2), [
+      { kind: 'added', id: 'first-added' }, { kind: 'added', id: 'second-added' },
+    ]);
+  },
+
+  async function cancellationAtAnItemBoundaryKeepsPriorRowsAndStartsNothingFurther() {
+    let cancel = false;
+    const starts = [];
+    const settled = await processSourceBatch([{ id: 'a' }, { id: 'b' }, { id: 'c' }], {
+      run: async (item) => {
+        starts.push(item.id);
+        if (item.id === 'b') cancel = true;
+        return { kind: 'added', id: item.id };
+      },
+      shouldCancel: () => cancel,
+    });
+    assert.deepEqual(starts, ['a', 'b']);
+    assert.deepEqual(settled.results.map((row) => row.id), ['a', 'b'],
+      'already committed rows are preserved');
+    assert.equal(settled.cancelled, true);
+  },
+
+  function directUrlsNormalizeEachLineWithoutChangingItsSiblings() {
+    const tooLong = 'https://example.test/' + 'é'.repeat(2040);
+    const normalized = normalizeDirectUrls([
+      ' https://Example.test/a/path?q=one#discard ',
+      'ftp://example.test/file.wav',
+      'https://user:secret@example.test/private.wav',
+      'not a url',
+      tooLong,
+      '',
+      'http://example.test/second.mp3?x=1',
+    ].join('\n'));
+    assert.equal(normalized.kind, 'url-batch');
+    assert.deepEqual(normalized.items.map((item) => item.url), [
+      'https://example.test/a/path?q=one', 'http://example.test/second.mp3?x=1',
+    ]);
+    assert.deepEqual(normalized.items.map((item) => item.origin), [
+      { kind: 'url', url: 'https://example.test/a/path?q=one' },
+      { kind: 'url', url: 'http://example.test/second.mp3?x=1' },
+    ]);
+    assert.deepEqual(normalized.errors.map(({ line, code }) => ({ line, code })), [
+      { line: 2, code: 'NON_HTTP_URL' },
+      { line: 3, code: 'CREDENTIALS' },
+      { line: 4, code: 'INVALID_URL' },
+      { line: 5, code: 'URL_TOO_LONG' },
+    ]);
+    assert.deepEqual(normalizeDirectUrls('  \n\t'), {
+      kind: 'url-batch', items: [], errors: [{ line: null, value: '', code: 'EMPTY_URLS' }],
+    });
+  },
+
+  function sizePreflightUsesExactKnownBytesAndNeverEstimatesUnknownPayloads() {
+    const MiB = 1024 * 1024;
+    assert.deepEqual(validateKnownPayloadAddition({ sourceBytes: 250 * MiB, knownProjectBytes: 518 * MiB }), {
+      kind: 'ok', sourceBytes: 250 * MiB, projectBytes: 768 * MiB,
+    });
+    assert.deepEqual(validateKnownPayloadAddition({ sourceBytes: 250 * MiB + 1, knownProjectBytes: 0 }), {
+      kind: 'failure', code: 'SOURCE_TOO_LARGE', sourceBytes: 250 * MiB + 1,
+    });
+    assert.deepEqual(validateKnownPayloadAddition({ sourceBytes: 1, knownProjectBytes: 768 * MiB }), {
+      kind: 'failure', code: 'PROJECT_CAP', projectBytes: 768 * MiB + 1,
+    });
+    assert.deepEqual(validateKnownPayloadAddition({ sourceBytes: null, knownProjectBytes: 0 }), {
+      kind: 'unknown', code: 'UNKNOWN_PAYLOAD_SIZE',
+    }, 'unknown bytes are not invented to approve or reject an import');
+  },
+
+  function adapterFailuresOfferLawfulLocalImportWithoutDownloaderInstructions() {
+    for (const code of ['WALLED_HOST', 'HTML_RESPONSE', 'CORS_BLOCKED']) {
+      const guidance = adapterFailureGuidance(code);
+      assert.equal(guidance.code, code);
+      assert.match(guidance.message, /lawfully obtained local file/i);
+      assert.doesNotMatch(JSON.stringify(guidance), /yt-dlp|downloader|circumvent/i);
+    }
+    assert.equal(adapterFailureGuidance('HTTP_STATUS').code, 'HTTP_STATUS');
+  },
+
+  function catalogRightsOnlyPrefillFieldsExplicitlySuppliedByDemoOrFieldRecords() {
+    assert.deepEqual(catalogIntakeMetadata('demo', { rights: { basis: 'public-domain' } }), {
+      origin: { kind: 'demo', url: null },
+      rights: { basis: 'public-domain', license: null, attribution: null, notes: null },
+    });
+    assert.deepEqual(catalogIntakeMetadata('field', { rights: { attribution: 'FIELD archive 17' } }), {
+      origin: { kind: 'field', url: null },
+      rights: { basis: 'unknown', license: null, attribution: 'FIELD archive 17', notes: null },
+    });
+    assert.deepEqual(catalogIntakeMetadata('demo', { basis: 'licensed', attribution: 'not in rights metadata' }), {
+      origin: { kind: 'demo', url: null },
+      rights: { basis: 'unknown', license: null, attribution: null, notes: null },
+    }, 'implicit catalog fields cannot become rights assertions');
+  },
+
+  async function importingSourceIntakeHasNoBrowserFileNetworkWorkerOrControllerEffects() {
+    const names = ['document', 'window', 'fetch', 'Worker'];
+    const descriptors = new Map(names.map((name) => [name,
+      Object.getOwnPropertyDescriptor(globalThis, name)]));
+    for (const name of names) {
+      Object.defineProperty(globalThis, name, {
+        configurable: true,
+        get() { throw new Error('source intake touched ' + name + ' at import time'); },
+      });
+    }
+    try {
+      const imported = await import('../js/app/source-intake.js?purity=task-8');
+      assert.equal(typeof imported.classifySelection, 'function');
+      assert.equal(typeof imported.normalizeDirectUrls, 'function');
+      assert.equal(typeof imported.processSourceBatch, 'function');
+    } finally {
+      for (const name of names) {
+        const descriptor = descriptors.get(name);
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else delete globalThis[name];
+      }
+    }
+  },
+];
 
 class FakeOpfsStore {
   constructor() {
@@ -951,6 +1184,80 @@ function assertLegacyMachineFixture(store, expected, label) {
   assert.deepEqual([...store.runtime.assetPcm], expected.entries, label + ' asset map entries');
   assert.equal(store.runtime.assetPcm.get('a1'), expected.existingOwner, label + ' asset owner identity');
 }
+
+export const analysisTokenCases = [
+  async function issuedAnalysisTokensAreFrozenAuthenticAndMatchTheWholeReplyTuple() {
+    const { store, session } = await sourceSessionFixture();
+    const token = session.issueAnalysisToken({
+      sourceId: SOURCE_A,
+      jobId: 'job-7',
+      algorithmVersion: 'onsets.v1',
+    });
+    assert.equal(Object.isFrozen(token), true, 'the caller cannot rewrite the acceptance snapshot');
+    assert.deepEqual(token, {
+      sourceId: SOURCE_A,
+      jobId: 'job-7',
+      algorithmVersion: 'onsets.v1',
+      activeSourceId: SOURCE_A,
+      facadeEpoch: store.runtime.facadeEpoch,
+    });
+    const reply = { sourceId: SOURCE_A, jobId: 'job-7', algorithmVersion: 'onsets.v1' };
+    assert.equal(session.isActive(token, reply), true, 'the exact current tuple is active');
+    assert.equal(session.isActive(structuredClone(token), reply), false,
+      'a value-identical object was not issued by this session');
+    assert.equal(session.isActive(token, { ...reply, jobId: 'job-8' }), false);
+    assert.equal(session.isActive(token, { ...reply, algorithmVersion: 'onsets.v2' }), false);
+  },
+
+  async function activationAndFacadeEpochChangesRejectLateRepliesEvenWhenJobsCollide() {
+    const { store, session } = await sourceSessionFixture();
+    const lateA = session.issueAnalysisToken({
+      sourceId: SOURCE_A, jobId: 'job-1', algorithmVersion: 'analysis.v1',
+    });
+    store.project.activeSourceId = SOURCE_B;
+    store.runtime.facadeEpoch++;
+    assert.equal(session.isActive(lateA, {
+      sourceId: SOURCE_A, jobId: 'job-1', algorithmVersion: 'analysis.v1',
+    }), false, 'A cannot install after B becomes active');
+
+    const tokenB = session.issueAnalysisToken({
+      sourceId: SOURCE_B, jobId: 'job-1', algorithmVersion: 'analysis.v1',
+    });
+    assert.equal(session.isActive(tokenB, {
+      sourceId: SOURCE_A, jobId: 'job-1', algorithmVersion: 'analysis.v1',
+    }), false, 'a colliding job from A cannot match B');
+    assert.equal(session.isActive(tokenB, {
+      sourceId: SOURCE_B, jobId: 'job-1', algorithmVersion: 'analysis.v1',
+    }), true);
+    store.runtime.facadeEpoch++;
+    assert.equal(session.isActive(tokenB, {
+      sourceId: SOURCE_B, jobId: 'job-1', algorithmVersion: 'analysis.v1',
+    }), false, 'an epoch change invalidates the token without changing its values');
+  },
+
+  async function analysisTokenIdentifiersAreValidatedButUnknownVersionsRemainValidIdentifiers() {
+    const { session } = await sourceSessionFixture();
+    for (const bad of ['', 'Uppercase', '-leading', 'x'.repeat(65), 'contains space']) {
+      await assert.rejects(async () => session.issueAnalysisToken({
+        sourceId: SOURCE_A, jobId: 'job-1', algorithmVersion: bad,
+      }), /algorithmVersion/i);
+    }
+    for (const bad of ['', 'JOB', '.leading', 'x'.repeat(65), 'job:1']) {
+      await assert.rejects(async () => session.issueAnalysisToken({
+        sourceId: SOURCE_A, jobId: bad, algorithmVersion: 'unknown-but-valid.v99',
+      }), /jobId/i);
+    }
+    await assert.rejects(async () => session.issueAnalysisToken({
+      sourceId: 'not a source id', jobId: 'job-1', algorithmVersion: 'analysis.v1',
+    }), /sourceId/i);
+    const unknown = session.issueAnalysisToken({
+      sourceId: SOURCE_A, jobId: 'job-2', algorithmVersion: 'unknown-but-valid.v99',
+    });
+    assert.equal(session.isActive(unknown, {
+      sourceId: SOURCE_A, jobId: 'job-2', algorithmVersion: 'unknown-but-valid.v99',
+    }), true, 'unknown versions are not project or source validation failures');
+  },
+];
 
 export const sourceSessionCases = [
   async function sourceNavigationFinalizerNeverReconcilesLegacyMachineOrAssetOwnership() {

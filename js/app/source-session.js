@@ -1,4 +1,4 @@
-import { validateSourceGraph, validateSourceRecord } from './source-registry.js';
+import { SOURCE_ID_RE, validateSourceGraph, validateSourceRecord } from './source-registry.js';
 
 const NOOP = () => {};
 const COMMIT_HOOKS = [
@@ -8,6 +8,7 @@ const COMMIT_HOOKS = [
   'beforeRegistryPatch',
   'beforeActivateEvent',
 ];
+const ANALYSIS_IDENTIFIER_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -296,6 +297,7 @@ export class SourceSession extends EventTarget {
   #preparationLane = Promise.resolve();
   #laneState = null;
   #listenerRecords = [];
+  #analysisTokens = new WeakSet();
 
   constructor({
     store,
@@ -413,6 +415,40 @@ export class SourceSession extends EventTarget {
     if (!validateSourceRecord({ ...record, document }).ok) return null;
     record.document = document;
     return document;
+  }
+
+  issueAnalysisToken({ sourceId, jobId, algorithmVersion } = {}) {
+    if (typeof sourceId !== 'string'
+        || (!SOURCE_ID_RE.test(sourceId) && !ANALYSIS_IDENTIFIER_RE.test(sourceId))) {
+      throw new TypeError('sourceId is invalid');
+    }
+    if (typeof jobId !== 'string' || !ANALYSIS_IDENTIFIER_RE.test(jobId)) {
+      throw new TypeError('jobId is invalid');
+    }
+    if (typeof algorithmVersion !== 'string' || !ANALYSIS_IDENTIFIER_RE.test(algorithmVersion)) {
+      throw new TypeError('algorithmVersion is invalid');
+    }
+    const token = Object.freeze({
+      sourceId,
+      jobId,
+      algorithmVersion,
+      activeSourceId: this.store.project.activeSourceId,
+      facadeEpoch: this.store.runtime.facadeEpoch,
+    });
+    this.#analysisTokens.add(token);
+    return token;
+  }
+
+  isActive(token, replyTuple) {
+    return isObject(token)
+      && isObject(replyTuple)
+      && this.#analysisTokens.has(token)
+      && token.sourceId === replyTuple.sourceId
+      && token.jobId === replyTuple.jobId
+      && token.algorithmVersion === replyTuple.algorithmVersion
+      && token.sourceId === token.activeSourceId
+      && token.activeSourceId === this.store.project.activeSourceId
+      && token.facadeEpoch === this.store.runtime.facadeEpoch;
   }
 
   #beginRequest() {
