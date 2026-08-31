@@ -928,12 +928,18 @@ const lifecycleCases = [
     assert.equal(engine._alt, null);
     assert.deepEqual(engine._lastCuts, []);
   },
-  async function canonicalLicenseNoLongerGrantsMitTerms() {
+  async function canonicalLicenseRequiresCommercialTermsForOrganizations() {
     const license = await readFile(new URL('../LICENSE', import.meta.url), 'utf8');
     const terms = await readFile(new URL('../LICENSE.md', import.meta.url), 'utf8');
-    assert.match(license, /PolyForm Noncommercial License 1\.0\.0/);
+    assert.match(license, /Business Source License 1\.1/);
+    assert.doesNotMatch(license, /PolyForm Noncommercial License/);
     assert.doesNotMatch(license, /Permission is hereby granted, free of charge/);
-    assert.match(terms, /# PolyForm Noncommercial License 1\.0\.0/);
+    assert.match(terms, /Business Source License 1\.1/);
+    assert.match(terms, /natural person may make Production Use/);
+    assert.match(terms, /educational institution, research/);
+    assert.match(terms, /require a separate commercial\s+license/);
+    assert.match(terms, /Change License:\s+Apache License, Version 2\.0/);
+    assert.doesNotMatch(terms, /Use by any charitable organization/);
   },
   async function bundledDemoIsDiscoverableAndOffline() {
     const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');

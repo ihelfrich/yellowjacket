@@ -350,10 +350,17 @@ Then open `http://localhost:8080`. A server is required (module workers don't ru
 ## License
 
 Copyright (c) 2026 Ian Helfrich. Yellowjacket is source-available under the
-[PolyForm Noncommercial License 1.0.0](LICENSE.md): use it, study it, and
-modify it freely for any noncommercial purpose. Commercial use of any kind
-(including in paid products, paid services, or revenue-generating work)
-requires a separate license from the author. Write to ianthelfrich@gmail.com.
+[Business Source License 1.1](LICENSE.md). Individuals may use it for their
+own personal, noncommercial purposes. Production use by any organization—or
+use for an employer, client, paid service, commercial product, or other
+revenue-generating work—requires a separate commercial license from the
+author. This includes businesses, nonprofits, educational and research
+institutions, governments, public-safety organizations, and health
+organizations. Write to ianthelfrich@gmail.com.
+
+Each version converts to the Apache License 2.0 on the date specified in the
+license, or no later than four years after that version was first publicly
+distributed, as required by BSL 1.1.
 
 The bundled Archivo and IBM Plex Mono fonts remain under their own SIL Open
 Font License. Whisper models load from their upstream sources under their own
