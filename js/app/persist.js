@@ -508,7 +508,10 @@ function validAssetVariant(asset) {
       && Number.isFinite(mode.energyFrac) && mode.energyFrac >= 0 && mode.energyFrac <= 1
     ));
   }
-  if (asset.kind !== 'factory-drum') return false;
+  // Descriptor-valid future kinds carry the exact core envelope only. Their
+  // additional grammar can be introduced with the reader that understands it;
+  // this reader must neither reject the core record nor admit unknown freight.
+  if (asset.kind !== 'factory-drum') return true;
   if (!utf8AtMost(asset.factoryKitId, 256, { nonempty: true })
       || !utf8AtMost(asset.factoryVoiceId, 256, { nonempty: true })
       || !utf8AtMost(asset.model, 256, { nonempty: true })
@@ -544,8 +547,9 @@ function validProvenance(document, asset) {
       || !exactKeys(provenance.extraction, new Set([
         'startFrame', 'endFrame', 'sampleRate', 'channelCount', 'buffer',
       ]))) return false;
-  const matches = document.clips.filter((clip) => clip.id === provenance.clipId);
-  const source = document.sources[provenance.sourceId];
+  const matches = Array.isArray(document.clips)
+    ? document.clips.filter((clip) => clip && clip.id === provenance.clipId) : [];
+  const source = isPlain(document.sources) ? document.sources[provenance.sourceId] : null;
   if (matches.length !== 1 || !source || matches[0].sourceId !== provenance.sourceId
       || matches[0].start !== provenance.sourceSpan.start || matches[0].end !== provenance.sourceSpan.end) return false;
   const startScaled = provenance.sourceSpan.start * source.audio.sampleRate;
@@ -873,6 +877,17 @@ function mutablePlain(value) {
   });
 }
 
+function compatibleStepArray(value) {
+  try {
+    return value instanceof Uint8Array
+      && Object.getPrototypeOf(value) === Uint8Array.prototype
+      && value.length === MAX_STEPS
+      && Reflect.getOwnPropertyDescriptor(value, 'set') === undefined;
+  } catch {
+    return false;
+  }
+}
+
 function mutableRack(value) {
   return mutableArray(value) && value.every((entry) => (
     mutablePlain(entry) && mutablePlain(entry.params)
@@ -910,8 +925,7 @@ function assertApplyCompatibility(project, runtime, document) {
     }
     for (let trackIndex = 0; trackIndex < scene.tracks.length; trackIndex++) {
       const track = scene.tracks[trackIndex];
-      if (!mutablePlain(track) || !(track.steps instanceof Uint8Array)
-          || track.steps.length !== MAX_STEPS || !mutablePlain(track.stepData)
+      if (!mutablePlain(track) || !compatibleStepArray(track.steps) || !mutablePlain(track.stepData)
           || !mutablePlain(track.voice) || !writableDataProperty(track, 'sample')) {
         throw new ProjectDataError('PROJECT_TARGET', { path: `/machine/scenes/${sceneIndex}/tracks/${trackIndex}` });
       }
@@ -1011,7 +1025,7 @@ function applySources(project, sourceMap) {
 function applyTrackV3(track, saved) {
   track.sampleId = saved.sampleId;
   replacePlainValues(track.voice, saved.voice);
-  track.steps.set(saved.steps);
+  Uint8Array.prototype.set.call(track.steps, saved.steps);
   replacePlainValues(track.stepData, saved.stepData);
   for (const key of [
     'len', 'gainDb', 'pan', 'mute', 'solo', 'duckSource', 'duckDb', 'choke',

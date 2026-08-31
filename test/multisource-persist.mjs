@@ -531,6 +531,59 @@ export const projectFormatCases = [
       JSON.parse = original;
     }
   },
+
+  async function returnsStableIssuesForMalformedProvenanceGraphs() {
+    const fixture = await v3Fixture();
+    const json = persist.serializeProjectV3(fixture.project, fixture.runtime, {
+      savedAt: 1788134400999,
+    }).json;
+    json.clips = {};
+    let result;
+    assert.doesNotThrow(() => { result = persist.validateProjectDocument(json); });
+    assert.equal(result.ok, false);
+    assert.ok(result.issues.some((issue) => issue.code === 'CLIP_ID'));
+    assert.ok(result.issues.some((issue) => issue.code === 'PROVENANCE'));
+  },
+
+  async function acceptsUnknownCoreOnlyAssetKindsWithoutFreight() {
+    const fixture = await v3Fixture();
+    const json = persist.serializeProjectV3(fixture.project, fixture.runtime, {
+      savedAt: 1788134400999,
+    }).json;
+    json.assets.a2.kind = 'custom-model-v1';
+    delete json.assets.a2.formula;
+    assert.deepEqual(persist.validateProjectDocument(json), { ok: true });
+
+    const freight = copy(json);
+    freight.assets.a2.hiddenModel = { weights: [1, 2, 3] };
+    assertIssue(persist.validateProjectDocument(freight), 'ASSET_SHAPE');
+    const pcm = copy(json);
+    pcm.assets.a2.pcm = [0, 1];
+    assertIssue(persist.validateProjectDocument(pcm), 'ASSET_SHAPE');
+  },
+
+  function rejectsPoisonedHeldStepArraysBeforeAnyApplyMutation() {
+    const source = projectStore.createProject(rackDefaults());
+    source.machine.scenes[0].name = 'NEW';
+    const json = persist.serializeProjectV3(source, { assetPcm: new Map() }, {
+      savedAt: 1788134400999,
+    }).json;
+    const target = projectStore.createProject(rackDefaults());
+    target.machine.scenes[0].name = 'OLD';
+    const steps = target.machine.scenes[0].tracks[0].steps;
+    let poisonCalls = 0;
+    Object.defineProperty(steps, 'set', {
+      configurable: true,
+      value() { poisonCalls++; throw new Error('poisoned steps.set'); },
+    });
+    const runtime = { repairs: [], assetPcm: new Map() };
+    assert.throws(() => persist.applySnapshotV3(json, {
+      project: target, runtime, assetPcm: new Map(),
+    }));
+    assert.equal(poisonCalls, 0, 'prevalidation never invokes the poisoned method');
+    assert.equal(target.machine.scenes[0].name, 'OLD');
+    assert.deepEqual([...runtime.assetPcm], []);
+  },
 ];
 
 async function legacyFixture({ withSource }) {
