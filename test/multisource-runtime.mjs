@@ -1,6 +1,151 @@
 import assert from 'node:assert/strict';
 
 import { Engine } from '../js/audio-engine.js';
+import {
+  MemorySourcePayloadStore,
+  OpfsSourcePayloadStore,
+  PayloadCorruptionError,
+  SourcePayloadRepository,
+} from '../js/app/source-payload-store.js';
+
+const PAYLOAD_A = Uint8Array.of(0, 1, 2, 3);
+const PAYLOAD_B = Uint8Array.of(4, 5, 6, 7);
+const SOURCE_A = 'sha256:054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8';
+const SOURCE_B = 'sha256:c6d44cf418f610e3fe9e1d9294ff43def81c6cdcad6cbb1820cff48d3aa4355d';
+
+class FakeOpfsStore {
+  constructor() {
+    this.files = new Map();
+    this.failWrites = false;
+    this.failReads = false;
+  }
+
+  async writeBytes(name, bytes) {
+    if (this.failWrites) {
+      const error = new Error('quota exhausted');
+      error.name = 'QuotaExceededError';
+      throw error;
+    }
+    this.files.set(name, new Uint8Array(bytes).slice());
+  }
+
+  async readBytes(name) {
+    if (this.failReads) throw new Error('read failed');
+    const bytes = this.files.get(name);
+    return bytes ? bytes.slice().buffer : null;
+  }
+
+  async has(name) {
+    return this.files.has(name);
+  }
+
+  async remove(name) {
+    this.files.delete(name);
+  }
+}
+
+export const sourcePayloadStoreCases = [
+  async function payloadPutRejectsCallerIdThatDoesNotMatchItsBytes() {
+    const repository = new SourcePayloadRepository();
+    await assert.rejects(repository.put(SOURCE_B, PAYLOAD_A), /does not match/i,
+      'the supplied source ID must be recomputed from imported bytes');
+    assert.equal(await repository.has(SOURCE_A), false, 'a rejected import writes no alternate key');
+  },
+
+  async function payloadStoreOwnsIngressAndEgressBytesAndReusesExactReputs() {
+    const repository = new SourcePayloadRepository();
+    const caller = PAYLOAD_A.slice();
+    assert.deepEqual(await repository.put(SOURCE_A, caller), { reused: false }, 'first import owns one copy');
+    caller[0] = 99;
+    const firstRead = await repository.get(SOURCE_A);
+    assert.deepEqual(Array.from(firstRead), [0, 1, 2, 3], 'caller mutation cannot change stored bytes');
+    firstRead[1] = 88;
+    assert.deepEqual(Array.from(await repository.get(SOURCE_A)), [0, 1, 2, 3],
+      'returned bytes are a new owner');
+    assert.deepEqual(await repository.put(SOURCE_A, PAYLOAD_A.slice()), { reused: true },
+      'an exact immutable re-put is idempotent');
+  },
+
+  async function durableSamePathMismatchIsCorruptionRatherThanACacheHit() {
+    const opfs = new FakeOpfsStore();
+    opfs.files.set('sources/054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8.bin',
+      Uint8Array.of(0, 1, 2));
+    const durable = new OpfsSourcePayloadStore(opfs);
+    await assert.rejects(durable.put(SOURCE_A, PAYLOAD_A), PayloadCorruptionError,
+      'a pre-existing wrong-length same-name payload is corruption');
+    await assert.rejects(durable.get(SOURCE_A), PayloadCorruptionError,
+      'a corrupt durable payload never degrades into a missing cache entry');
+  },
+
+  async function payloadListsOnlyValidatedIdsInSortedOrder() {
+    const memory = new MemorySourcePayloadStore();
+    await memory.put(SOURCE_B, PAYLOAD_B);
+    await memory.put(SOURCE_A, PAYLOAD_A);
+    await assert.rejects(memory.put('sha256:' + 'A'.repeat(64), PAYLOAD_A), /invalid source ID/i,
+      'unvalidated IDs never enter the payload index');
+    assert.deepEqual(await memory.listIds(), [SOURCE_A, SOURCE_B], 'the public listing is sorted');
+  },
+
+  async function memoryOnlyRepositoryReportsSessionOnly() {
+    const repository = new SourcePayloadRepository();
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    assert.equal(repository.persistent, false, 'memory fallback never claims resume persistence');
+  },
+
+  async function attachingDurableFlushesHashesAndThenReleasesVerifiedMemoryCopies() {
+    const memory = new MemorySourcePayloadStore();
+    const repository = new SourcePayloadRepository(memory);
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    const opfs = new FakeOpfsStore();
+    const attached = await repository.attachDurable(new OpfsSourcePayloadStore(opfs));
+    assert.deepEqual(attached, { persistent: true }, 'persistence is claimed only after the durable read-back');
+    assert.equal(repository.persistent, true, 'the synchronous status reflects verified durable ownership');
+    assert.equal(await memory.has(SOURCE_A), false, 'the sole memory copy releases only after verification');
+    const returned = await repository.get(SOURCE_A);
+    returned[0] = 77;
+    assert.deepEqual(Array.from(await repository.get(SOURCE_A)), [0, 1, 2, 3],
+      'durable reads remain byte-identical and independently owned');
+  },
+
+  async function quotaFailuresKeepMemoryBytesAndReportSessionOnly() {
+    const attachMemory = new MemorySourcePayloadStore();
+    const attachRepository = new SourcePayloadRepository(attachMemory);
+    await attachRepository.put(SOURCE_A, PAYLOAD_A);
+    const attachOpfs = new FakeOpfsStore();
+    attachOpfs.failWrites = true;
+    assert.deepEqual(await attachRepository.attachDurable(new OpfsSourcePayloadStore(attachOpfs)),
+      { persistent: false, sessionOnly: true }, 'failed attachment is explicitly session-only');
+    assert.equal(attachRepository.persistent, false, 'failed attachment never claims persistence');
+    assert.deepEqual(Array.from(await attachRepository.get(SOURCE_A)), [0, 1, 2, 3],
+      'attachment failure retains the only exact memory bytes');
+
+    const putMemory = new MemorySourcePayloadStore();
+    const putRepository = new SourcePayloadRepository(putMemory);
+    const putOpfs = new FakeOpfsStore();
+    const durable = new OpfsSourcePayloadStore(putOpfs);
+    await putRepository.put(SOURCE_A, PAYLOAD_A);
+    assert.deepEqual(await putRepository.attachDurable(durable), { persistent: true });
+    putOpfs.failWrites = true;
+    assert.deepEqual(await putRepository.put(SOURCE_B, PAYLOAD_B), { reused: false, sessionOnly: true },
+      'a quota-limited put reports session-only');
+    assert.equal(putRepository.persistent, false, 'a payload without a verified durable copy clears the claim');
+    assert.deepEqual(Array.from(await putRepository.get(SOURCE_B)), [4, 5, 6, 7],
+      'the quota-limited import retains its exact bytes for this session');
+    putOpfs.failWrites = false;
+    assert.deepEqual(await putRepository.attachDurable(durable), { persistent: true },
+      'a later attachment retries every session-only payload');
+    assert.deepEqual(await putRepository.listIds(), [SOURCE_A, SOURCE_B],
+      'retrying persistence retains previously verified durable IDs');
+  },
+
+  async function payloadRemoveReportsWhetherItActuallyOwnedAnEntry() {
+    const repository = new SourcePayloadRepository();
+    assert.equal(await repository.remove(SOURCE_A), false, 'an absent payload is not reported as removed');
+    await repository.put(SOURCE_A, PAYLOAD_A);
+    assert.equal(await repository.remove(SOURCE_A), true, 'an owned payload reports its removal');
+    assert.equal(await repository.has(SOURCE_A), false, 'removed bytes are no longer retrievable');
+  },
+];
 
 class FixtureAudioBuffer {
   constructor({ sampleRate, channels }) {
