@@ -4,7 +4,10 @@
 
 import { createStudio } from '../studio/model.js';
 
-let assetCounter = 0;
+// Canonical PCM verification is loaded only by the inactive prepared-asset
+// route. Retain the owners we install so synchronous playback resolution can
+// distinguish them from arbitrary values inserted into the public runtime map.
+const verifiedAssetPcm = new WeakSet();
 
 export function createVoice() {
   return {
@@ -137,6 +140,9 @@ export function createProject(chainDefaults) {
     words: null,
     transcript: { gapCuts: [] },
     chain: chainDefaults,
+    activeSourceId: null,
+    sources: {},
+    allocators: { clip: 0, asset: 0 },
     clips: [],
     assets: {},            // id -> {id, kind, label, sampleRate, frames}; pcm lives on runtime refs
     machine: createMachine(),
@@ -146,13 +152,99 @@ export function createProject(chainDefaults) {
   };
 }
 
+function allocatedSuffixes(project, kind) {
+  const prefix = kind === 'clip' ? 'c' : 'a';
+  const ids = kind === 'clip'
+    ? (Array.isArray(project.clips) ? project.clips.map((entry) => entry && entry.id) : null)
+    : (project.assets && typeof project.assets === 'object' && !Array.isArray(project.assets)
+      ? Object.keys(project.assets) : null);
+  if (!ids) throw new RangeError(`Project ${kind} state is invalid`);
+  let highest = 0;
+  for (const id of ids) {
+    if (typeof id !== 'string') continue;
+    const match = new RegExp(`^${prefix}([1-9][0-9]*)$`).exec(id);
+    if (!match) continue;
+    const suffix = Number(match[1]);
+    if (!Number.isSafeInteger(suffix)) throw new RangeError(`Project ${kind} ID is unsafe`);
+    highest = Math.max(highest, suffix);
+  }
+  return highest;
+}
+
+export function allocateProjectId(project, kind) {
+  if (!project || typeof project !== 'object' || (kind !== 'clip' && kind !== 'asset')) {
+    throw new RangeError('Project allocator is invalid');
+  }
+  const counters = project.allocators;
+  const counter = counters && counters[kind];
+  if (!Number.isSafeInteger(counter) || counter < 0 || counter >= Number.MAX_SAFE_INTEGER) {
+    throw new RangeError(`Project ${kind} counter is unsafe`);
+  }
+  if (counter < allocatedSuffixes(project, kind)) {
+    throw new RangeError(`Project ${kind} counter is stale`);
+  }
+  const next = counter + 1;
+  counters[kind] = next;
+  return (kind === 'clip' ? 'c' : 'a') + next;
+}
+
 export function registerAsset(project, meta) {
-  // Restored projects carry ids this counter never minted; skip past them or a
-  // new asset would collide with a restored one (two PCMs, one file on save).
-  let id = 'a' + (++assetCounter);
-  while (project.assets[id]) id = 'a' + (++assetCounter);
+  const id = allocateProjectId(project, 'asset');
   project.assets[id] = { id, ...meta };
   return id;
+}
+
+function jsonMetadata(meta) {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+  try {
+    const encoded = JSON.stringify(meta);
+    return encoded == null ? null : JSON.parse(encoded);
+  } catch {
+    return null;
+  }
+}
+
+export async function registerPreparedAsset(project, runtime, prepared) {
+  if (!runtime || !(runtime.assetPcm instanceof Map) || !prepared || typeof prepared !== 'object') {
+    throw new TypeError('Prepared asset runtime is invalid');
+  }
+  const meta = jsonMetadata(prepared.meta);
+  if (!meta) throw new TypeError('Prepared asset metadata is invalid');
+  // Raw bytes remain outside the project until this asynchronous digest check
+  // has produced a private CanonicalPcm owner.
+  const { CanonicalPcm } = await import('./sample-payload.js');
+  const owner = await CanonicalPcm.fromVerified(meta, prepared.bytes);
+  if (!owner) throw new TypeError('Prepared asset PCM is not verified');
+  const id = allocateProjectId(project, 'asset');
+  if (project.assets[id] || runtime.assetPcm.has(id)) {
+    throw new RangeError(`Asset ${id} already has an owner`);
+  }
+  project.assets[id] = { ...meta, id };
+  runtime.assetPcm.set(id, owner);
+  verifiedAssetPcm.add(owner);
+  return id;
+}
+
+export function resolveTrackSamples(project, runtime) {
+  if (!project || !project.machine || !Array.isArray(project.machine.scenes)
+      || !runtime || !(runtime.assetPcm instanceof Map)) return;
+  for (const scene of project.machine.scenes) {
+    if (!scene || !Array.isArray(scene.tracks)) continue;
+    for (const track of scene.tracks) {
+      if (!track) continue;
+      const owner = runtime.assetPcm.get(track.sampleId);
+      if (!verifiedAssetPcm.has(owner)) {
+        track.sample = null;
+        continue;
+      }
+      const asset = project.assets && project.assets[track.sampleId];
+      track.sample = {
+        ...owner.hydrate(),
+        label: asset && asset.label,
+        role: asset && asset.role,
+      };
+    }
+  }
 }
 
 export class ProjectStore extends EventTarget {
@@ -171,6 +263,10 @@ export class ProjectStore extends EventTarget {
       original: null,        // {buffer, mono} captured before the first repair
       sourceBytes: null,     // encoded source as loaded, for persistence + restore
       sourceHash: null,      // SHA-256 of encoded bytes; semantic-lineage identity
+      assetPcm: new Map(),
+      historyAssetPcm: new Map(),
+      historyPcmBytes: 0,
+      facadeEpoch: 0,
     };
     this.revision = 0;   // bumped per mutation; rides in the change event
     // Undo history: every mutation already funnels through update(), so one
@@ -219,10 +315,11 @@ export class ProjectStore extends EventTarget {
   }
 
   // Every mutation goes through here so autosave (later) can observe all of them.
-  update(kind, fn) {
+  update(kind, fn, { history = 'record' } = {}) {
+    if (history !== 'record' && history !== 'none') throw new TypeError('Unknown history mode');
     // Snapshot BEFORE the mutation, so undo lands on the prior state. Skipped
     // while an undo is itself being applied, and for pure-transport churn.
-    if (this._snapshot && !this._applying && kind !== 'history') {
+    if (history === 'record' && this._snapshot && !this._applying && kind !== 'history') {
       this._past.push(this._snapshot.take());
       if (this._past.length > this.historyLimit) this._past.shift();
       this._future.length = 0;

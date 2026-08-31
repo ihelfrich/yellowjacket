@@ -23,6 +23,14 @@ import {
   validateAssetProvenance,
   validateSamplePayload,
 } from '../js/app/sample-payload.js';
+import {
+  ProjectStore,
+  allocateProjectId,
+  createProject,
+  registerAsset,
+  registerPreparedAsset,
+  resolveTrackSamples,
+} from '../js/app/project-store.js';
 
 const sourceId = (digit = 'a') => 'sha256:' + digit.repeat(64);
 
@@ -482,5 +490,138 @@ export const samplePayloadCases = [
     assert.deepEqual(validateAssetProvenance(project, repairs), { ok: true, replayable: true });
     repairs.provenance.transforms = Array.from({ length: 33 }, () => ({ schemaVersion: 1, kind: 'linear-gain', gain: 1 }));
     assert.equal(validateAssetProvenance(project, repairs).ok, false, 'transform count is bounded');
+  },
+];
+
+function preparedStereoSample() {
+  const sample = pcmFixture();
+  return describeSamplePayload(sample).then((payload) => ({
+    meta: {
+      kind: 'sample',
+      label: 'STEREO',
+      sampleRate: sample.sampleRate,
+      channelCount: sample.channelCount,
+      frames: sample.frames,
+      payload: { byteLength: payload.byteLength, sha256: payload.sha256 },
+    },
+    sample,
+    bytes: payload.bytes,
+  }));
+}
+
+export const projectStoreV3Cases = [
+  function startsWithV3DocumentStateAndTheCompatibilityFacade() {
+    // Mutation caught: a new project loses the serializable v3 roots or breaks
+    // the legacy callers that retain the original chain array by reference.
+    const chain = [{ id: 'gate', on: false, params: {} }];
+    const project = createProject(chain);
+    assert.deepEqual({
+      activeSourceId: project.activeSourceId,
+      sources: project.sources,
+      allocators: project.allocators,
+      clips: project.clips,
+      assets: project.assets,
+    }, {
+      activeSourceId: null,
+      sources: {},
+      allocators: { clip: 0, asset: 0 },
+      clips: [],
+      assets: {},
+    });
+    assert.equal(project.fileName, null);
+    assert.equal(project.words, null);
+    assert.deepEqual(project.transcript, { gapCuts: [] });
+    assert.strictEqual(project.chain, chain, 'legacy chain facade remains in place');
+  },
+
+  function allocatesProjectLocalIdsMonotonicallyWithoutScanningOrReuse() {
+    // Mutation caught: returning the current counter, repairing a stale counter
+    // by scanning state, or relying on a module-global allocator.
+    const project = createProject([]);
+    project.allocators = { clip: 8, asset: 13 };
+    assert.equal(allocateProjectId(project, 'clip'), 'c9');
+    assert.equal(registerAsset(project, { kind: 'sample' }), 'a14');
+    project.clips.push({ id: 'c9' });
+    delete project.assets.a14;
+    project.clips.length = 0;
+    assert.equal(allocateProjectId(project, 'clip'), 'c10', 'a deleted suffix is never reused');
+    assert.equal(registerAsset(project, { kind: 'sample' }), 'a15', 'asset allocation never scans down');
+
+    const staleClip = createProject([]);
+    staleClip.allocators.clip = 3;
+    staleClip.clips.push({ id: 'c4' });
+    assert.throws(() => allocateProjectId(staleClip, 'clip'), RangeError, 'stale clip counter is refused');
+    const staleAsset = createProject([]);
+    staleAsset.allocators.asset = 3;
+    staleAsset.assets.a4 = {};
+    assert.throws(() => allocateProjectId(staleAsset, 'asset'), RangeError, 'stale asset counter is refused');
+    const unsafe = createProject([]);
+    unsafe.allocators.asset = Number.MAX_SAFE_INTEGER;
+    assert.throws(() => allocateProjectId(unsafe, 'asset'), RangeError, 'unsafe counter is refused');
+
+    const first = createProject([]);
+    const second = createProject([]);
+    assert.equal(allocateProjectId(first, 'asset'), 'a1');
+    assert.equal(allocateProjectId(second, 'asset'), 'a1', 'projects do not share allocation state');
+  },
+
+  async function ownsOnlyVerifiedPreparedPcmAndHydratesDisposableTrackSamples() {
+    // Mutation caught: accepting raw/unverified bytes, retaining caller/playback
+    // storage, or allowing a stale allocator to replace existing PCM ownership.
+    const store = new ProjectStore([]);
+    const prepared = await preparedStereoSample();
+    const pending = registerPreparedAsset(store.project, store.runtime, prepared);
+    assert.equal(store.project.assets.a1, undefined, 'no metadata exists before SHA-256 verification');
+    assert.equal(store.runtime.assetPcm.has('a1'), false, 'no owner exists before SHA-256 verification');
+    const id = await pending;
+    assert.equal(id, 'a1');
+    assert.deepEqual(store.project.assets.a1, { id: 'a1', ...prepared.meta }, 'only JSON metadata is stored');
+    assert.ok(store.runtime.assetPcm.get(id) instanceof CanonicalPcm, 'runtime owns a verified CanonicalPcm');
+    assert.equal(JSON.stringify(store.project.assets.a1).includes('channels'), false, 'PCM is never serialized into metadata');
+
+    const owner = store.runtime.assetPcm.get(id);
+    const originalBytes = owner.copyBytes();
+    prepared.sample.channels[0][0] = 99;
+    prepared.bytes[0] = 1;
+    const returnedBytes = owner.copyBytes();
+    returnedBytes[1] = 1;
+    store.project.machine.tracks[0].sampleId = id;
+    resolveTrackSamples(store.project, store.runtime);
+    const track = store.project.machine.tracks[0];
+    assert.notStrictEqual(track.sample, owner, 'track receives a playback hydration, never the owner');
+    track.sample.channels[0][0] = -99;
+    const later = owner.copyBytes();
+    assert.deepEqual(Array.from(later), Array.from(originalBytes), 'mutable inputs and playback cannot alter owned bytes');
+    const digest = await describeSamplePayload(owner.hydrate());
+    assert.equal(digest.sha256, store.project.assets.a1.payload.sha256, 'later hydration retains the verified digest');
+
+    const replacement = await preparedStereoSample();
+    replacement.sample.channels[0][0] = 0.25;
+    const replacementDescription = await describeSamplePayload(replacement.sample);
+    replacement.meta.payload = {
+      byteLength: replacementDescription.byteLength,
+      sha256: replacementDescription.sha256,
+    };
+    replacement.bytes = replacementDescription.bytes;
+    store.project.allocators.asset = 0;
+    await assert.rejects(registerPreparedAsset(store.project, store.runtime, replacement), RangeError,
+      'a stale allocator cannot rewrite a1 with different bytes');
+    assert.deepEqual(Array.from(owner.copyBytes()), Array.from(originalBytes), 'the original owner remains authoritative');
+  },
+
+  function noHistoryUpdatesNotifyWithoutChangingUndoOrRedo() {
+    // Mutation caught: treating a no-history update as a normal edit and
+    // silently erasing the user\'s redo branch.
+    const store = new ProjectStore([]);
+    store.attachHistory(() => ({ revision: store.revision }), () => {});
+    store.update('recorded', () => {});
+    store.undo();
+    let changes = 0;
+    store.addEventListener('change', () => { changes++; });
+    store.update('runtime-only', () => {}, { history: 'none' });
+    assert.equal(store.revision, 3, 'record, undo, and no-history update each advance revision');
+    assert.equal(changes, 1, 'the no-history update emits exactly one change');
+    assert.equal(store.canUndo, false, 'no-history update adds no undo entry');
+    assert.equal(store.canRedo, true, 'no-history update preserves the redo branch');
   },
 ];
