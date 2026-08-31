@@ -66,15 +66,15 @@ export function validateSourceGraph(project);
 
 // js/app/sample-payload.js
 export class CanonicalPcm {
-  static fromVerified(meta, bytes);
+  static async fromVerified(meta, bytes);
   copyBytes();  // owned copy
-  hydrate();    // fresh playback channels
+  hydrate();    // synchronous fresh playback channels after verification
   get byteLength();
 }
 export function canonicalSampleBytes(sample);
 export async function describeSamplePayload(sample);
 export async function validateSamplePayload(meta, bytes);
-export function hydrateCanonicalPcm(meta, bytes);
+export async function hydrateCanonicalPcm(meta, bytes);
 export function reachableAssetIds(machine);
 export function validateAssetOwnership(project, payloadIds);
 export function validateAssetProvenance(project, asset);
@@ -199,7 +199,7 @@ session.commitProjectReplacement(prepared);
   - subarray inputs copy only their visible frames;
   - unequal channel lengths, zero channels, non-positive/unsafe rates, NaN, and infinities reject;
   - a same-length one-float tamper fails digest verification before hydrate;
-  - `CanonicalPcm.fromVerified()` copies input bytes, `copyBytes()` never exposes its private storage, and separate `hydrate()` calls cannot mutate one another or the canonical payload;
+  - `await CanonicalPcm.fromVerified()` SHA-256-verifies and then copies raw input bytes, `copyBytes()` never exposes its private storage, and separate synchronous `hydrate()` calls cannot mutate one another or the canonical payload;
   - metadata multiplication overflow rejects before allocation;
   - reachable IDs are deduplicated across all scenes/tracks;
   - exact equality among reachable IDs, metadata keys, and payload IDs passes, while each missing/orphan permutation fails.
@@ -214,7 +214,7 @@ session.commitProjectReplacement(prepared);
 
 - [ ] **Step 3: Implement canonical encoding and validation**
 
-  Write each float through `DataView.setFloat32(offset, value, true)`; never serialize a host-endian `Float32Array.buffer` directly. `validateSamplePayload()` must check shape, exact `frames * channelCount * 4`, finite decoded floats, and SHA-256 before returning `{ok:true, sample}`. It must return `{ok:false, issue}` without exposing partially hydrated PCM. `CanonicalPcm` encapsulates a private copied payload and returns only copies/fresh hydrations, making persisted/history PCM authoritative even if playback holders mutate their arrays.
+  Write each float through `DataView.setFloat32(offset, value, true)`; never serialize a host-endian `Float32Array.buffer` directly. `validateSamplePayload()` must check shape, exact `frames * channelCount * 4`, finite decoded floats, and SHA-256 before returning `{ok:true, sample}`. It must return `{ok:false, issue}` without exposing partially hydrated PCM. Raw-byte construction is asynchronous: `await CanonicalPcm.fromVerified()` and `await hydrateCanonicalPcm()` hash-verify before any owner exists; only `.hydrate()` on that already-verified owner is synchronous. `CanonicalPcm` encapsulates a private copied payload and returns only copies/fresh hydrations, making persisted/history PCM authoritative even if playback holders mutate their arrays.
 
   `validateAssetProvenance()` must enforce exact source/clip/span/extraction relationships for `binding:'project'`, accept bounded `binding:'external'`, preserve unknown bounded descriptors as `replayable:false`, and validate `linear-gain` and `spectral-repair-stack` version 1 without executing either transform. Enforce at most 32 transforms and 64 KiB of serialized transform data; linear gain must be finite, positive, and no greater than 64.
 
@@ -258,7 +258,7 @@ session.commitProjectReplacement(prepared);
 
   while retaining the in-place compatibility facade `fileName`, `words`, `transcript`, and `chain`. Assert that allocation increments first, refuses stale/unsafe counters, never scans down or reuses deleted suffixes, and yields `c9`/`a14` from `{clip:8,asset:13}`. Assert that two new projects do not share counters.
 
-  Add an immutable prepared asset test: registering a described stereo sample creates `a1`, stores only JSON metadata in `project.assets.a1`, stores a `CanonicalPcm` owner under `runtime.assetPcm.get('a1')`, and refuses any attempt to rewrite `a1` with different bytes. Mutating the input arrays, returned byte copies, hydrated playback channels, or `track.sample` cannot change a later `copyBytes()` result or digest.
+  Add an immutable prepared asset test: registering a described stereo sample awaits raw-byte SHA-256 verification before creating `a1`, stores only JSON metadata in `project.assets.a1`, stores a `CanonicalPcm` owner under `runtime.assetPcm.get('a1')`, and refuses any attempt to rewrite `a1` with different bytes. Mutating the input arrays, returned byte copies, hydrated playback channels, or `track.sample` cannot change a later `copyBytes()` result or digest.
 
 - [ ] **Step 2: Run red**
 
@@ -279,7 +279,7 @@ session.commitProjectReplacement(prepared);
   facadeEpoch: 0,
   ```
 
-  Remove the module-global `assetCounter`. Keep `registerAsset(project, meta)` as a compatibility wrapper that delegates to `allocateProjectId(project, 'asset')`; new source-derived routes must use `registerPreparedAsset(project, runtime, prepared)`. `assetPcm` stores encapsulated `CanonicalPcm` owners whose private bytes are copied at construction and exposed only through copy/hydrate methods. Implement `resolveTrackSamples()` so `track.sample` is a disposable playback hydration from `assetPcm`, never the owner.
+  Remove the module-global `assetCounter`. Keep `registerAsset(project, meta)` as a compatibility wrapper that delegates to `allocateProjectId(project, 'asset')`; new source-derived routes must use `registerPreparedAsset(project, runtime, prepared)`. `assetPcm` stores encapsulated `CanonicalPcm` owners only after asynchronous raw-byte SHA-256 verification; their private bytes are copied and exposed only through copy/hydrate methods. Implement `resolveTrackSamples()` so `track.sample` is a disposable synchronous playback hydration from an already-verified `assetPcm` owner, never the owner.
 
   Change `ProjectStore.update()` to accept `{history:'record'|'none'}`. A no-history update still increments revision and emits one `change`; it neither creates an undo entry nor implicitly clears redo.
 

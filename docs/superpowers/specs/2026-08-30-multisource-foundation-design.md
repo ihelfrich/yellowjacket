@@ -296,6 +296,9 @@ library:
 - The canonical payload is channel-major IEEE-754 binary32, little-endian. Its
   exact byte length and SHA-256 digest live in asset metadata and are checked
   before hydrate/use, portable import, and manifest commit.
+- Raw PCM bytes are SHA-256 verified asynchronously before a `CanonicalPcm`
+  owner can exist. Only `.hydrate()` on an already-verified owner is
+  synchronous and returns fresh playback channels.
 - A runtime `assetPcm` map owns PCM independently of whichever track is active;
   compatibility `track.sample` references resolve from that map.
 - Replacing or clearing the last current track reference removes the asset
