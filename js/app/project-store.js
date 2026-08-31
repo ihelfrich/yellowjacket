@@ -332,18 +332,66 @@ function historyBound(value, fallback, allowZero = false) {
   return Number.isSafeInteger(value) && value >= minimum ? value : fallback;
 }
 
-function legacyPcmByteLength(sample) {
-  if (!sample || !Array.isArray(sample.channels)) return null;
-  let bytes = 0;
-  for (const channel of sample.channels) {
-    if (!channel || !Number.isSafeInteger(channel.length) || channel.length < 0) return null;
-    const channelBytes = Number.isSafeInteger(channel.byteLength)
-      ? channel.byteLength : channel.length * Float32Array.BYTES_PER_ELEMENT;
-    if (!Number.isSafeInteger(channelBytes) || channelBytes < 0
-        || bytes > Number.MAX_SAFE_INTEGER - channelBytes) return null;
-    bytes += channelBytes;
+class LegacyPcmOwner {
+  #sampleRate;
+  #channels;
+  #byteLength;
+
+  constructor(sampleRate, channels) {
+    this.#sampleRate = sampleRate;
+    this.#channels = channels;
+    this.#byteLength = channels.reduce((total, channel) => total + channel.byteLength, 0);
+    Object.freeze(this);
   }
-  return bytes;
+
+  static copyOf(sample) {
+    if (!sample || !Number.isSafeInteger(sample.sampleRate) || sample.sampleRate <= 0
+        || !Array.isArray(sample.channels) || !sample.channels.length) return null;
+    const channels = [];
+    let frames = null;
+    for (const channel of sample.channels) {
+      if (!channel || !Number.isSafeInteger(channel.length) || channel.length < 0) return null;
+      if (frames === null) frames = channel.length;
+      if (channel.length !== frames) return null;
+      const copy = new Float32Array(channel.length);
+      for (let frame = 0; frame < channel.length; frame++) {
+        const value = channel[frame];
+        if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(Math.fround(value))) {
+          return null;
+        }
+        copy[frame] = value;
+      }
+      channels.push(copy);
+    }
+    return new LegacyPcmOwner(sample.sampleRate, channels);
+  }
+
+  get byteLength() { return this.#byteLength; }
+
+  matches(sample) {
+    if (!sample || sample.sampleRate !== this.#sampleRate || !Array.isArray(sample.channels)
+        || sample.channels.length !== this.#channels.length) return false;
+    for (let channel = 0; channel < this.#channels.length; channel++) {
+      const actual = sample.channels[channel];
+      const expected = this.#channels[channel];
+      if (!actual || actual.length !== expected.length) return false;
+      for (let frame = 0; frame < expected.length; frame++) {
+        const value = actual[frame];
+        if (typeof value !== 'number' || !Number.isFinite(value)
+            || Math.fround(value) !== expected[frame]) return false;
+      }
+    }
+    return true;
+  }
+
+  hydrate() {
+    return {
+      sampleRate: this.#sampleRate,
+      channelCount: this.#channels.length,
+      frames: this.#channels[0].length,
+      channels: this.#channels.map((channel) => channel.slice()),
+    };
+  }
 }
 
 function historyReachableAssetIds(machine) {
@@ -393,6 +441,9 @@ export class ProjectStore extends EventTarget {
     this._snapshot = null;   // injected by the controller (needs persist.js)
     this._beforeHistorySnapshot = null;
     this._historyAssetRefs = new Map();
+    this._historyOwnerRefs = new Map();
+    this._historyEntryPcm = new Map();
+    this._trackPlaybackOwners = new Map();
     this._historyEntryOrder = new Map();
     this._nextHistoryEntryOrder = 0;
     this._applying = false;
@@ -427,6 +478,7 @@ export class ProjectStore extends EventTarget {
   // undo into. Public so callers stop reaching into the private arrays.
   clearHistory(reason = 'topology') {
     void reason;
+    this._reconcileLegacyCurrentOwners();
     this._clearStack(this._past);
     this._clearStack(this._future);
   }
@@ -435,78 +487,180 @@ export class ProjectStore extends EventTarget {
   redo() { return this._step(this._future, this._past); }
 
   _legacyOwner(assetId) {
+    const tracks = this._tracksForAsset(assetId);
+    const source = tracks.find((track) => track.sample);
+    if (!source) return null;
+    const owner = LegacyPcmOwner.copyOf(source.sample);
+    if (!owner) return null;
+    // Temporary v2 bridge. Task 9 removes new writes through track.sample.
+    this.runtime.assetPcm.set(assetId, owner);
+    this._hydrateTracks(assetId, owner);
+    return owner;
+  }
+
+  _tracksForAsset(assetId) {
+    const tracks = [];
     for (const scene of this.project.machine.scenes) {
       for (const track of scene.tracks) {
-        if (track && track.sampleId === assetId && track.sample) {
-          // Temporary v2 bridge. Task 9 removes new writes through track.sample.
-          this.runtime.assetPcm.set(assetId, track.sample);
-          return track.sample;
-        }
+        if (track && track.sampleId === assetId) tracks.push(track);
       }
+    }
+    return tracks;
+  }
+
+  _isOwner(owner) {
+    return verifiedAssetPcm.has(owner) || owner instanceof LegacyPcmOwner;
+  }
+
+  _playback(owner, asset) {
+    if (!this._isOwner(owner)) return null;
+    return {
+      ...owner.hydrate(),
+      label: asset && asset.label,
+      role: asset && asset.role,
+    };
+  }
+
+  _hydrateTracks(assetId, owner) {
+    const asset = this.project.assets && this.project.assets[assetId];
+    for (const track of this._tracksForAsset(assetId)) {
+      track.sample = this._playback(owner, asset);
+      this._trackPlaybackOwners.set(track, { sample: track.sample, owner });
+    }
+  }
+
+  _ownerFor(assetId) {
+    const current = this.runtime.assetPcm.get(assetId);
+    if (this._isOwner(current)) return current;
+    if (this._tracksForAsset(assetId).some((track) => track.sample)) {
+      return this._legacyOwner(assetId);
+    }
+    const retained = this.runtime.historyAssetPcm.get(assetId);
+    if (this._isOwner(retained)) return retained;
+    return null;
+  }
+
+  _ownerByteLength(owner) {
+    if (this._isOwner(owner) && Number.isSafeInteger(owner.byteLength) && owner.byteLength >= 0) {
+      return owner.byteLength;
     }
     return null;
   }
 
-  _ownerFor(assetId) {
-    return this.runtime.assetPcm.get(assetId)
-      || this.runtime.historyAssetPcm.get(assetId)
-      || this._legacyOwner(assetId);
-  }
-
-  _ownerByteLength(owner) {
-    if (owner && Number.isSafeInteger(owner.byteLength) && owner.byteLength >= 0) {
-      return owner.byteLength;
+  _reconcileLegacyCurrentOwners() {
+    const reachable = new Set(historyReachableAssetIds(this.project.machine));
+    for (const scene of this.project.machine.scenes) {
+      for (const track of scene.tracks) {
+        if (track && !track.sampleId) this._trackPlaybackOwners.delete(track);
+      }
     }
-    return legacyPcmByteLength(owner);
+    for (const [assetId, owner] of this.runtime.assetPcm) {
+      if (!reachable.has(assetId) && owner instanceof LegacyPcmOwner) {
+        this.runtime.assetPcm.delete(assetId);
+      }
+    }
+    for (const assetId of reachable) {
+      const tracks = this._tracksForAsset(assetId);
+      const current = this.runtime.assetPcm.get(assetId);
+      if (verifiedAssetPcm.has(current)) {
+        const asset = this.project.assets && this.project.assets[assetId];
+        for (const track of tracks) {
+          const binding = this._trackPlaybackOwners.get(track);
+          if (binding && binding.sample === track.sample && binding.owner === current) continue;
+          track.sample = this._playback(current, asset);
+          this._trackPlaybackOwners.set(track, { sample: track.sample, owner: current });
+        }
+        continue;
+      }
+      if (current instanceof LegacyPcmOwner) {
+        const changed = tracks.find((track) => track.sample && !current.matches(track.sample));
+        let owner = current;
+        if (changed) {
+          const replacement = LegacyPcmOwner.copyOf(changed.sample);
+          if (replacement) {
+            owner = replacement;
+            this.runtime.assetPcm.set(assetId, replacement);
+          }
+        }
+        const callerPlayback = tracks.some((track) => {
+          const binding = this._trackPlaybackOwners.get(track);
+          return !binding || binding.sample !== track.sample || binding.owner !== owner;
+        });
+        if (owner !== current || callerPlayback
+            || tracks.some((track) => !track.sample || !owner.matches(track.sample))) {
+          this._hydrateTracks(assetId, owner);
+        }
+        continue;
+      }
+      this._legacyOwner(assetId);
+    }
   }
 
   _takeEntry(runBeforeHook) {
     if (runBeforeHook && this._beforeHistorySnapshot) this._beforeHistorySnapshot();
     const document = this._snapshot.takeDocument();
     const assetIds = historyReachableAssetIds(document && document.machine);
+    const owners = new Map();
+    const counted = new Set();
     let byteLength = 0;
     for (const assetId of assetIds) {
-      const ownerBytes = this._ownerByteLength(this._ownerFor(assetId));
+      const owner = this._ownerFor(assetId);
+      if (!owner) continue;
+      owners.set(assetId, owner);
+      if (counted.has(owner)) continue;
+      counted.add(owner);
+      const ownerBytes = this._ownerByteLength(owner);
       if (ownerBytes !== null && byteLength <= Number.MAX_SAFE_INTEGER - ownerBytes) {
         byteLength += ownerBytes;
       }
     }
     const entry = { document, assetIds, byteLength };
+    this._historyEntryPcm.set(entry, owners);
     this._historyEntryOrder.set(entry, this._nextHistoryEntryOrder++);
     return entry;
   }
 
   _retainEntry(entry) {
-    for (const assetId of entry.assetIds) {
-      const retained = this.runtime.historyAssetPcm.get(assetId);
-      const owner = retained || this._ownerFor(assetId);
-      if (!owner) continue;
-      if (!retained) {
-        const byteLength = this._ownerByteLength(owner);
-        if (byteLength === null) continue;
-        this.runtime.historyAssetPcm.set(assetId, owner);
-        this.runtime.historyPcmBytes += byteLength;
+    const owners = this._historyEntryPcm.get(entry) || new Map();
+    for (const [assetId, owner] of owners) {
+      let versions = this._historyAssetRefs.get(assetId);
+      if (!versions) {
+        versions = new Map();
+        this._historyAssetRefs.set(assetId, versions);
       }
-      this._historyAssetRefs.set(assetId, (this._historyAssetRefs.get(assetId) || 0) + 1);
+      versions.set(owner, (versions.get(owner) || 0) + 1);
+      this.runtime.historyAssetPcm.set(assetId, owner);
+      const ownerRefs = this._historyOwnerRefs.get(owner) || 0;
+      if (!ownerRefs) this.runtime.historyPcmBytes += owner.byteLength;
+      this._historyOwnerRefs.set(owner, ownerRefs + 1);
     }
   }
 
   _releaseEntry(entry) {
-    for (const assetId of entry.assetIds) {
-      const refs = this._historyAssetRefs.get(assetId);
-      if (!refs) continue;
-      if (refs > 1) {
-        this._historyAssetRefs.set(assetId, refs - 1);
-        continue;
+    const owners = this._historyEntryPcm.get(entry) || new Map();
+    for (const [assetId, owner] of owners) {
+      const versions = this._historyAssetRefs.get(assetId);
+      const versionRefs = versions && versions.get(owner);
+      if (versionRefs === 1) versions.delete(owner);
+      else if (versionRefs > 1) versions.set(owner, versionRefs - 1);
+      if (versions && !versions.size) this._historyAssetRefs.delete(assetId);
+      if (this.runtime.historyAssetPcm.get(assetId) === owner && (!versions || !versions.has(owner))) {
+        if (!versions || !versions.size) {
+          this.runtime.historyAssetPcm.delete(assetId);
+        } else {
+          const remaining = Array.from(versions.keys());
+          this.runtime.historyAssetPcm.set(assetId, remaining[remaining.length - 1]);
+        }
       }
-      this._historyAssetRefs.delete(assetId);
-      const owner = this.runtime.historyAssetPcm.get(assetId);
-      this.runtime.historyAssetPcm.delete(assetId);
-      const byteLength = this._ownerByteLength(owner);
-      if (byteLength !== null) {
-        this.runtime.historyPcmBytes = Math.max(0, this.runtime.historyPcmBytes - byteLength);
+      const ownerRefs = this._historyOwnerRefs.get(owner);
+      if (ownerRefs === 1) {
+        this._historyOwnerRefs.delete(owner);
+        this.runtime.historyPcmBytes = Math.max(0, this.runtime.historyPcmBytes - owner.byteLength);
+      } else if (ownerRefs > 1) {
+        this._historyOwnerRefs.set(owner, ownerRefs - 1);
       }
     }
+    this._historyEntryPcm.delete(entry);
     this._historyEntryOrder.delete(entry);
   }
 
@@ -536,11 +690,12 @@ export class ProjectStore extends EventTarget {
   }
 
   _ownersFor(entry) {
+    const retained = this._historyEntryPcm.get(entry);
     const owners = new Map();
     for (const assetId of entry.assetIds) {
-      const owner = this.runtime.assetPcm.get(assetId)
-        || this.runtime.historyAssetPcm.get(assetId);
-      if (!owner) return null;
+      const owner = retained && retained.get(assetId);
+      if (!owner || (!this.runtime.assetPcm.has(assetId)
+          && !this.runtime.historyAssetPcm.has(assetId))) return null;
       owners.set(assetId, owner);
     }
     return owners;
@@ -549,16 +704,8 @@ export class ProjectStore extends EventTarget {
   _playbackFor(entry, owners) {
     const pcmById = new Map();
     for (const [assetId, owner] of owners) {
-      if (verifiedAssetPcm.has(owner)) {
-        const asset = entry.document && entry.document.assets && entry.document.assets[assetId];
-        pcmById.set(assetId, {
-          ...owner.hydrate(),
-          label: asset && asset.label,
-          role: asset && asset.role,
-        });
-      } else {
-        pcmById.set(assetId, owner);
-      }
+      const asset = entry.document && entry.document.assets && entry.document.assets[assetId];
+      pcmById.set(assetId, this._playback(owner, asset));
     }
     return pcmById;
   }
@@ -571,12 +718,15 @@ export class ProjectStore extends EventTarget {
     return { ...document, activeSourceId };
   }
 
-  _resolvePlaybackPointers(pcmById) {
+  _resolvePlaybackPointers(owners) {
     for (const scene of this.project.machine.scenes) {
       for (const track of scene.tracks) {
         if (!track) continue;
-        track.sample = track.sampleId && pcmById.has(track.sampleId)
-          ? pcmById.get(track.sampleId) : null;
+        const owner = owners.get(track.sampleId);
+        const asset = this.project.assets && this.project.assets[track.sampleId];
+        track.sample = owner ? this._playback(owner, asset) : null;
+        if (owner) this._trackPlaybackOwners.set(track, { sample: track.sample, owner });
+        else this._trackPlaybackOwners.delete(track);
       }
     }
   }
@@ -598,7 +748,7 @@ export class ProjectStore extends EventTarget {
       this._applying = false;
     }
     for (const [assetId, owner] of owners) this.runtime.assetPcm.set(assetId, owner);
-    this._resolvePlaybackPointers(pcmById);
+    this._resolvePlaybackPointers(owners);
 
     from.pop();
     this._releaseEntry(target);
@@ -627,6 +777,7 @@ export class ProjectStore extends EventTarget {
       this._trimHistory();
     }
     fn(this.project, this.runtime);
+    this._reconcileLegacyCurrentOwners();
     this.revision++;
     this.dispatchEvent(new CustomEvent('change', { detail: { kind, revision: this.revision } }));
   }

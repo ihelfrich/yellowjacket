@@ -557,6 +557,29 @@ function putCurrentAsset(store, id, owner) {
   runtime.assetPcm.set(id, owner);
 }
 
+function legacySample(values, label) {
+  return {
+    channels: [Float32Array.from(values)],
+    sampleRate: 48000,
+    label,
+    role: 'KICK',
+  };
+}
+
+function putLegacyAsset(store, id, sample, trackIndex = 0) {
+  store.project.assets[id] = {
+    id,
+    kind: 'sample',
+    label: sample.label,
+    role: sample.role,
+    sampleRate: sample.sampleRate,
+    channelCount: sample.channels.length,
+    frames: sample.channels[0].length,
+  };
+  store.project.machine.tracks[trackIndex].sampleId = id;
+  store.project.machine.tracks[trackIndex].sample = sample;
+}
+
 function attachV2History(store, modern = true) {
   const takeDocument = () => snapshotDoc(store.project, store.runtime);
   const applyDocument = (document, pcmById = new Map()) => {
@@ -995,6 +1018,114 @@ export const projectStoreV3Cases = [
     assert.notStrictEqual(appliedPcm.get('a1'), owner, 'the owner is never installed as mutable playback');
     assert.equal(playableAtEvent, true, 'every track pointer resolves before the history event');
     assert.strictEqual(store.runtime.assetPcm.get('a1'), owner, 'current ownership remains canonical');
+  },
+
+  async function legacyAdoptionDetachesOwnerAndPlaybackFromCallerArrays() {
+    // Mutation caught: adopting the exact mutable track.sample object or one of
+    // its caller-held channel arrays as current/history ownership.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store);
+    const callerSample = legacySample([0.125, -0.25, 0.5, -0.5], 'OLD');
+    const callerChannel = callerSample.channels[0];
+    putLegacyAsset(store, 'a1', callerSample);
+
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[0] = 1; });
+    const owner = store.runtime.assetPcm.get('a1');
+    const retained = store.runtime.historyAssetPcm.get('a1');
+    const playback = store.project.machine.tracks[0].sample;
+    assert.notStrictEqual(owner, callerSample, 'current ownership is detached from legacy playback');
+    assert.strictEqual(retained, owner, 'history retains the detached owner');
+    assert.notStrictEqual(playback, callerSample, 'current playback is rehydrated from the owner');
+    assert.notStrictEqual(playback.channels[0], callerChannel, 'current playback channels are fresh');
+
+    callerChannel[0] = 0.99;
+    callerSample.channels = [Float32Array.from([0.8, 0.8, 0.8, 0.8])];
+    assert.deepEqual(Array.from(owner.hydrate().channels[0]), [0.125, -0.25, 0.5, -0.5]);
+    assert.deepEqual(Array.from(playback.channels[0]), [0.125, -0.25, 0.5, -0.5]);
+    assert.equal(store.undo(), true);
+    assert.deepEqual(Array.from(store.project.machine.tracks[0].sample.channels[0]), [0.125, -0.25, 0.5, -0.5]);
+
+    const verifiedStore = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(verifiedStore);
+    const verified = await canonicalOwner(4, 0.25);
+    putCurrentAsset(verifiedStore, 'a1', verified);
+    verifiedStore.update('assets', (project) => {
+      project.machine.tracks[0].sample = legacySample([-0.125, -0.25, -0.5, -0.75], 'REJECT');
+    });
+    assert.strictEqual(verifiedStore.runtime.assetPcm.get('a1'), verified,
+      'a legacy replacement cannot supersede verified ownership');
+    assert.deepEqual(Array.from(verifiedStore.project.machine.tracks[0].sample.channels[0]),
+      Array.from(verified.hydrate().channels[0]), 'playback returns to verified authority');
+  },
+
+  function sameIdLegacyVersionsUndoAndRedoTheirOwnDetachedPcm() {
+    // Mutation caught: resolving an entry through the current id map instead of
+    // the PCM version captured for that specific history document.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store);
+    putLegacyAsset(store, 'a1', legacySample([0.125, 0.25, 0.5, 0.75], 'VERSION'));
+    store.update('pattern', (project) => {
+      project.machine.tracks[0].steps[0] = 1;
+      project.machine.tracks[0].sample = legacySample([-0.125, -0.25, -0.5, -0.75], 'VERSION');
+    });
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[1] = 1; });
+
+    assert.equal(store.undo(), true);
+    const firstNewPlayback = store.project.machine.tracks[0].sample.channels[0];
+    assert.deepEqual(Array.from(firstNewPlayback), [-0.125, -0.25, -0.5, -0.75],
+      'the newer entry restores its own PCM version');
+    firstNewPlayback[0] = 0.77;
+    assert.equal(store.undo(), true);
+    assert.deepEqual(Array.from(store.project.machine.tracks[0].sample.channels[0]), [0.125, 0.25, 0.5, 0.75],
+      'the older entry restores the prior PCM version');
+    assert.equal(store.redo(), true);
+    const secondNewPlayback = store.project.machine.tracks[0].sample.channels[0];
+    assert.deepEqual(Array.from(secondNewPlayback), [-0.125, -0.25, -0.5, -0.75]);
+    assert.notStrictEqual(secondNewPlayback, firstNewPlayback, 'redo hydrates fresh playback channels');
+  },
+
+  function topologyClearDropsUnreachableAdoptedOwnerAndKeepsReachableOwner() {
+    // Mutation caught: leaving an adopted owner pinned in current PCM after its
+    // last track is removed, or clearing a different still-reachable owner.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store);
+    putLegacyAsset(store, 'a1', legacySample([0.125, 0.25, 0.5, 0.75], 'REMOVE'), 0);
+    putLegacyAsset(store, 'a2', legacySample([-0.125, -0.25, -0.5, -0.75], 'KEEP'), 1);
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[0] = 1; });
+    const reachableOwner = store.runtime.assetPcm.get('a2');
+    store.update('assets', (project) => {
+      project.machine.tracks[0].sampleId = null;
+      project.machine.tracks[0].sample = null;
+      delete project.assets.a1;
+    });
+
+    store.clearHistory('topology');
+
+    assert.equal(store.runtime.historyAssetPcm.size, 0);
+    assert.equal(store.runtime.historyPcmBytes, 0);
+    assert.equal(store.runtime.assetPcm.has('a1'), false, 'unreachable adopted current owner is released');
+    assert.strictEqual(store.runtime.assetPcm.get('a2'), reachableOwner,
+      'the reachable current owner is preserved');
+    assert.deepEqual(Array.from(store.project.machine.tracks[1].sample.channels[0]), [-0.125, -0.25, -0.5, -0.75]);
+  },
+
+  function sharedLegacyOwnerIsChargedOnceAndEntryShapeStaysMinimal() {
+    // Mutation caught: copying per track/snapshot, double-charging identical
+    // owner identity, or adding ownership fields to the history entry object.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store);
+    const sample = legacySample([0.1, 0.2, 0.3, 0.4], 'SHARED');
+    putLegacyAsset(store, 'a1', sample, 0);
+    putLegacyAsset(store, 'a1', sample, 1);
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[0] = 1; });
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[1] = 1; });
+
+    assert.equal(store.runtime.historyPcmBytes, 16, 'one detached owner is charged once');
+    assert.equal(store.undoDepth, 2);
+    for (const entry of store._past) {
+      assert.deepEqual(Object.keys(entry).sort(), ['assetIds', 'byteLength', 'document']);
+      assert.equal(entry.byteLength, 16);
+    }
   },
 
   function noHistoryUpdatesNotifyWithoutChangingUndoOrRedo() {
