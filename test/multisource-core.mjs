@@ -638,6 +638,48 @@ export const projectStoreV3Cases = [
     }
   },
 
+  async function validatesPreparedMetadataAndProvenanceBeforeOwnershipMutation() {
+    // Mutation caught: treating a JSON-compatible nested provenance object as
+    // safe metadata even when it carries PCM-like values or unsupported freight.
+    const external = () => ({
+      kind: 'field-capture',
+      binding: 'external',
+      descriptor: { provider: 'archive', record: 'w-1' },
+      transforms: [{ schemaVersion: 9, kind: 'future-pass', setting: true }],
+    });
+    const invalid = [
+      ['provenance channels', (meta) => { meta.provenance = { ...external(), channels: [[0, 0.5], [-0.5, 1]] }; }],
+      ['unknown provenance field', (meta) => { meta.provenance = { ...external(), ownership: { owner: 'untrusted' } }; }],
+      ['payload extra', (meta) => { meta.payload.extra = true; }],
+      ['object label', (meta) => { meta.label = { value: 'STEREO' }; }],
+      ['object role', (meta) => { meta.role = { value: 'KICK' }; }],
+      ['unsafe sample rate', (meta) => { meta.sampleRate = Number.MAX_SAFE_INTEGER + 1; }],
+      ['invalid channel count', (meta) => { meta.channelCount = 0; }],
+      ['invalid frame count', (meta) => { meta.frames = -1; }],
+      ['malformed provenance', (meta) => { meta.provenance = { kind: 'field-capture', binding: 'external', transforms: [] }; }],
+    ];
+    for (const [label, mutate] of invalid) {
+      const store = new ProjectStore([]);
+      const prepared = await preparedStereoSample();
+      mutate(prepared.meta);
+      await assert.rejects(registerPreparedAsset(store.project, store.runtime, prepared), TypeError, label);
+      assert.equal(store.project.allocators.asset, 0, label + ' leaves allocation unchanged');
+      assert.deepEqual(store.project.assets, {}, label + ' leaves metadata empty');
+      assert.equal(store.runtime.assetPcm.size, 0, label + ' installs no owner');
+    }
+
+    const store = new ProjectStore([]);
+    const prepared = await preparedStereoSample();
+    prepared.meta.provenance = {
+      ...external(),
+      descriptor: { provider: 'archive', record: 'w-1', offsets: [1, 2, 3] },
+    };
+    assert.equal(await registerPreparedAsset(store.project, store.runtime, prepared), 'a1');
+    assert.deepEqual(store.project.assets.a1.provenance, prepared.meta.provenance,
+      'a bounded external descriptor and unknown transform remain truthful metadata');
+    assert.equal(store.runtime.assetPcm.size, 1, 'the valid record installs one verified owner');
+  },
+
   function noHistoryUpdatesNotifyWithoutChangingUndoOrRedo() {
     // Mutation caught: treating a no-history update as a normal edit and
     // silently erasing the user\'s redo branch.

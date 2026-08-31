@@ -195,7 +195,7 @@ export function registerAsset(project, meta) {
 }
 
 function jsonMetadata(meta) {
-  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+  if (!isJsonValue(meta) || Array.isArray(meta)) return null;
   try {
     const encoded = JSON.stringify(meta);
     return encoded == null ? null : JSON.parse(encoded);
@@ -204,15 +204,77 @@ function jsonMetadata(meta) {
   }
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isJsonValue(value) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isPlainObject(value) && Object.values(value).every(isJsonValue);
+}
+
+function isPositiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function isSafeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function hasExactKeys(value, allowed) {
+  const keys = Object.keys(value);
+  return keys.length === allowed.size && keys.every((key) => allowed.has(key));
+}
+
+function hasPcmBearingField(value) {
+  if (Array.isArray(value)) return value.some(hasPcmBearingField);
+  if (!isPlainObject(value)) return false;
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'channels' || key === 'bytes' || key === 'rawBytes' || key === 'pcm') return true;
+    if (hasPcmBearingField(entry)) return true;
+  }
+  return false;
+}
+
 const PREPARED_ASSET_FIELDS = new Set([
   'kind', 'label', 'sampleRate', 'channelCount', 'frames', 'payload', 'role', 'provenance',
 ]);
+const PROJECT_PROVENANCE_FIELDS = new Set([
+  'kind', 'binding', 'sourceId', 'clipId', 'sourceSpan', 'extraction', 'transforms',
+]);
+const EXTERNAL_PROVENANCE_FIELDS = new Set(['kind', 'binding', 'descriptor', 'transforms']);
+const PAYLOAD_FIELDS = new Set(['byteLength', 'sha256']);
+const DESCRIPTOR_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const SHA256_RE = /^sha256:[0-9a-f]{64}$/;
+
+function validPreparedProvenanceShape(provenance) {
+  if (!isPlainObject(provenance) || hasPcmBearingField(provenance)
+      || typeof provenance.kind !== 'string' || !DESCRIPTOR_RE.test(provenance.kind)
+      || !Array.isArray(provenance.transforms)) return false;
+  if (provenance.binding === 'project') {
+    return hasExactKeys(provenance, PROJECT_PROVENANCE_FIELDS);
+  }
+  return provenance.binding === 'external' && isPlainObject(provenance.descriptor)
+    && hasExactKeys(provenance, EXTERNAL_PROVENANCE_FIELDS);
+}
 
 function isPreparedAssetMetadata(meta) {
-  if (!meta || Object.keys(meta).some((key) => !PREPARED_ASSET_FIELDS.has(key))) return false;
-  if (!meta.payload || typeof meta.payload !== 'object' || Array.isArray(meta.payload)) return false;
-  const payloadKeys = Object.keys(meta.payload);
-  return payloadKeys.length === 2 && payloadKeys.includes('byteLength') && payloadKeys.includes('sha256');
+  if (!isPlainObject(meta) || Object.keys(meta).some((key) => !PREPARED_ASSET_FIELDS.has(key))
+      || typeof meta.kind !== 'string' || !DESCRIPTOR_RE.test(meta.kind)
+      || typeof meta.label !== 'string' || !isPositiveSafeInteger(meta.sampleRate)
+      || !isPositiveSafeInteger(meta.channelCount) || !isSafeInteger(meta.frames)
+      || !isPlainObject(meta.payload) || !hasExactKeys(meta.payload, PAYLOAD_FIELDS)
+      || !isSafeInteger(meta.payload.byteLength) || typeof meta.payload.sha256 !== 'string'
+      || !SHA256_RE.test(meta.payload.sha256)) return false;
+  if (meta.channelCount > Number.MAX_SAFE_INTEGER / 4 || meta.frames > Number.MAX_SAFE_INTEGER / meta.channelCount
+      || meta.frames * meta.channelCount > Number.MAX_SAFE_INTEGER / 4
+      || meta.payload.byteLength !== meta.frames * meta.channelCount * 4) return false;
+  if (meta.role !== undefined && typeof meta.role !== 'string') return false;
+  return meta.provenance === undefined || validPreparedProvenanceShape(meta.provenance);
 }
 
 export async function registerPreparedAsset(project, runtime, prepared) {
@@ -223,7 +285,10 @@ export async function registerPreparedAsset(project, runtime, prepared) {
   if (!isPreparedAssetMetadata(meta)) throw new TypeError('Prepared asset metadata is invalid');
   // Raw bytes remain outside the project until this asynchronous digest check
   // has produced a private CanonicalPcm owner.
-  const { CanonicalPcm } = await import('./sample-payload.js');
+  const { CanonicalPcm, validateAssetProvenance } = await import('./sample-payload.js');
+  if (meta.provenance && !validateAssetProvenance(project, { ...meta, id: 'a1' }).ok) {
+    throw new TypeError('Prepared asset provenance is invalid');
+  }
   const owner = await CanonicalPcm.fromVerified(meta, prepared.bytes);
   if (!owner) throw new TypeError('Prepared asset PCM is not verified');
   const id = allocateProjectId(project, 'asset');
