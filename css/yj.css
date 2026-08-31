@@ -782,3 +782,34 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   .yj-btn.is-working, .yj-progress-fill, .yj-led.is-busy { animation: none; }
   * { scroll-behavior: auto !important; }
 }
+
+/* ---------- soundscape split ---------- */
+/* Biophony in blue against anthrophony in yellow: birdsong on one side of the
+   bar, engines on the other. Same colour contract as the waveform ghost. */
+.yj-soundscape { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.yj-soundscape[hidden] { display: none; }
+.yj-soundscape-head {
+  font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.14em; color: var(--yj-ink-dim);
+}
+.yj-soundscape-bar {
+  display: flex; width: 100%; height: 12px;
+  background: var(--yj-well); border: 1px solid var(--yj-line);
+  border-radius: 1px; overflow: hidden;
+}
+.yj-soundscape-bio { background: var(--yj-blue); height: 100%; }
+.yj-soundscape-anthro { background: var(--yj-wave); height: 100%; }
+.yj-soundscape-key {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.08em; color: var(--yj-ink-dim);
+}
+.yj-soundscape-key span::before {
+  content: ''; display: inline-block; width: 6px; height: 6px;
+  margin-right: 4px; vertical-align: middle;
+}
+.yj-key-bio::before { background: var(--yj-blue); }
+.yj-key-anthro::before { background: var(--yj-wave); }
+.yj-soundscape-val { margin-left: auto; color: var(--yj-ink); }
+.yj-soundscape-val::before { display: none !important; }
+.yj-soundscape-note {
+  font-family: var(--f-mono); font-size: 8.5px; line-height: 1.4; color: var(--yj-ink-dim); opacity: 0.8;
+}

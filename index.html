@@ -65,6 +65,7 @@
 <link rel="modulepreload" href="js/studio/compile.js">
 <link rel="modulepreload" href="js/loom/identity.js">
 <link rel="modulepreload" href="js/loom/compile.js">
+<link rel="modulepreload" href="js/analysis/soundscape.js">
 <link rel="modulepreload" href="js/app/bench-controller.js">
 <link rel="modulepreload" href="js/app/fingerprint.js">
 <link rel="modulepreload" href="js/app/source-controller.js">
@@ -225,6 +226,19 @@
             <div><dt>DC OFFSET</dt><dd class="yj-well" id="mDc">—</dd></div>
             <div><dt>CLIPPED</dt><dd class="yj-well" id="mClip">—</dd></div>
           </dl>
+          <div class="yj-soundscape" id="soundscape" hidden>
+            <p class="yj-soundscape-head">SOUNDSCAPE SPLIT · NDSI</p>
+            <div class="yj-soundscape-bar" role="img" id="ndsiBar">
+              <span class="yj-soundscape-bio" id="ndsiBio"></span>
+              <span class="yj-soundscape-anthro" id="ndsiAnthro"></span>
+            </div>
+            <p class="yj-soundscape-key">
+              <span class="yj-key-bio">VOICE 2–11k</span>
+              <span class="yj-key-anthro">MACHINE 1–2k</span>
+              <span class="yj-soundscape-val" id="ndsiValue">—</span>
+            </p>
+            <p class="yj-soundscape-note" id="ndsiNote">Measures the recording, not the ecosystem.</p>
+          </div>
         </div>
       </aside>
     </div>

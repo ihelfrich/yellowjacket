@@ -73,3 +73,20 @@ product bugs and are not:
 - Chrome's ES-module cache is shared across tabs and survives both
   `location.reload(true)` and opening a new tab. Serving from a **different
   port** is the only reliable way to get a clean module graph locally.
+
+## 5. Soundscape split discriminates
+
+MEASURE on a FIELD recording fills the SOUNDSCAPE SPLIT bar. Readings taken
+2026-08-31 — the point is the *spread*, not any single figure. If these collapse
+toward one another the index has stopped measuring anything.
+
+| recording | NDSI | voice band |
+|---|---|---|
+| Nightingale, midnight (pure birdsong) | **+0.95** | 97% |
+| Spring peepers, dark | **+0.91** | 95% |
+| Sevilla street marathon | **-0.29** | 35% |
+| Berlin songbirds vs rush hour | **-0.41** | 30% |
+
+The Berlin recording is the interesting one: its own title says songbirds
+against traffic, and it lands between the pure-nature and pure-city readings but
+on the city side, which is what a 4 a.m. rush-hour roar under birdsong should do.

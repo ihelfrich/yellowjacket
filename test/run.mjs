@@ -44,6 +44,7 @@ import { fitModal, synthModal } from '../js/analysis/modal.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
+import { ndsi } from '../js/analysis/soundscape.js';
 import {
   harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS, planKitAssignment, kitGainFor, peakOfChannels,
 } from '../js/analysis/harvest.js';
@@ -4052,7 +4053,91 @@ const grooveCases = [
   },
 ];
 
+// ---------- soundscape: biophony against anthrophony ----------
+//
+// NDSI (Kasten et al. 2012, Ecol. Inform. 12:50-67) as implemented by the R
+// package `soundecology`: a Welch PSD binned into 1 kHz bands, anthrophony
+// taken as 1-2 kHz and biophony as 2-11 kHz, then
+//   NDSI = (biophony - anthrophony) / (biophony + anthrophony)
+// bounded to [-1, +1]. Note the two reference implementations disagree on the
+// biophony ceiling (`seewave` stops at 8 kHz); this follows soundecology.
+//
+// It measures THE RECORDING, not the ecosystem. The ecology literature has been
+// withdrawing these indices' authority as biodiversity proxies since 2021, so
+// the claim here is deliberately narrow: how the energy splits between the band
+// engines occupy and the band birds occupy.
+
+function toneAt(freq, rate, secs, amp = 0.7) {
+  const n = Math.floor(rate * secs);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = amp * Math.sin(2 * Math.PI * freq * i / rate);
+  return out;
+}
+
+function mixTones(freqs, rate, secs, amp = 0.5) {
+  const n = Math.floor(rate * secs);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let v = 0;
+    for (const f of freqs) v += amp * Math.sin(2 * Math.PI * f * i / rate);
+    out[i] = v / freqs.length;
+  }
+  return out;
+}
+
+const soundscapeCases = [
+  function aToneInTheEngineBandReadsAsAnthrophony() {
+    const r = ndsi(toneAt(1500, 48000, 1.0), 48000);
+    assert.ok(r.ndsi < -0.9, 'expected near -1, got ' + r.ndsi);
+    assert.ok(r.anthrophony > r.biophony);
+  },
+  function aToneInTheBirdBandReadsAsBiophony() {
+    const r = ndsi(toneAt(5000, 48000, 1.0), 48000);
+    assert.ok(r.ndsi > 0.9, 'expected near +1, got ' + r.ndsi);
+    assert.ok(r.biophony > r.anthrophony);
+  },
+  function anEvenSplitSitsNearZero() {
+    const r = ndsi(mixTones([1500, 5000], 48000, 1.0), 48000);
+    assert.ok(Math.abs(r.ndsi) < 0.35, 'expected near 0, got ' + r.ndsi);
+  },
+  function energyOutsideBothBandsIsIgnored() {
+    // 200 Hz is below anthrophony and 16 kHz is above biophony. Neither should
+    // move the index, or a rumbling truck would read as birdsong.
+    const bare = ndsi(toneAt(5000, 48000, 1.0), 48000);
+    const withOutOfBand = ndsi(mixTones([5000, 200, 16000], 48000, 1.0), 48000);
+    assert.ok(Math.abs(bare.ndsi - withOutOfBand.ndsi) < 0.1,
+      'out-of-band energy shifted the index: ' + bare.ndsi + ' vs ' + withOutOfBand.ndsi);
+  },
+  function silenceIsZeroRatherThanNaN() {
+    const r = ndsi(new Float32Array(48000), 48000);
+    assert.equal(Number.isFinite(r.ndsi), true);
+    assert.equal(r.ndsi, 0);
+    assert.equal(r.biophony, 0);
+  },
+  function refusesInputItCannotMeasure() {
+    assert.equal(ndsi(null, 48000).ndsi, 0);
+    assert.equal(ndsi(new Float32Array(4), 48000).ndsi, 0, 'shorter than one window');
+    assert.equal(ndsi(toneAt(5000, 48000, 1.0), 0).ndsi, 0, 'no sample rate');
+  },
+  function staysWithinItsDefinedRange() {
+    for (const f of [1100, 1900, 2100, 6000, 10500]) {
+      const v = ndsi(toneAt(f, 48000, 0.5), 48000).ndsi;
+      assert.ok(v >= -1 && v <= 1, f + ' Hz produced ' + v);
+    }
+  },
+  function reportsWhenTheRateCannotCoverTheBiophonyBand() {
+    // At 16 kHz the Nyquist limit is 8 kHz, so the 2-11 kHz band is clipped and
+    // the number is not comparable with a 48 kHz reading. Say so rather than
+    // returning a confident wrong answer.
+    const ok = ndsi(toneAt(5000, 48000, 0.5), 48000);
+    assert.equal(ok.bandLimited, false);
+    const clipped = ndsi(toneAt(5000, 16000, 0.5), 16000);
+    assert.equal(clipped.bandLimited, true, 'Nyquist below the biophony ceiling');
+  },
+];
+
 const groups = [
+  ['soundscape', soundscapeCases],
   ['starter groove', grooveCases],
   ['kit levelling', kitLevelCases],
   ['auto kit', autoKitCases],

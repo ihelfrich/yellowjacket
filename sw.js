@@ -23,6 +23,7 @@ const PRECACHE = [
   'js/app/source-controller.js',
   'js/app/field-library.js',
   'js/dsp/native-rate.js',
+  'js/analysis/soundscape.js',
   'js/midi/smf.js',
   'js/app/fingerprint.js',
   'js/machine/controller.js',

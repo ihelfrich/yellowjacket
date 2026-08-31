@@ -8,6 +8,7 @@ import { encodeWavWithStats, toSrt, toVtt, toTxt, download, editedTime } from '.
 import { LOOM_TRANSCRIPT_MAX_WORDS } from '../loom/compile.js';
 import { mixdownMono } from '../audio-engine.js';
 import { buildPeakPyramid } from '../render/peaks.js';
+import { ndsi } from '../analysis/soundscape.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -324,8 +325,30 @@ export function initBenchController(ctx) {
     const clipEl = $('mClip');
     clipEl.textContent = m.clippedSamples + ' (' + m.clippedPct.toFixed(2) + '%)';
     clipEl.classList.toggle('is-fault', m.clippedSamples > 0);
+    showSoundscape(abState === 'b' && renderedMono ? renderedMono : R.mono, R.sampleRate);
     status(COPY.measured + (abState === 'b' ? ' · BENCH' : ' · ORIGINAL'));
   });
+
+  // Split the measured audio between the band engines occupy and the band
+  // voices occupy. Blue is biophony, yellow anthrophony — the same colour
+  // contract as the waveform ghost, so blue always means "the other thing".
+  function showSoundscape(mono, sampleRate) {
+    const host = $('soundscape');
+    if (!host) return;
+    const r = ndsi(mono, sampleRate);
+    const total = r.biophony + r.anthrophony;
+    if (!total) { host.hidden = true; return; }
+    host.hidden = false;
+    const bioPct = (r.biophony / total) * 100;
+    $('ndsiBio').style.width = bioPct.toFixed(1) + '%';
+    $('ndsiAnthro').style.width = (100 - bioPct).toFixed(1) + '%';
+    $('ndsiValue').textContent = 'NDSI ' + (r.ndsi >= 0 ? '+' : '') + r.ndsi.toFixed(2);
+    $('ndsiBar').setAttribute('aria-label',
+      Math.round(bioPct) + '% voice band, ' + Math.round(100 - bioPct) + '% machine band');
+    $('ndsiNote').textContent = r.bandLimited
+      ? 'This rate stops below 11 kHz, so the voice band is clipped — not comparable with a 48 kHz reading.'
+      : 'Measures the recording, not the ecosystem.';
+  }
 
   // ---------- rack ----------
   function buildRack() {
@@ -532,6 +555,7 @@ export function initBenchController(ctx) {
     renderFresh = false;
     renderedMono = null;
     renderedPeaks = null;
+    if ($('soundscape')) $('soundscape').hidden = true;
     liftRange = null;
     setAb('a');
     $('abToggle').hidden = true;
