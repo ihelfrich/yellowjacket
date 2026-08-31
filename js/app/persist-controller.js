@@ -349,33 +349,17 @@ export function initPersistController(ctx) {
   ctx.api.relightAll = relightAll;
 
   // ---------- undo / redo ----------
-  // applySnapshot deliberately nulls track.sample (PCM normally arrives from
-  // disk afterwards). For undo the audio never left memory, so it is captured
-  // by asset id and re-attached, or an undo would silently empty the kit.
-  const historyPcm = new WeakMap();
-  function takeHistorySnapshot() {
-    const doc = snapshotDoc(P, R);
-    const pcm = new Map();
-    for (const scene of P.machine.scenes) {
-      for (const track of scene.tracks) {
-        if (track.sampleId && track.sample) pcm.set(track.sampleId, track.sample);
-      }
-    }
-    // Weakly keyed by the exact history document: PCM is held only as long as
-    // that undo/redo entry is. References are shared, never copied.
-    historyPcm.set(doc, pcm);
-    return doc;
-  }
-  store.attachHistory(
-    takeHistorySnapshot,
-    (doc) => {
-      const pcm = historyPcm.get(doc) || new Map();
+  // ProjectStore owns bounded PCM retention for undo/redo. This bridge only
+  // translates its document/playback map into the live v2 facade.
+  store.attachHistory({
+    takeDocument: () => snapshotDoc(P, R),
+    applyDocument: (doc, pcmById) => {
       const repairsBefore = JSON.stringify(R.repairs);
       applySnapshot(doc, { project: P, runtime: R });
       for (const scene of P.machine.scenes) {
         for (const track of scene.tracks) {
-          if (track.sampleId && !track.sample && pcm.has(track.sampleId)) {
-            track.sample = pcm.get(track.sampleId);
+          if (track.sampleId && !track.sample && pcmById.has(track.sampleId)) {
+            track.sample = pcmById.get(track.sampleId);
           }
         }
       }
@@ -385,7 +369,8 @@ export function initPersistController(ctx) {
         ctx.api.repairRebuild();
       }
     },
-  );
+  });
+  store.addEventListener('historytrim', (event) => status(event.detail.message));
 
   function historyStep(dir) {
     const moved = dir === 'undo' ? store.undo() : store.redo();

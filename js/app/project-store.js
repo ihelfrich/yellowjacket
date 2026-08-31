@@ -323,8 +323,49 @@ export function resolveTrackSamples(project, runtime) {
   }
 }
 
+const HISTORY_LIMIT = 60;
+const HISTORY_PCM_BUDGET = 256 * 1024 * 1024;
+const HISTORY_TRIM_MESSAGE = 'UNDO HISTORY TRIMMED TO PROTECT AUDIO MEMORY';
+
+function historyBound(value, fallback, allowZero = false) {
+  const minimum = allowZero ? 0 : 1;
+  return Number.isSafeInteger(value) && value >= minimum ? value : fallback;
+}
+
+function legacyPcmByteLength(sample) {
+  if (!sample || !Array.isArray(sample.channels)) return null;
+  let bytes = 0;
+  for (const channel of sample.channels) {
+    if (!channel || !Number.isSafeInteger(channel.length) || channel.length < 0) return null;
+    const channelBytes = Number.isSafeInteger(channel.byteLength)
+      ? channel.byteLength : channel.length * Float32Array.BYTES_PER_ELEMENT;
+    if (!Number.isSafeInteger(channelBytes) || channelBytes < 0
+        || bytes > Number.MAX_SAFE_INTEGER - channelBytes) return null;
+    bytes += channelBytes;
+  }
+  return bytes;
+}
+
+function historyReachableAssetIds(machine) {
+  const ids = [];
+  const seen = new Set();
+  const scenes = Array.isArray(machine && machine.scenes)
+    ? machine.scenes : [{ tracks: machine && machine.tracks }];
+  for (const scene of scenes) {
+    if (!Array.isArray(scene && scene.tracks)) continue;
+    for (const track of scene.tracks) {
+      const id = track && track.sampleId;
+      if (typeof id === 'string' && id.length && !seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+  }
+  return ids;
+}
+
 export class ProjectStore extends EventTarget {
-  constructor(chainDefaults) {
+  constructor(chainDefaults, options = {}) {
     super();
     this.project = createProject(chainDefaults);
     this.runtime = {
@@ -345,19 +386,37 @@ export class ProjectStore extends EventTarget {
       facadeEpoch: 0,
     };
     this.revision = 0;   // bumped per mutation; rides in the change event
-    // Undo history: every mutation already funnels through update(), so one
-    // snapshot per call covers the whole app. Documents only, never PCM.
+    // Undo history: documents remain PCM-free, while explicit runtime maps own
+    // the exact PCM objects needed to make every retained document playable.
     this._past = [];
     this._future = [];
     this._snapshot = null;   // injected by the controller (needs persist.js)
+    this._beforeHistorySnapshot = null;
+    this._historyAssetRefs = new Map();
+    this._historyEntryOrder = new Map();
+    this._nextHistoryEntryOrder = 0;
     this._applying = false;
-    this.historyLimit = 60;
+    this.historyLimit = historyBound(options.historyLimit, HISTORY_LIMIT);
+    this.historyPcmBudget = historyBound(options.historyPcmBudget, HISTORY_PCM_BUDGET, true);
   }
 
-  // The controller supplies take() and put() so the store stays free of any
-  // dependency on the persistence layer.
-  attachHistory(take, put) {
-    this._snapshot = { take, put };
+  // The controller supplies document IO so the store stays free of any
+  // dependency on the persistence layer. The positional form remains during
+  // the v2 transition for callers outside the inactive multi-source route.
+  attachHistory(bridge, legacyApply) {
+    const takeDocument = typeof bridge === 'function' ? bridge : bridge && bridge.takeDocument;
+    const applyDocument = typeof bridge === 'function' ? legacyApply : bridge && bridge.applyDocument;
+    if (typeof takeDocument !== 'function' || typeof applyDocument !== 'function') {
+      throw new TypeError('History bridge is invalid');
+    }
+    this._snapshot = { takeDocument, applyDocument };
+  }
+
+  setBeforeHistorySnapshot(callback) {
+    if (callback !== null && typeof callback !== 'function') {
+      throw new TypeError('Before-history callback is invalid');
+    }
+    this._beforeHistorySnapshot = callback;
   }
 
   get canUndo() { return this._past.length > 0; }
@@ -366,25 +425,190 @@ export class ProjectStore extends EventTarget {
 
   // A restored or freshly loaded session is a starting point, not something to
   // undo into. Public so callers stop reaching into the private arrays.
-  clearHistory() {
-    this._past.length = 0;
-    this._future.length = 0;
+  clearHistory(reason = 'topology') {
+    void reason;
+    this._clearStack(this._past);
+    this._clearStack(this._future);
   }
 
   undo() { return this._step(this._past, this._future); }
   redo() { return this._step(this._future, this._past); }
 
+  _legacyOwner(assetId) {
+    for (const scene of this.project.machine.scenes) {
+      for (const track of scene.tracks) {
+        if (track && track.sampleId === assetId && track.sample) {
+          // Temporary v2 bridge. Task 9 removes new writes through track.sample.
+          this.runtime.assetPcm.set(assetId, track.sample);
+          return track.sample;
+        }
+      }
+    }
+    return null;
+  }
+
+  _ownerFor(assetId) {
+    return this.runtime.assetPcm.get(assetId)
+      || this.runtime.historyAssetPcm.get(assetId)
+      || this._legacyOwner(assetId);
+  }
+
+  _ownerByteLength(owner) {
+    if (owner && Number.isSafeInteger(owner.byteLength) && owner.byteLength >= 0) {
+      return owner.byteLength;
+    }
+    return legacyPcmByteLength(owner);
+  }
+
+  _takeEntry(runBeforeHook) {
+    if (runBeforeHook && this._beforeHistorySnapshot) this._beforeHistorySnapshot();
+    const document = this._snapshot.takeDocument();
+    const assetIds = historyReachableAssetIds(document && document.machine);
+    let byteLength = 0;
+    for (const assetId of assetIds) {
+      const ownerBytes = this._ownerByteLength(this._ownerFor(assetId));
+      if (ownerBytes !== null && byteLength <= Number.MAX_SAFE_INTEGER - ownerBytes) {
+        byteLength += ownerBytes;
+      }
+    }
+    const entry = { document, assetIds, byteLength };
+    this._historyEntryOrder.set(entry, this._nextHistoryEntryOrder++);
+    return entry;
+  }
+
+  _retainEntry(entry) {
+    for (const assetId of entry.assetIds) {
+      const retained = this.runtime.historyAssetPcm.get(assetId);
+      const owner = retained || this._ownerFor(assetId);
+      if (!owner) continue;
+      if (!retained) {
+        const byteLength = this._ownerByteLength(owner);
+        if (byteLength === null) continue;
+        this.runtime.historyAssetPcm.set(assetId, owner);
+        this.runtime.historyPcmBytes += byteLength;
+      }
+      this._historyAssetRefs.set(assetId, (this._historyAssetRefs.get(assetId) || 0) + 1);
+    }
+  }
+
+  _releaseEntry(entry) {
+    for (const assetId of entry.assetIds) {
+      const refs = this._historyAssetRefs.get(assetId);
+      if (!refs) continue;
+      if (refs > 1) {
+        this._historyAssetRefs.set(assetId, refs - 1);
+        continue;
+      }
+      this._historyAssetRefs.delete(assetId);
+      const owner = this.runtime.historyAssetPcm.get(assetId);
+      this.runtime.historyAssetPcm.delete(assetId);
+      const byteLength = this._ownerByteLength(owner);
+      if (byteLength !== null) {
+        this.runtime.historyPcmBytes = Math.max(0, this.runtime.historyPcmBytes - byteLength);
+      }
+    }
+    this._historyEntryOrder.delete(entry);
+  }
+
+  _clearStack(stack) {
+    for (const entry of stack) this._releaseEntry(entry);
+    stack.length = 0;
+  }
+
+  _trimHistory() {
+    let trimmed = false;
+    while (this._past.length + this._future.length > this.historyLimit
+        || this.runtime.historyPcmBytes > this.historyPcmBudget) {
+      const pastOrder = this._past.length
+        ? this._historyEntryOrder.get(this._past[0]) : Infinity;
+      const futureOrder = this._future.length
+        ? this._historyEntryOrder.get(this._future[0]) : Infinity;
+      const stack = pastOrder <= futureOrder ? this._past : this._future;
+      if (!stack.length) break;
+      this._releaseEntry(stack.shift());
+      trimmed = true;
+    }
+    if (trimmed) {
+      this.dispatchEvent(new CustomEvent('historytrim', {
+        detail: { message: HISTORY_TRIM_MESSAGE },
+      }));
+    }
+  }
+
+  _ownersFor(entry) {
+    const owners = new Map();
+    for (const assetId of entry.assetIds) {
+      const owner = this.runtime.assetPcm.get(assetId)
+        || this.runtime.historyAssetPcm.get(assetId);
+      if (!owner) return null;
+      owners.set(assetId, owner);
+    }
+    return owners;
+  }
+
+  _playbackFor(entry, owners) {
+    const pcmById = new Map();
+    for (const [assetId, owner] of owners) {
+      if (verifiedAssetPcm.has(owner)) {
+        const asset = entry.document && entry.document.assets && entry.document.assets[assetId];
+        pcmById.set(assetId, {
+          ...owner.hydrate(),
+          label: asset && asset.label,
+          role: asset && asset.role,
+        });
+      } else {
+        pcmById.set(assetId, owner);
+      }
+    }
+    return pcmById;
+  }
+
+  _documentForActiveSource(document) {
+    const activeSourceId = this.project.activeSourceId;
+    if (!activeSourceId || !document || !document.sources || !document.sources[activeSourceId]) {
+      return document;
+    }
+    return { ...document, activeSourceId };
+  }
+
+  _resolvePlaybackPointers(pcmById) {
+    for (const scene of this.project.machine.scenes) {
+      for (const track of scene.tracks) {
+        if (!track) continue;
+        track.sample = track.sampleId && pcmById.has(track.sampleId)
+          ? pcmById.get(track.sampleId) : null;
+      }
+    }
+  }
+
   _step(from, to) {
     if (!this._snapshot || !from.length) return false;
-    const now = this._snapshot.take();
-    const doc = from.pop();
+    const target = from[from.length - 1];
+    // Preflight the complete target before taking another snapshot, popping a
+    // stack, applying a document, or advancing revision.
+    const owners = this._ownersFor(target);
+    if (!owners) return false;
+    const pcmById = this._playbackFor(target, owners);
+    const now = this._takeEntry(false);
+    const document = this._documentForActiveSource(target.document);
     this._applying = true;
     try {
-      this._snapshot.put(doc);
-      to.push(now);
+      this._snapshot.applyDocument(document, pcmById);
     } finally {
       this._applying = false;
     }
+    for (const [assetId, owner] of owners) this.runtime.assetPcm.set(assetId, owner);
+    this._resolvePlaybackPointers(pcmById);
+
+    from.pop();
+    this._releaseEntry(target);
+    this._retainEntry(now);
+    to.push(now);
+    const targetIds = new Set(target.assetIds);
+    for (const assetId of now.assetIds) {
+      if (!targetIds.has(assetId)) this.runtime.assetPcm.delete(assetId);
+    }
+    this._trimHistory();
     this.revision++;
     this.dispatchEvent(new CustomEvent('change', { detail: { kind: 'history', revision: this.revision } }));
     return true;
@@ -396,9 +620,11 @@ export class ProjectStore extends EventTarget {
     // Snapshot BEFORE the mutation, so undo lands on the prior state. Skipped
     // while an undo is itself being applied, and for pure-transport churn.
     if (history === 'record' && this._snapshot && !this._applying && kind !== 'history') {
-      this._past.push(this._snapshot.take());
-      if (this._past.length > this.historyLimit) this._past.shift();
-      this._future.length = 0;
+      const entry = this._takeEntry(true);
+      this._clearStack(this._future);
+      this._retainEntry(entry);
+      this._past.push(entry);
+      this._trimHistory();
     }
     fn(this.project, this.runtime);
     this.revision++;

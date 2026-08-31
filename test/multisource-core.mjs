@@ -31,6 +31,7 @@ import {
   registerPreparedAsset,
   resolveTrackSamples,
 } from '../js/app/project-store.js';
+import { applySnapshot, snapshotDoc } from '../js/app/persist.js';
 
 const sourceId = (digit = 'a') => 'sha256:' + digit.repeat(64);
 
@@ -509,6 +510,69 @@ function preparedStereoSample() {
   }));
 }
 
+async function canonicalOwner(frames, value = 0.25) {
+  const sample = {
+    channels: [Float32Array.from({ length: frames }, (_, index) => value + index / 100)],
+    sampleRate: 48000,
+    channelCount: 1,
+    frames,
+  };
+  const payload = await describeSamplePayload(sample);
+  const trustStore = new ProjectStore([]);
+  const id = await registerPreparedAsset(trustStore.project, trustStore.runtime, {
+    meta: {
+      kind: 'sample',
+      label: 'TEST',
+      sampleRate: sample.sampleRate,
+      channelCount: sample.channelCount,
+      frames: sample.frames,
+      payload: { byteLength: payload.byteLength, sha256: payload.sha256 },
+    },
+    bytes: payload.bytes,
+  });
+  return trustStore.runtime.assetPcm.get(id);
+}
+
+function putCurrentAsset(store, id, owner) {
+  const { project, runtime } = store;
+  project.assets = {
+    [id]: {
+      id,
+      kind: 'sample',
+      label: id.toUpperCase(),
+      sampleRate: 48000,
+      channelCount: 1,
+      frames: owner.byteLength / 4,
+    },
+  };
+  for (const scene of project.machine.scenes) {
+    for (const track of scene.tracks) {
+      track.sampleId = null;
+      track.sample = null;
+    }
+  }
+  project.machine.tracks[0].sampleId = id;
+  project.machine.tracks[0].sample = owner.hydrate();
+  runtime.assetPcm.clear();
+  runtime.assetPcm.set(id, owner);
+}
+
+function attachV2History(store, modern = true) {
+  const takeDocument = () => snapshotDoc(store.project, store.runtime);
+  const applyDocument = (document, pcmById = new Map()) => {
+    applySnapshot(document, { project: store.project, runtime: store.runtime });
+    for (const scene of store.project.machine.scenes) {
+      for (const track of scene.tracks) {
+        if (track.sampleId && pcmById.has(track.sampleId)) {
+          track.sample = pcmById.get(track.sampleId);
+        }
+      }
+    }
+  };
+  if (modern) store.attachHistory({ takeDocument, applyDocument });
+  else store.attachHistory(takeDocument, applyDocument);
+}
+
 export const projectStoreV3Cases = [
   function startsWithV3DocumentStateAndTheCompatibilityFacade() {
     // Mutation caught: a new project loses the serializable v3 roots or breaks
@@ -678,6 +742,259 @@ export const projectStoreV3Cases = [
     assert.deepEqual(store.project.assets.a1.provenance, prepared.meta.provenance,
       'a bounded external descriptor and unknown transform remain truthful metadata');
     assert.equal(store.runtime.assetPcm.size, 1, 'the valid record installs one verified owner');
+  },
+
+  async function historyOwnsExactReachablePcmAndCountsSharedAssetsOnce() {
+    // Mutation caught: leaving PCM in the controller WeakMap, counting the same
+    // asset once per track/snapshot, or retaining a playback hydration instead
+    // of the exact canonical owner.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store, false);
+    const owner = await canonicalOwner(8);
+    putCurrentAsset(store, 'a1', owner);
+    store.project.machine.tracks[1].sampleId = 'a1';
+    store.project.machine.tracks[1].sample = owner.hydrate();
+
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[0] = 1; });
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[1] = 1; });
+
+    assert.strictEqual(store.runtime.historyAssetPcm.get('a1'), owner,
+      'history retains the exact canonical owner');
+    assert.equal(store.runtime.historyPcmBytes, 32,
+      'one asset shared by tracks and snapshots is charged once');
+    assert.equal(store.undoDepth, 2, 'both documents remain independently undoable');
+  },
+
+  async function trimsWholeOldestSnapshotsByByteAndCountWithRefcounts() {
+    // Mutation caught: count-only trimming, per-entry double charging, dropping
+    // a still-referenced owner, or trimming a document without its PCM.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store, false);
+    const owners = {
+      a1: await canonicalOwner(6, 0.01),  // 24 bytes
+      a2: await canonicalOwner(8, 0.02),  // 32 bytes
+      a3: await canonicalOwner(10, 0.03), // 40 bytes
+      a4: await canonicalOwner(2, 0.04),  // 8 bytes
+    };
+    const trims = [];
+    store.addEventListener('historytrim', (event) => trims.push(event.detail.message));
+    putCurrentAsset(store, 'a1', owners.a1);
+    store.update('assets', () => { putCurrentAsset(store, 'a2', owners.a2); });
+    store.update('assets', () => { putCurrentAsset(store, 'a3', owners.a3); });
+    store.update('assets', () => { putCurrentAsset(store, 'a4', owners.a4); });
+
+    assert.equal(store.undoDepth, 2, 'the byte budget evicts the whole a1 snapshot');
+    assert.equal(store.runtime.historyPcmBytes, 72, 'only a2 and a3 remain history-owned');
+    assert.equal(store.runtime.historyAssetPcm.has('a1'), false, 'newly unreachable a1 PCM is released');
+    assert.strictEqual(store.runtime.historyAssetPcm.get('a2'), owners.a2);
+    assert.strictEqual(store.runtime.historyAssetPcm.get('a3'), owners.a3);
+
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[0] = 1; });
+    assert.equal(store.undoDepth, 3, 'an exactly-on-budget third snapshot is retained');
+    assert.equal(store.runtime.historyPcmBytes, 80);
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[1] = 1; });
+    assert.equal(store.undoDepth, 3, 'count overflow evicts exactly one oldest snapshot');
+    assert.equal(store.runtime.historyAssetPcm.has('a2'), false,
+      'a2 is released only after its last retained snapshot is evicted');
+    assert.strictEqual(store.runtime.historyAssetPcm.get('a4'), owners.a4,
+      'the shared a4 owner survives eviction of one referring snapshot');
+    assert.deepEqual(trims, [
+      'UNDO HISTORY TRIMMED TO PROTECT AUDIO MEMORY',
+      'UNDO HISTORY TRIMMED TO PROTECT AUDIO MEMORY',
+    ]);
+  },
+
+  async function byteTrimChoosesTheOldestSnapshotAcrossUndoAndRedoStacks() {
+    // Mutation caught: always trimming _past first even after a full undo makes
+    // an older retained entry live at the front of _future.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store);
+    const owners = {
+      a1: await canonicalOwner(6, 0.11),
+      a2: await canonicalOwner(6, 0.12),
+      a3: await canonicalOwner(6, 0.13),
+      a4: await canonicalOwner(6, 0.14),
+    };
+    putCurrentAsset(store, 'a1', owners.a1);
+    store.update('assets', () => { putCurrentAsset(store, 'a2', owners.a2); });
+    store.update('assets', () => { putCurrentAsset(store, 'a3', owners.a3); });
+    store.update('assets', () => { putCurrentAsset(store, 'a4', owners.a4); });
+    assert.equal(store.undo(), true);
+    assert.equal(store.undo(), true);
+    assert.equal(store.undo(), true);
+    store.historyPcmBudget = 48;
+
+    assert.equal(store.redo(), true);
+    assert.equal(store.canUndo, true, 'the newly created past entry is not the oldest');
+    assert.strictEqual(store.runtime.historyAssetPcm.get('a1'), owners.a1,
+      'the newest retained snapshot remains undoable');
+    assert.equal(store.runtime.historyAssetPcm.has('a4'), false,
+      'the oldest future snapshot and its newly unreachable PCM are evicted first');
+  },
+
+  async function clearHistoryReleasesOnlyHistoryOwnedPcm() {
+    // Mutation caught: clearing stack arrays without releasing retained PCM, or
+    // clearing the current asset map along with session-local history.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store);
+    const oldOwner = await canonicalOwner(6, 0.1);
+    const currentOwner = await canonicalOwner(8, 0.2);
+    putCurrentAsset(store, 'a1', oldOwner);
+    store.update('assets', () => { putCurrentAsset(store, 'a2', currentOwner); });
+    assert.strictEqual(store.runtime.historyAssetPcm.get('a1'), oldOwner);
+
+    store.clearHistory('topology');
+
+    assert.equal(store.canUndo, false);
+    assert.equal(store.canRedo, false);
+    assert.equal(store.runtime.historyAssetPcm.size, 0, 'all history-only owners are released');
+    assert.equal(store.runtime.historyPcmBytes, 0);
+    assert.strictEqual(store.runtime.assetPcm.get('a2'), currentOwner, 'current PCM remains owned');
+  },
+
+  function beforeHistoryHookIsSynchronousAndOnlyRunsForRecordedUpdates() {
+    // Mutation caught: projecting after takeDocument, projecting twice, or
+    // projecting for navigation/transport and undo/redo application.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    const order = [];
+    store.attachHistory({
+      takeDocument: () => {
+        order.push('take:' + store.project.clips.length);
+        return { machine: { scenes: [] }, clips: structuredClone(store.project.clips) };
+      },
+      applyDocument: (document) => {
+        order.push('apply');
+        store.project.clips.length = 0;
+        store.project.clips.push(...structuredClone(document.clips));
+      },
+    });
+    store.setBeforeHistorySnapshot(() => { order.push('before'); });
+
+    store.update('clips', (project) => {
+      order.push('mutate');
+      project.clips.push({ id: 'c1' });
+    });
+    assert.deepEqual(order, ['before', 'take:0', 'mutate']);
+    order.length = 0;
+    store.update('source-navigation', () => { order.push('navigate'); }, { history: 'none' });
+    store.update('transport', () => { order.push('transport'); }, { history: 'none' });
+    assert.deepEqual(order, ['navigate', 'transport'], 'no-history work never invokes the hook');
+    order.length = 0;
+    assert.equal(store.undo(), true);
+    assert.deepEqual(order, ['take:1', 'apply'], 'undo captures/applies without invoking the hook');
+    order.length = 0;
+    assert.equal(store.redo(), true);
+    assert.deepEqual(order, ['take:0', 'apply'], 'redo captures/applies without invoking the hook');
+  },
+
+  function undoPreservesActiveSourceAndRestoresItsFacadeDocument() {
+    // Mutation caught: recording navigation as history, applying a snapshot's
+    // stale active ID, or hydrating the wrong source document into the facade.
+    const a = sourceId('a');
+    const b = sourceId('b');
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    store.project.sources = {
+      [a]: { document: { words: ['A0'] } },
+      [b]: { document: { words: ['B0'] } },
+    };
+    store.project.activeSourceId = a;
+    store.project.words = ['A0'];
+    store.attachHistory({
+      takeDocument: () => ({
+        machine: { scenes: [] },
+        activeSourceId: store.project.activeSourceId,
+        sources: structuredClone(store.project.sources),
+      }),
+      applyDocument: (document) => {
+        store.project.sources = structuredClone(document.sources);
+        store.project.activeSourceId = document.activeSourceId;
+        store.project.words = structuredClone(document.sources[document.activeSourceId].document.words);
+      },
+    });
+    store.update('source-edit', (project) => {
+      project.sources[a].document.words = ['A1'];
+      project.words = ['A1'];
+    });
+    store.update('source-navigation', (project) => {
+      project.activeSourceId = b;
+      project.words = ['B0'];
+    }, { history: 'none' });
+    store.update('source-edit', (project) => {
+      project.sources[b].document.words = ['B1'];
+      project.words = ['B1'];
+    });
+    const depthAfterEdits = store.undoDepth;
+    store.update('source-navigation', (project) => {
+      project.activeSourceId = a;
+      project.words = ['A1'];
+    }, { history: 'none' });
+    assert.equal(store.undoDepth, depthAfterEdits, 'navigation creates no creative history');
+
+    assert.equal(store.undo(), true);
+    assert.equal(store.project.activeSourceId, a, 'the currently active source survives undo');
+    assert.deepEqual(store.project.words, ['A1'], 'that source\'s restored document hydrates the facade');
+    assert.deepEqual(store.project.sources[b].document.words, ['B0'], 'the creative edit to B is undone');
+    assert.equal(store.redo(), true);
+    assert.equal(store.project.activeSourceId, a, 'the currently active source survives redo');
+    assert.deepEqual(store.project.words, ['A1']);
+    assert.deepEqual(store.project.sources[b].document.words, ['B1']);
+  },
+
+  function missingHistoryPcmAbortsUndoBeforeAnyMutation() {
+    // Mutation caught: popping first and discovering dangling PCM only after
+    // applySnapshot has mutated the document and revision.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    attachV2History(store);
+    store.project.assets.a7 = {
+      id: 'a7', kind: 'sample', label: 'MISSING', sampleRate: 48000, channelCount: 1, frames: 2,
+    };
+    store.project.machine.tracks[0].sampleId = 'a7';
+    store.project.machine.tracks[0].sample = null;
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[3] = 1; });
+    const documentBefore = snapshotDoc(store.project, store.runtime);
+    delete documentBefore.savedAt;
+    const revisionBefore = store.revision;
+    const depthBefore = store.undoDepth;
+    let changes = 0;
+    store.addEventListener('change', () => { changes++; });
+
+    assert.equal(store.undo(), false, 'a dangling target is refused');
+    assert.equal(store.undoDepth, depthBefore, 'the undo entry is not popped');
+    assert.equal(store.revision, revisionBefore, 'revision is unchanged');
+    const documentAfter = snapshotDoc(store.project, store.runtime);
+    delete documentAfter.savedAt;
+    assert.deepEqual(documentAfter, documentBefore, 'the project is unchanged');
+    assert.equal(changes, 0, 'no false history change is emitted');
+  },
+
+  async function validUndoResolvesPlaybackBeforeTheHistoryEvent() {
+    // Mutation caught: applying the document before gathering PCM, passing the
+    // canonical owner into a mutable track, or emitting history before every
+    // restored pointer is playable.
+    const store = new ProjectStore([], { historyLimit: 3, historyPcmBudget: 80 });
+    const owner = await canonicalOwner(8, 0.3);
+    putCurrentAsset(store, 'a1', owner);
+    let appliedPcm = null;
+    store.attachHistory({
+      takeDocument: () => snapshotDoc(store.project, store.runtime),
+      applyDocument: (document, pcmById) => {
+        appliedPcm = pcmById;
+        applySnapshot(document, { project: store.project, runtime: store.runtime });
+      },
+    });
+    store.update('pattern', (project) => { project.machine.tracks[0].steps[6] = 1; });
+    let playableAtEvent = false;
+    store.addEventListener('change', (event) => {
+      if (event.detail.kind !== 'history') return;
+      const track = store.project.machine.tracks[0];
+      playableAtEvent = !!track.sample && track.sample.channels[0].length === 8;
+    });
+
+    assert.equal(store.undo(), true);
+    assert.ok(appliedPcm instanceof Map, 'PCM is gathered before applyDocument');
+    assert.notStrictEqual(appliedPcm.get('a1'), owner, 'the owner is never installed as mutable playback');
+    assert.equal(playableAtEvent, true, 'every track pointer resolves before the history event');
+    assert.strictEqual(store.runtime.assetPcm.get('a1'), owner, 'current ownership remains canonical');
   },
 
   function noHistoryUpdatesNotifyWithoutChangingUndoOrRedo() {
