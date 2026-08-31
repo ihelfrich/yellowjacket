@@ -290,6 +290,7 @@ function observeThenable(result, reporter) {
 
 export class SourceSession extends EventTarget {
   #requestToken = 0;
+  #activeRequest = null;
   #currentHandle = null;
   #preparedByHandle = new WeakMap();
   #preparationLane = Promise.resolve();
@@ -365,15 +366,18 @@ export class SourceSession extends EventTarget {
       }
       observeThenable(result, this.reportAsyncError);
     };
-    this.#listenerRecords.push(record);
-    if (signal) {
-      record.abortCleanup = () => this.#removeListenerRecord(record);
-      signal.addEventListener('abort', record.abortCleanup, { once: true });
-    }
     try {
+      if (signal) {
+        record.abortCleanup = () => this.#removeListenerRecord(record);
+        signal.addEventListener('abort', record.abortCleanup, { once: true });
+      }
       super.addEventListener(eventType, record.wrapper, options);
+      this.#listenerRecords.push(record);
     } catch (error) {
-      this.#forgetListener(record);
+      try { super.removeEventListener(eventType, record.wrapper, capture); } catch (cleanupError) { /* no-op */ }
+      if (signal && record.abortCleanup) {
+        try { signal.removeEventListener('abort', record.abortCleanup); } catch (cleanupError) { /* no-op */ }
+      }
       throw error;
     }
   }
@@ -412,10 +416,24 @@ export class SourceSession extends EventTarget {
   }
 
   #beginRequest() {
-    this.#requestToken++;
+    const token = ++this.#requestToken;
+    if (this.#activeRequest) this.#activeRequest.supersede();
     if (this.#currentHandle) this.#preparedByHandle.delete(this.#currentHandle);
     this.#currentHandle = null;
-    return this.#requestToken;
+    let resolveSuperseded;
+    const request = {
+      token,
+      superseded: false,
+      supersededPromise: new Promise((resolve) => { resolveSuperseded = resolve; }),
+      supersede: null,
+    };
+    request.supersede = () => {
+      if (request.superseded) return;
+      request.superseded = true;
+      resolveSuperseded();
+    };
+    this.#activeRequest = request;
+    return request;
   }
 
   #current(token) {
@@ -474,7 +492,8 @@ export class SourceSession extends EventTarget {
     }
   }
 
-  async #prepareActivation(sourceId, token) {
+  async #prepareActivation(sourceId, request) {
+    const { token } = request;
     if (!this.#current(token)) return null;
     const prepared = this.#capture(sourceId, token);
     this.#laneState = prepared;
@@ -501,8 +520,17 @@ export class SourceSession extends EventTarget {
       if (!this.#current(token)) return null;
       Object.assign(prepared, { bytes, decoded, peaks });
 
-      await this.hooks.afterPrepare(Object.freeze({}));
+      const hookOutcome = Promise.resolve(this.hooks.afterPrepare(Object.freeze({}))).then(
+        () => ({ fulfilled: true }),
+        (error) => ({ fulfilled: false, error }),
+      );
+      const outcome = await Promise.race([
+        hookOutcome,
+        request.supersededPromise.then(() => null),
+      ]);
       if (!this.#current(token)) return null;
+      if (!outcome) return null;
+      if (!outcome.fulfilled) throw outcome.error;
       if (!this.#basisIsCurrent(prepared)) {
         return null;
       }
@@ -520,21 +548,21 @@ export class SourceSession extends EventTarget {
     }
   }
 
-  #queuePreparation(sourceId, token) {
-    const result = this.#preparationLane.then(() => this.#prepareActivation(sourceId, token));
+  #queuePreparation(sourceId, request) {
+    const result = this.#preparationLane.then(() => this.#prepareActivation(sourceId, request));
     this.#preparationLane = result.then(NOOP, NOOP);
     return result;
   }
 
   prepareActivation(sourceId) {
-    const token = this.#beginRequest();
-    return this.#queuePreparation(sourceId, token);
+    const request = this.#beginRequest();
+    return this.#queuePreparation(sourceId, request);
   }
 
   async activate(sourceId) {
-    const token = this.#beginRequest();
-    const handle = await this.#queuePreparation(sourceId, token);
-    if (!handle || !this.#current(token)) return false;
+    const request = this.#beginRequest();
+    const handle = await this.#queuePreparation(sourceId, request);
+    if (!handle || !this.#current(request.token)) return false;
     return this.commitActivation(handle);
   }
 

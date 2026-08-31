@@ -14,8 +14,10 @@ import {
 
 const PAYLOAD_A = Uint8Array.of(0, 1, 2, 3);
 const PAYLOAD_B = Uint8Array.of(4, 5, 6, 7);
+const PAYLOAD_C = Uint8Array.of(8, 9, 10, 11);
 const SOURCE_A = 'sha256:054edec1d0211f624fed0cbca9d4f9400b0e491c43742af2c5b0abebf0c990d8';
 const SOURCE_B = 'sha256:c6d44cf418f610e3fe9e1d9294ff43def81c6cdcad6cbb1820cff48d3aa4355d';
+const SOURCE_C = 'sha256:e0e6e3c1c64422cc76229d0c35ba817a281f8fc4014faa3e9152428a08a73ab3';
 
 class FakeOpfsStore {
   constructor() {
@@ -643,6 +645,7 @@ class CredibleSessionEngine {
     this.sourceSpecs = new Map([
       [0, ['A', 4]],
       [4, ['B', 4]],
+      [8, ['C', 4]],
     ]);
     this.decodeCalls = [];
     this.decodedResults = [];
@@ -903,6 +906,20 @@ function deferred() {
 
 function nextTurn() {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function settleWithin(promise, label, milliseconds = 250) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(label + ' timed out')), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function installLegacyMachineFixture(store) {
@@ -1383,12 +1400,13 @@ export const sourceSessionCases = [
     await hookEntered.promise;
     const newerHookB = hookFixture.session.activate(SOURCE_B);
     await nextTurn();
-    assert.equal(hookFixture.engine.decodeCalls.length, 1,
-      'B decode waits while afterPrepare retains the older decoded target privately');
-    hookGate.resolve();
-    assert.equal(await olderHookA, false, 'superseded afterPrepare request is quarantined');
-    assert.equal(await newerHookB, true);
+    assert.equal(await olderHookA, false, 'superseded afterPrepare request releases its private target');
+    assert.equal(await newerHookB, true, 'B proceeds before the abandoned afterPrepare hook settles');
+    assert.equal(hookFixture.engine.decodeCalls.length, 2,
+      'B decodes after supersession releases the older private lane owner');
     assert.deepEqual(hookFixture.engine.installCalls, ['B'], 'only B installs after deferred afterPrepare');
+    hookGate.resolve();
+    await nextTurn();
 
     let poisonFirst = true;
     const poisonFixture = await sourceSessionFixture({
@@ -1403,6 +1421,83 @@ export const sourceSessionCases = [
     await assert.rejects(poisonFixture.session.activate(SOURCE_A), /current peaks fault/);
     assert.equal(await poisonFixture.session.activate(SOURCE_B), true,
       'a rejected lane cannot poison the next serialized request');
+  },
+
+  async function supersessionReleasesAReentrantAfterPrepareWaitAndKeepsTheLaneLive() {
+    let session;
+    let innerActivation;
+    let hookCalls = 0;
+    const fixture = await sourceSessionFixture({
+      hooks: {
+        afterPrepare: async () => {
+          hookCalls++;
+          if (hookCalls === 1) {
+            innerActivation = session.activate(SOURCE_B);
+            await innerActivation;
+          }
+        },
+      },
+    });
+    session = fixture.session;
+    fixture.store.project.sources[SOURCE_C] = sessionRecord(
+      SOURCE_C, 'c.wav', sessionDocument('C', -9),
+    );
+    await fixture.payloads.put(SOURCE_C, PAYLOAD_C);
+
+    const outerActivation = session.activate(SOURCE_A);
+    assert.equal(await settleWithin(outerActivation, 'outer reentrant activation'), false,
+      'superseded A releases the lane instead of awaiting B behind itself');
+    assert.equal(await settleWithin(innerActivation, 'inner reentrant activation'), true,
+      'the queued reentrant B activation commits');
+    assert.equal(fixture.store.project.activeSourceId, SOURCE_B);
+    assert.deepEqual(fixture.engine.installCalls, ['B'], 'only B installs from the reentrant pair');
+    assert.deepEqual(fixture.activationEvents.map((detail) => detail.sourceId), [SOURCE_B],
+      'only B emits from the reentrant pair');
+    assert.deepEqual(fixture.scheduleCalls.map((command) => command.sourceId), [SOURCE_B],
+      'only B schedules from the reentrant pair');
+
+    assert.equal(await settleWithin(session.activate(SOURCE_C), 'later C activation'), true,
+      'a later C activation proves the released lane remains live');
+    assert.equal(fixture.store.project.activeSourceId, SOURCE_C);
+    assert.deepEqual(fixture.engine.installCalls, ['B', 'C']);
+    assert.deepEqual(fixture.activationEvents.map((detail) => detail.sourceId), [SOURCE_B, SOURCE_C]);
+    assert.deepEqual(fixture.scheduleCalls.map((command) => command.sourceId), [SOURCE_B, SOURCE_C]);
+
+    const abandonedHook = deferred();
+    const hookEntered = deferred();
+    let rejectionSession;
+    let rejectionInner;
+    let rejectionHookCalls = 0;
+    const rejectionFixture = await sourceSessionFixture({
+      hooks: {
+        afterPrepare: () => {
+          rejectionHookCalls++;
+          if (rejectionHookCalls === 1) {
+            rejectionInner = rejectionSession.activate(SOURCE_B);
+            hookEntered.resolve();
+            return abandonedHook.promise;
+          }
+          return undefined;
+        },
+      },
+    });
+    rejectionSession = rejectionFixture.session;
+    const unhandled = [];
+    const recordUnhandled = (error) => unhandled.push(error);
+    process.on('unhandledRejection', recordUnhandled);
+    try {
+      const abandonedOuter = rejectionSession.activate(SOURCE_A);
+      await hookEntered.promise;
+      assert.equal(await settleWithin(abandonedOuter, 'abandoned hook activation'), false);
+      assert.equal(await settleWithin(rejectionInner, 'activation behind abandoned hook'), true);
+      abandonedHook.reject(new Error('late abandoned afterPrepare rejection'));
+      await nextTurn();
+      await nextTurn();
+      assert.deepEqual(unhandled, [], 'the abandoned hook remains rejection-observed after lane release');
+      assert.deepEqual(rejectionFixture.engine.installCalls, ['B']);
+    } finally {
+      process.removeListener('unhandledRejection', recordUnhandled);
+    }
   },
 
   async function supersededAwaitedBoundaryRejectionsAreQuarantinedAtEveryStage() {
@@ -1548,6 +1643,42 @@ export const sourceSessionCases = [
     assert.equal(Object.isFrozen(hookArgument), true, 'hook argument is immutable');
     assert.deepEqual(Object.keys(hookArgument), [], 'hook receives no canonical checkpoint reference');
     assertActiveState(fixture, before, 'opaque hook rollback');
+  },
+
+  async function failedSignalOrNativeListenerRegistrationLeavesNoDeduplicationPoison() {
+    for (const throwOnAdd of [1, 2]) {
+      const fixture = await sourceSessionFixture();
+      const fault = new Error('signal registration fault ' + throwOnAdd);
+      const abortHooks = new Set();
+      let addCalls = 0;
+      const signal = {
+        aborted: false,
+        addEventListener(type, callback) {
+          assert.equal(type, 'abort');
+          addCalls++;
+          if (addCalls === throwOnAdd) throw fault;
+          abortHooks.add(callback);
+        },
+        removeEventListener(type, callback) {
+          assert.equal(type, 'abort');
+          abortHooks.delete(callback);
+        },
+      };
+      let listenerCalls = 0;
+      const listener = () => { listenerCalls++; };
+
+      assert.throws(
+        () => fixture.session.addEventListener('probe', listener, { signal }),
+        fault,
+        throwOnAdd === 1 ? 'explicit signal hookup throws' : 'native signal hookup throws',
+      );
+      assert.equal(abortHooks.size, 0, 'a failed registration retains no abort hook');
+
+      fixture.session.addEventListener('probe', listener);
+      fixture.session.dispatchEvent(new CustomEvent('probe'));
+      assert.equal(listenerCalls, 1,
+        'the same listener identity registers exactly once after the failed attempt');
+    }
   },
 
   async function nativeEventTargetIsolationFreezesDetailsAndReportsAsyncListenerAndSchedulerFaults() {
