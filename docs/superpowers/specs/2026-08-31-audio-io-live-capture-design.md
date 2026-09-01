@@ -1,7 +1,7 @@
 # Yellowjacket Audio I/O and Live Capture Design
 
-**Status:** Design direction approved by Ian on 2026-08-31; this written
-specification is awaiting final review before implementation planning.
+**Status:** Approved by Ian on 2026-08-31. Implementation is governed by the
+companion output-routing and live-capture plans.
 
 **Base:** `ba25077d9e2880b94d3fb9b0df3203324010aefc`, after the Task 11
 multi-source archive implementation and before live Task 12 wiring.
@@ -237,10 +237,13 @@ Tab MediaStream -------/                         |
 returns frozen plain snapshots and normalized error codes. It does not know
 about the DOM, project store, source registry, or audio engine.
 
-It owns permission-scoped device enumeration and reconciles saved device-ID
-hints. A stale ID becomes `default`; it is never substituted with another named
-device. Every acquired track is registered before the acquiring promise
-settles, so cancellation, a stale request, or a caller exception can stop it.
+It owns permission-scoped device enumeration and marks output/input ID sets as
+authoritative only after the browser has exposed the permission-complete list.
+A named hint absent from a default-only privacy snapshot is preserved. An ID
+missing from an authoritative set—or rejected with explicit `NotFoundError`—
+becomes `default`; it is never substituted with another named device. Every
+acquired track is registered before the acquiring promise settles, so
+cancellation, a stale request, or a caller exception can stop it.
 
 ### AudioOutputRouter
 
@@ -254,6 +257,11 @@ the current `master -> ctx.destination` tail:
    output gain to one `MediaStreamAudioDestinationNode` and plays its stream
    through one hidden audio element assigned to that sink.
 4. Otherwise, only `SYSTEM DEFAULT` is enabled.
+
+There is exactly one smoothed app-volume/mute gain between `master` and the
+router. The meter taps its output. Per-route gains downstream are unity/zero
+safety and crossfade switches only, so volume is never multiplied twice and a
+safety mute can remain latched independently of the user's persisted mute.
 
 Direct and bridge destinations are mutually exclusive. Route changes occur
 under a short mute ramp. A bridge is configured off-air and must pass both
@@ -307,6 +315,13 @@ It owns at most one microphone stream, one display-audio stream, one dedicated
 capture `AudioContext`, and one recorder worklet. It never owns the project or
 mutates a source record.
 
+It emits only deep-frozen plain-data `capturestate` and `capturelevel` details.
+State transitions emit once; elapsed/budget progress and per-lane dBFS levels
+are throttled to at most 10 Hz. External track end, mute, context interruption,
+page hide, and automatic limits therefore reach the controller without a UI
+gesture, while streams, tracks, device IDs, paths, and raw exceptions never
+cross the event boundary.
+
 The capture context requests the best supported rate consistent with the
 returned track settings. Its actual `sampleRate` is the recorded rate. For a
 two-lane session, both tracks enter distinct worklet inputs in the same context,
@@ -352,12 +367,16 @@ buffer. No `SharedArrayBuffer`, `ScriptProcessorNode`, or `MediaRecorder`
 fallback is presented as the high-fidelity path. A bounded pool covers
 main-thread and worker jitter. Once transferred, the producer never reads or
 reuses a detached buffer; reuse requires an explicit returned-buffer
-acknowledgment. If the pool is exhausted, recording stops with the first missing
-frame instead of dropping samples invisibly.
+acknowledgment carrying the same capture generation, lane, stable pool slot,
+and sequence. Object identity is never assumed across agents. If the pool is
+exhausted, recording stops with the first missing frame instead of dropping
+samples invisibly.
 
 The main thread transfers each owned block immediately to a dedicated spool
 worker. The worker writes one temporary OPFS lane file beginning after a reserved
-WAV header, checks frame/sequence continuity, and returns buffers to the pool.
+WAV header, checks frame/sequence continuity, and returns a transferred buffer
+receipt to the main thread only after durable append; the main thread validates
+and forwards that receipt to the worklet before the logical slot is reusable.
 The worklet remains connected to an explicitly zero-gain keep-alive tail when
 monitoring is off; this keeps rendering active without creating an audible
 route. The worker interleaves channels with explicit little-endian `DataView`
@@ -372,8 +391,12 @@ nondeterministic metadata enter the WAV.
 Capture staging uses a separate `yellowjacket-capture-v1` OPFS namespace, never
 the exact project payload namespace. A small exact journal records take ID,
 generation, lane files, format, state (`recording`, `finalized`, or `adopting`),
-verified frame counts, and the bounded detached label, capture, and rights
-metadata needed to recover a finalized take without inventing provenance.
+and verified frame counts. While recording it stores only bounded detached
+drafts—lane, label, rights, declared URL, and requested settings. Finalization
+atomically replaces those drafts with complete acquisitions whose timestamps,
+reported settings, interruption count, and terminal reason come from trusted
+session state; a crash cannot invent those fields. That finalized metadata is
+then sufficient to recover the take without inventing provenance.
 Commit order is finalized spool, exact-byte digest, verified payload adoption,
 project manifest commit, then journal cleanup. On boot, a finalized take may be
 offered for recovery; an incomplete or invalid spool is never treated as a
@@ -405,7 +428,7 @@ prepareEncodedSources([{ payloadOwner, displayName, origin, capture, rights }])
   -> opaquePreparedBatch
 
 commitEncodedSources(opaquePreparedBatch)
-  -> { kind, sourceIds, activeSourceId }
+  -> { kind, sourceIds, lanes, activeSourceId, revision }
 ```
 
 Preparation, with no observable project mutation:
@@ -432,49 +455,76 @@ against an existing source.
 
 Commit is one topology transaction. It publishes the prepared payload
 ownership, adds or aliases all records, activates the first included source,
-and clears undo/redo exactly once after success. Any fault removes only newly
-staged payloads and leaves sources, active facade, engine, history, and existing
-payloads unchanged. A two-lane session cannot leave one committed lane.
+and clears undo/redo exactly once after success. Any preparation or in-
+transaction fault removes only newly staged payloads and leaves sources, active
+facade, engine, history, and existing payloads unchanged. After commit, a
+throwing view observer is isolated and reported; it does not roll back state
+already observed by other listeners, and its projection may be retried. A two-
+lane session cannot leave one committed lane.
+
+`sourceIds` contains unique content IDs. `lanes` preserves every requested lane
+as `{lane, sourceId}` even when two lanes have byte-identical WAV payloads and
+therefore the same content ID. The UI reports that honestly as, for example,
+`2 LANES · 1 UNIQUE SOURCE (IDENTICAL AUDIO)`.
+`revision` binds the live topology commit to the persistence coordinator; the
+capture journal is cleared only after that exact revision's manifest has been
+written and read back with every lane mapping and acquisition event present.
+An `UNSAVED` live revision leaves its adopting journal recoverable.
 
 ### Source provenance amendment
 
 Capture must not masquerade as `file`, `url`, or `generated`. Before v3 becomes
-the live format, its exact source schema gains a required `capture` member. Every
-non-captured source serializes `capture:null`. Captured sources use
-`origin:{kind:'capture', url:null}` and this exact versioned descriptor:
+the live format, its exact source schema gains a required `captures` member.
+Every existing or never-captured source starts with `captures:[]`. A newly
+captured content record uses `origin:{kind:'capture', url:null}` and appends this
+exact acquisition entry:
 
 ```js
 {
-  version: 1,
-  sessionId: 'cap:<32 lowercase hex>',
-  lane: 'microphone' | 'display-audio',
-  startedAt: <integer Date milliseconds>,
-  endedAt: <integer Date milliseconds>,
-  declaredUrl: null | <normalized user-supplied HTTP(S) URL>,
-  requested: {
-    sampleRate: null | <positive integer>,
-    channelCount: null | 1 | 2,
-    echoCancellation: null | <boolean>,
-    noiseSuppression: null | <boolean>,
-    autoGainControl: null | <boolean>
+  displayName: <bounded source name at acquisition>,
+  rights: {
+    basis: 'unknown' | 'original-recording' | 'public-domain' | 'licensed' |
+           'permission' | 'fair-use-review',
+    license: null | <bounded string>,
+    attribution: null | <bounded string>,
+    notes: null | <bounded string>
   },
-  reported: {
-    sampleRate: null | <positive integer>,
-    channelCount: null | 1 | 2,
-    echoCancellation: null | <boolean>,
-    noiseSuppression: null | <boolean>,
-    autoGainControl: null | <boolean>
-  },
-  browserFamily: 'chromium' | 'webkit' | 'gecko' | 'other',
-  interruptions: <nonnegative safe integer>,
-  terminalReason: 'user-stop' | 'track-ended' | 'input-lost' |
-                  'duration-limit' | 'byte-limit'
+  capture: {
+    version: 1,
+    sessionId: 'cap:<32 lowercase hex>',
+    lane: 'microphone' | 'display-audio',
+    startedAt: <integer Date milliseconds>,
+    endedAt: <integer Date milliseconds>,
+    declaredUrl: null | <normalized user-supplied HTTP(S) URL>,
+    requested: {
+      sampleRate: null | <positive integer>,
+      channelCount: null | 1 | 2,
+      echoCancellation: null | <boolean>,
+      noiseSuppression: null | <boolean>,
+      autoGainControl: null | <boolean>
+    },
+    reported: {
+      sampleRate: null | <positive integer>,
+      channelCount: null | 1 | 2,
+      echoCancellation: null | <boolean>,
+      noiseSuppression: null | <boolean>,
+      autoGainControl: null | <boolean>
+    },
+    browserFamily: 'chromium' | 'webkit' | 'gecko' | 'other',
+    interruptions: <nonnegative safe integer>,
+    terminalReason: 'user-stop' | 'track-ended' | 'input-lost' |
+                    'duration-limit' | 'byte-limit'
+  }
 }
 ```
 
-Every descriptor is an exact own-data plain object. `sessionId` is generated
-from 16 bytes of `crypto.getRandomValues()` before acquisition. Date values are
-safe integers within the JavaScript Date epoch and `endedAt >= startedAt`.
+`capture` contains the versioned descriptor, while the enclosing acquisition
+freezes the contemporaneous name and rights assertion.
+
+Every acquisition and descriptor is an exact own-data plain object. `sessionId`
+is generated from 16 bytes of `crypto.getRandomValues()` before acquisition.
+Date values are safe integers within the JavaScript Date epoch and
+`endedAt >= startedAt`.
 `terminalReason` is the session-level reason, so both lanes of one take use the
 same reason even when only one track triggered it. Two committed lanes have the
 same session ID, start/end values, actual audio rate, and frame count; requested
@@ -488,9 +538,19 @@ Yellowjacket never guesses the selected tab's URL or title. Raw device IDs,
 device labels, full user-agent strings, and permission state are forbidden from
 the archive.
 
+`captures` is canonically sorted by `(startedAt, sessionId, lane)` and bounded to
+16 entries per content-addressed source. Replaying the same `(sessionId, lane)`
+with exactly deep-equal canonical acquisition metadata is idempotent;
+conflicting metadata is corruption. A new acquisition of bytes already owned by a file,
+URL, or earlier capture appends its event without duplicating payload bytes or
+overwriting the original source origin. If a seventeenth distinct event would
+be required, commit fails with `CAPTURE_HISTORY_FULL`, preserves the finalized
+spool for download/recovery, and makes no graph mutation. Capture provenance is
+never silently dropped merely to satisfy content deduplication.
+
 Because v3 is not yet the live format, this is an amendment to v3 rather than a
 new format version. V2 migration and all existing source creators emit
-`capture:null`. V3 validators, projection, migration, archive semantics, size
+`captures:[]`. V3 validators, projection, migration, archive semantics, size
 bounds, tests, and contracts change together before Task 12 exposes v3.
 
 ## Local preferences
@@ -571,10 +631,13 @@ partial WAV download, but are not added to the source graph.
   channels, frame count, and digest.
 - Dual-lane fixtures have identical sample rate, frame count, session ID, and
   frame zero while preserving distinct PCM and provenance.
-- Exact capture schema, rights, bounds, v2 migration `capture:null`, v3 fixed
+- Exact capture schema, rights, 16-event history bound, byte-identical lane
+  merge, v2 migration `captures:[]`, v3 fixed
   point, bundle round-trip, and hostile JSON validation all pass.
 - Prepared two-source commit is atomic under payload, registry, activation,
-  persistence, and observer faults; duplicates do not duplicate bytes.
+  persistence, and pre-commit topology faults; post-commit observer faults are
+  isolated and retried without rolling back visible committed state. Duplicates
+  do not duplicate bytes.
 - Recovery tests crash after each journal edge: partial spool, finalized spool,
   payload adoption before manifest, manifest before journal cleanup, and
   two-lane rollback after the first payload. Long synthetic takes keep heap and
@@ -648,6 +711,11 @@ partial WAV download, but are not added to the source graph.
 6. Complete real Chrome/Safari device tests, active-call capture, archive round-
    trip, accessibility checks, service-worker/preload updates, and the measured
    fidelity report before deployment.
+
+This is the activation order. Import-pure recorder, WAV, spool, and browser-
+lease primitives may be committed earlier behind an unreachable boundary so
+they can be tested in parallel, but no capture control or live import path may
+precede Task 12 and its atomic batch ingress.
 
 No capture control is shipped enabled until its persistence and browser
 acceptance rows are green.
