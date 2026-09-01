@@ -165,7 +165,7 @@ function commit(state, deviceId, mechanism) {
   return state.router.state;
 }
 
-function enqueueDirect(state, work) {
+function enqueueMutation(state, work) {
   const result = state.lane.then(work);
   state.lane = result.catch(() => {});
   return result;
@@ -198,6 +198,7 @@ async function selectDirect(state, deviceId, intent) {
     throw error;
   }
 
+  if (state.disposed) return state.router.state;
   if (intent !== state.intent) {
     try {
       await setSinkId(apiSinkId(snapshot.active || SYSTEM_DEFAULT_OUTPUT));
@@ -309,8 +310,10 @@ export class AudioOutputRouter extends EventTarget {
     state.status = state.safetyMuted ? 'lost' : 'switching';
     state.error = null;
     publish(state);
-    if (directSinkSupported(state)) return enqueueDirect(state, () => selectDirect(state, deviceId, intent));
-    return selectBridge(state, deviceId, intent);
+    if (directSinkSupported(state)) {
+      return enqueueMutation(state, () => selectDirect(state, deviceId, intent));
+    }
+    return enqueueMutation(state, () => selectBridge(state, deviceId, intent));
   }
 
   setVolume(value) {

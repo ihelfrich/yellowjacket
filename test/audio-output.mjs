@@ -146,6 +146,34 @@ async function elementBridgeMustPassSetSinkAndPlayBeforeCommit() {
     'the default route is disconnected before bridge output becomes audible');
 }
 
+async function staleBridgeCompletionCannotDeafenOrReassignNewerRoute() {
+  const fixture = bridgeFixture();
+  const a = deferred();
+  fixture.element.setSinkId = (id) => {
+    fixture.log.push(['element-sink', id]);
+    if (id === 'speaker-a') {
+      return a.promise.then(() => { fixture.element.sinkId = id; });
+    }
+    fixture.element.sinkId = id;
+    return Promise.resolve();
+  };
+  const router = new AudioOutputRouter({
+    context: fixture.context, input: fixture.input, createAudioElement: () => fixture.element,
+  });
+  await router.select(SYSTEM_DEFAULT_OUTPUT);
+  const selectingA = router.select('speaker-a');
+  await Promise.resolve();
+  const selectingB = router.select('speaker-b');
+  await Promise.resolve();
+  a.resolve();
+  await Promise.all([selectingA, selectingB]);
+  const [bridgeGain] = fixture.input.connections;
+  assert.equal(router.state.active, 'speaker-b');
+  assert.equal(router.state.status, 'ready');
+  assert.equal(bridgeGain.gain.value, 1, 'the committed bridge tail stays audible');
+  assert.equal(fixture.element.sinkId, 'speaker-b', 'the newer physical sink remains assigned');
+}
+
 async function bridgeFailuresKeepTheVerifiedDefaultRoute() {
   for (const [stage, message] of [
     ['setSinkId', 'sink rejected'],
@@ -276,6 +304,27 @@ async function disposalIsIdempotentAndTearsDownTheBridge() {
   await assert.rejects(router.select('speaker-b'), /disposed/);
 }
 
+async function disposedDirectMutationCannotReviveTheRouter() {
+  const fixture = directFixture();
+  const selectingSink = deferred();
+  fixture.context.setSinkId = (id) => {
+    fixture.log.push(['sink', id]);
+    return id === 'speaker-a' ? selectingSink.promise : Promise.resolve();
+  };
+  const { router } = newDirectRouter(fixture);
+  await router.select(SYSTEM_DEFAULT_OUTPUT);
+  const selecting = router.select('speaker-a');
+  await Promise.resolve();
+  router.dispose();
+  selectingSink.resolve();
+  const result = await selecting;
+  assert.equal(result.status, 'disposed');
+  assert.equal(router.state.status, 'disposed');
+  assert.equal(router.state.active, null);
+  assert.equal(router.state.mechanism, null);
+  assert.equal(fixture.input.connections.size, 0);
+}
+
 async function constructorRejectsOptionAccessorsWithoutReadingThem() {
   for (const key of ['context', 'input', 'createAudioElement']) {
     let read = false;
@@ -306,6 +355,7 @@ export const audioOutputRouterCases = [
   defaultRouteStartsReadyAndOwnsOneAudibleTail,
   newestIntentWinsAdversarialSinkPromises,
   elementBridgeMustPassSetSinkAndPlayBeforeCommit,
+  staleBridgeCompletionCannotDeafenOrReassignNewerRoute,
   bridgeFailuresKeepTheVerifiedDefaultRoute,
   directRollbackFailureFailsClosed,
   rapidAThenBThenDefaultLeavesDefaultActive,
@@ -314,6 +364,7 @@ export const audioOutputRouterCases = [
   statesAreFrozenDetachedSnapshots,
   safetyLatchSurvivesVerifiedSwitchUntilExplicitlyCleared,
   disposalIsIdempotentAndTearsDownTheBridge,
+  disposedDirectMutationCannotReviveTheRouter,
   constructorRejectsOptionAccessorsWithoutReadingThem,
   proxyOptionTrapFailuresLeaveNoConnectedRoute,
 ];
