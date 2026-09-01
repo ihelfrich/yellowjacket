@@ -54,6 +54,7 @@ const PRECACHE = [
   './assets/fonts/plex-mono-600.woff2',
   './assets/demo/zane-little-sparks.mp3',
   './js/main.js',
+  './js/audio-output-router.js',
   './js/audio-engine.js',
   './js/export.js',
   './js/fft.js',
