@@ -105,6 +105,7 @@ const {
 } = await import('./multisource-runtime.mjs');
 const { assetProvenanceCases, clipIdentityCases, crateAssetCases } = await import('./multisource-music.mjs');
 const { migrationCases, projectBundleV3Cases, projectFormatCases } = await import('./multisource-persist.mjs');
+const { audioOutputRouterCases } = await import('./audio-output.mjs');
 const { processLimiter } = await import('../js/dsp/limiter.js');
 const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
 
@@ -4417,6 +4418,7 @@ const groups = [
   ['clip lifecycle', clipCases],
   ['undo history', undoCases],
   ['conform', conformCases],
+  ['audio output router', audioOutputRouterCases],
 ];
 
 for (const [name, cases] of groups) {
