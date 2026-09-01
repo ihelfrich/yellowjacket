@@ -74,6 +74,14 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+async function settleUntil(predicate, label) {
+  for (let turn = 0; turn < 24; turn++) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
+  assert.fail(label);
+}
+
 assertRouterFixtures();
 const { AudioOutputRouter, SYSTEM_DEFAULT_OUTPUT } =
   await import('../js/audio-output-router.js');
@@ -540,6 +548,77 @@ async function persistedHintFallsBackButExplicitFailureKeepsVerifiedRoute() {
     'the unavailable preference was attempted before reconciliation');
 }
 
+async function staleSelectionBeforeRouterNeverStartsOrCommits() {
+  const resume = deferred();
+  const { engine, context, log } = engineFixture({
+    state: 'suspended',
+    resume: () => resume.promise,
+  });
+  const selectingA = engine.selectOutput('speaker-a');
+  const selectingB = engine.selectOutput('speaker-b');
+  context.state = 'running';
+  resume.resolve();
+  await Promise.all([selectingA, selectingB]);
+  assert.equal(log.some((entry) => entry[0] === 'sink' && entry[1] === 'speaker-a'), false,
+    'a selection superseded before readiness never reaches the router');
+  assert.equal(engine._outputPreferences.outputId, 'speaker-b',
+    'only the current selection commits the verified preference');
+  assert.equal(engine.outputState.active, 'speaker-b');
+}
+
+async function staleSelectionCannotBecomeRecoveryPreferenceAfterNewerFailure() {
+  const a = deferred();
+  const b = deferred();
+  const { engine, log } = engineFixture({
+    setSinkId: (id) => {
+      log.push(['sink', id]);
+      if (id === 'speaker-a') return a.promise;
+      if (id === 'speaker-b') return b.promise;
+      return Promise.resolve();
+    },
+  });
+  await engine.ensureOutputReady();
+  const verifiedPreference = engine._outputPreferences.outputId;
+  const verifiedGeneration = engine._readyOutputGeneration;
+
+  const selectingA = engine.selectOutput('speaker-a');
+  await settleUntil(() => log.some((entry) => entry[0] === 'sink' && entry[1] === 'speaker-a'),
+    'the first selection reaches its deferred router operation');
+  const selectingB = engine.selectOutput('speaker-b');
+  a.resolve();
+  await settleUntil(() => log.some((entry) => entry[0] === 'sink' && entry[1] === 'speaker-b'),
+    'the newer selection reaches its deferred router operation');
+  await selectingA;
+
+  assert.equal(engine._outputPreferences.outputId, verifiedPreference,
+    'a stale post-router completion never commits its preference');
+  assert.equal(engine._readyOutputGeneration, verifiedGeneration,
+    'a stale post-router completion never rewrites the ready generation');
+  assert.equal(engine.outputState.status, 'switching',
+    'a stale post-router completion never clears the current selection safety boundary');
+
+  const bFailure = assert.rejects(selectingB, (error) => (
+    error.code === 'OUTPUT_NOT_READY' && error.cause?.message === 'speaker-b gone'
+  ));
+  b.reject(new DOMException('speaker-b gone', 'NotFoundError'));
+  await bFailure;
+  assert.equal(engine._outputPreferences.outputId, verifiedPreference,
+    'a failed current selection preserves the prior verified preference');
+  assert.equal(engine.outputState.active, SYSTEM_DEFAULT_OUTPUT,
+    'router rollback preserves the prior verified route');
+
+  const staleRequestsBeforeRecovery = log.filter((entry) => (
+    entry[0] === 'sink' && entry[1] === 'speaker-a'
+  )).length;
+  engine.handleOutputLoss();
+  const recovered = await engine.ensureOutputReady();
+  assert.equal(recovered.active, SYSTEM_DEFAULT_OUTPUT);
+  assert.equal(engine.outputState.active, SYSTEM_DEFAULT_OUTPUT);
+  assert.equal(log.filter((entry) => entry[0] === 'sink' && entry[1] === 'speaker-a').length,
+    staleRequestsBeforeRecovery,
+    'recovery never makes the stale selection audible again');
+}
+
 async function interruptionAndLossInvalidateBeforeImmutableNotification() {
   const { engine, context } = engineFixture();
   await engine.ensureOutputReady();
@@ -631,6 +710,8 @@ export const engineOutputCases = [
   preferencesWaitForReadinessAndConfigureTheOneAppGain,
   readinessWaitsForTheRequestedSinkAndPublishesFrozenState,
   persistedHintFallsBackButExplicitFailureKeepsVerifiedRoute,
+  staleSelectionBeforeRouterNeverStartsOrCommits,
+  staleSelectionCannotBecomeRecoveryPreferenceAfterNewerFailure,
   interruptionAndLossInvalidateBeforeImmutableNotification,
   everyNonRunningContextStateFailsClosedBeforeNotification,
   testSignalSchedulesBothChannelsOnlyAfterReadiness,

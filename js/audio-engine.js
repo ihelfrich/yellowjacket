@@ -63,6 +63,7 @@ export class Engine extends EventTarget {
     this._outputRouter = null;
     this._outputPreferences = { outputId: SYSTEM_DEFAULT_OUTPUT, volume: 1, muted: false };
     this._outputGeneration = 0;
+    this._outputSelectionIntent = 0;
     this._readyOutputGeneration = -1;
     this._outputReady = null;
     this._outputFault = null;
@@ -320,11 +321,14 @@ export class Engine extends EventTarget {
     if (typeof deviceId !== 'string' || deviceId.length === 0) {
       throw new TypeError('Audio output deviceId must be a non-empty string');
     }
+    const intent = ++this._outputSelectionIntent;
     await this.ensureOutputReady();
+    if (intent !== this._outputSelectionIntent) return this.outputState;
     const generation = this._outputGeneration;
     try {
       const route = await this._outputRouter.select(deviceId);
-      if (generation !== this._outputGeneration || this._ctx.state !== 'running') {
+      if (intent !== this._outputSelectionIntent) return this.outputState;
+      if (!this._canCommitOutputSelection(intent, deviceId, generation, route)) {
         throw new OutputNotReadyError('OUTPUT_NOT_READY');
       }
       this._outputPreferences = { ...this._outputPreferences, outputId: deviceId };
@@ -335,6 +339,7 @@ export class Engine extends EventTarget {
       this._emitOutputState();
       return route.status === 'ready' ? this.outputState : Object.freeze({ ...this.outputState });
     } catch (error) {
+      if (intent !== this._outputSelectionIntent) return this.outputState;
       if (error instanceof OutputNotReadyError) throw error;
       throw new OutputNotReadyError('OUTPUT_NOT_READY', error);
     }
@@ -535,6 +540,17 @@ export class Engine extends EventTarget {
   _isOutputReady(ctx) {
     return ctx?.state === 'running' && this._readyOutputGeneration === this._outputGeneration &&
       this._outputRouter?.state.status === 'ready';
+  }
+
+  _canCommitOutputSelection(intent, deviceId, generation, route) {
+    return intent === this._outputSelectionIntent && generation === this._outputGeneration &&
+      this._ctx?.state === 'running' &&
+      this._isRequestedReadyRoute(route, deviceId) &&
+      this._isRequestedReadyRoute(this._outputRouter.state, deviceId);
+  }
+
+  _isRequestedReadyRoute(route, deviceId) {
+    return route?.requested === deviceId && route.active === deviceId && route.status === 'ready';
   }
 
   async _completeOutputReadiness(ctx, generation) {
