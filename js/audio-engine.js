@@ -2,17 +2,73 @@
 // segment so playback skips cut ranges; time is reported on the original timeline.
 
 import { probeContainer, planDecodeRate } from './dsp/native-rate.js';
+import { AudioOutputRouter, SYSTEM_DEFAULT_OUTPUT } from './audio-output-router.js';
 
 const SCHEDULE_DELAY = 0.03;      // s, shared start offset so segments align
 const MIN_SEG = 0.001;            // s, ignore slivers below this
 const TIME_INTERVAL = 1000 / 32;  // ms, ~30fps cadence for 'time' events
+const TEST_SIGNAL_PEAK = 10 ** (-24 / 20);
+const TEST_SIGNAL_RAMP = 0.005;
+const TEST_SIGNAL_HALF = 0.2;
+
+function defaultContextFactory() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  return new Ctx();
+}
+
+function defaultAudioElementFactory() {
+  return document.createElement('audio');
+}
+
+function outputPreferences(preferences, current) {
+  if (!preferences || typeof preferences !== 'object') {
+    throw new TypeError('Audio output preferences must be an object');
+  }
+  const outputId = preferences.outputId === undefined ? current.outputId : preferences.outputId;
+  const volume = preferences.volume === undefined ? current.volume : preferences.volume;
+  const muted = preferences.muted === undefined ? current.muted : preferences.muted;
+  if (typeof outputId !== 'string' || outputId.length === 0) {
+    throw new TypeError('Audio outputId must be a non-empty string');
+  }
+  if (!Number.isFinite(volume) || volume < 0 || volume > 1) {
+    throw new RangeError('Audio output volume must be between 0 and 1');
+  }
+  if (typeof muted !== 'boolean') throw new TypeError('Audio output muted must be boolean');
+  return { outputId, volume, muted };
+}
+
+export class OutputNotReadyError extends Error {
+  constructor(code, cause) {
+    super(code, cause === undefined ? undefined : { cause });
+    this.name = 'OutputNotReadyError';
+    this.code = code;
+    if (cause !== undefined) this.cause = cause;
+  }
+}
 
 export class Engine extends EventTarget {
   // events: 'time' {t}, 'state' {playing}, 'loaded' {}, 'ended' {}
-  constructor() {
+  constructor({
+    contextFactory = defaultContextFactory,
+    outputRouterFactory = (options) => new AudioOutputRouter(options),
+    createAudioElement = defaultAudioElementFactory,
+  } = {}) {
     super();
+    this._contextFactory = contextFactory;
+    this._outputRouterFactory = outputRouterFactory;
+    this._createAudioElement = createAudioElement;
     this._ctx = null;
     this._master = null;
+    this._outputGain = null;
+    this._outputRouter = null;
+    this._outputPreferences = { outputId: SYSTEM_DEFAULT_OUTPUT, volume: 1, muted: false };
+    this._outputGeneration = 0;
+    this._readyOutputGeneration = -1;
+    this._outputReady = null;
+    this._outputFault = null;
+    this._outputReconciledFrom = null;
+    this._outputInterruptionHandler = null;
+    this._suppressOutputState = false;
     this._buffer = null;
     this._mono = null;
     this._alt = null;
@@ -193,13 +249,154 @@ export class Engine extends EventTarget {
   get playing() { return this._playing; }
   get ctx() { return this._ctx; }
   get master() { return this._master; }
+  get outputGeneration() { return this._outputGeneration; }
+  get outputMeterSource() { return this._outputGain; }
+  get outputState() {
+    const route = this._outputRouter?.state;
+    const state = route ? { ...route } : {
+      requested: this._outputPreferences.outputId,
+      active: null,
+      mechanism: null,
+      status: 'idle',
+      volume: this._outputPreferences.volume,
+      muted: this._outputPreferences.muted,
+      safetyMuted: false,
+      error: null,
+    };
+    if (this._outputFault) {
+      state.status = 'fault';
+      state.error = this._outputFault.code;
+    }
+    if (this._outputReconciledFrom) state.reconciledFrom = this._outputReconciledFrom;
+    return Object.freeze(state);
+  }
 
-  // AudioContext creation has to happen inside a user gesture. MACHINE can
-  // create sound without a source file (SYNTH / CRATE), so `play()` cannot be
-  // the only doorway into the audio graph.
+  get readyContext() {
+    const route = this._outputRouter?.state;
+    if (!this._ctx || this._ctx.state !== 'running' ||
+        this._readyOutputGeneration !== this._outputGeneration ||
+        route?.status !== 'ready' || !route.active) {
+      throw new OutputNotReadyError('OUTPUT_NOT_READY');
+    }
+    return this._ctx;
+  }
+
+  configureOutputPreferences(preferences) {
+    this._outputPreferences = outputPreferences(preferences, this._outputPreferences);
+    if (this._outputRouter) this._applyOutputPreferences();
+    return Object.freeze({ ...this._outputPreferences });
+  }
+
+  setOutputVolume(value) {
+    this.configureOutputPreferences({ volume: value });
+  }
+
+  setOutputMuted(muted) {
+    this.configureOutputPreferences({ muted });
+  }
+
+  setOutputInterruptionHandler(handler) {
+    if (handler !== null && typeof handler !== 'function') {
+      throw new TypeError('Audio output interruption handler must be a function or null');
+    }
+    this._outputInterruptionHandler = handler;
+  }
+
+  async ensureOutputReady() {
+    const ctx = this._ensureCtx(); // Must happen synchronously in the user gesture.
+    if (this._isOutputReady(ctx)) return this.outputState;
+    if (this._outputReady) return this._outputReady;
+    const generation = this._outputGeneration;
+    const ready = this._completeOutputReadiness(ctx, generation);
+    this._outputReady = ready;
+    try {
+      return await ready;
+    } finally {
+      if (this._outputReady === ready) this._outputReady = null;
+    }
+  }
+
+  async selectOutput(deviceId) {
+    if (typeof deviceId !== 'string' || deviceId.length === 0) {
+      throw new TypeError('Audio output deviceId must be a non-empty string');
+    }
+    await this.ensureOutputReady();
+    const generation = this._outputGeneration;
+    try {
+      const route = await this._outputRouter.select(deviceId);
+      if (generation !== this._outputGeneration || this._ctx.state !== 'running') {
+        throw new OutputNotReadyError('OUTPUT_NOT_READY');
+      }
+      this._outputPreferences = { ...this._outputPreferences, outputId: deviceId };
+      this._outputFault = null;
+      this._outputReconciledFrom = null;
+      this._outputRouter.clearSafetyMute();
+      this._readyOutputGeneration = generation;
+      this._emitOutputState();
+      return route.status === 'ready' ? this.outputState : Object.freeze({ ...this.outputState });
+    } catch (error) {
+      if (error instanceof OutputNotReadyError) throw error;
+      throw new OutputNotReadyError('OUTPUT_NOT_READY', error);
+    }
+  }
+
+  handleOutputLoss(code = 'OUTPUT_LOST') {
+    this._outputGeneration++;
+    this._readyOutputGeneration = -1;
+    this._outputReady = null;
+    this._outputFault = null;
+    this._suppressOutputState = true;
+    try {
+      if (this._outputRouter) this._outputRouter.failClosed(code);
+    } finally {
+      this._suppressOutputState = false;
+    }
+    try {
+      this._outputInterruptionHandler?.(code);
+    } catch { /* an interruption handler cannot suppress fail-closed output */ }
+    this._emitOutputState();
+    return this.outputState;
+  }
+
+  async testOutput() {
+    const route = await this.ensureOutputReady();
+    if (route.status !== 'ready') throw new OutputNotReadyError('OUTPUT_NOT_READY');
+    const ctx = this.readyContext;
+    const merger = ctx.createChannelMerger(2);
+    merger.connect(this._master);
+    let remaining = 2;
+    for (const [channel, frequency] of [[0, 440], [1, 660]]) {
+      const start = ctx.currentTime + channel * TEST_SIGNAL_HALF;
+      const stop = start + TEST_SIGNAL_HALF;
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(TEST_SIGNAL_PEAK, start + TEST_SIGNAL_RAMP);
+      gain.gain.setValueAtTime(TEST_SIGNAL_PEAK, stop - TEST_SIGNAL_RAMP);
+      gain.gain.linearRampToValueAtTime(0, stop);
+      oscillator.connect(gain);
+      gain.connect(merger, 0, channel);
+      oscillator.onended = () => {
+        try { oscillator.disconnect(); } catch { /* disconnected already */ }
+        try { gain.disconnect(); } catch { /* disconnected already */ }
+        remaining--;
+        if (remaining === 0) {
+          try { merger.disconnect(this._master); } catch { /* disconnected already */ }
+        }
+      };
+      oscillator.start(start);
+      oscillator.stop(stop);
+    }
+    return true;
+  }
+
+  // Temporary internal compatibility path through Task 3. New callers must
+  // await ensureOutputReady() instead, so resume and sink failures are visible.
   wake() {
     const ctx = this._ensureCtx();
     resumeContext(ctx);
+    this._outputRouter.select(this._outputPreferences.outputId).catch(() => {});
     return ctx;
   }
 
@@ -312,12 +509,83 @@ export class Engine extends EventTarget {
 
   _ensureCtx() {
     if (!this._ctx) {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      this._ctx = new Ctx();
+      this._ctx = this._contextFactory();
       this._master = this._ctx.createGain();
-      this._master.connect(this._ctx.destination);
+      this._outputGain = this._ctx.createGain();
+      this._master.connect(this._outputGain);
+      this._outputRouter = this._outputRouterFactory({
+        context: this._ctx,
+        input: this._outputGain,
+        createAudioElement: this._createAudioElement,
+      });
+      this._outputRouter.addEventListener('statechange', () => {
+        if (!this._suppressOutputState) this._emitOutputState();
+      });
+      this._ctx.addEventListener?.('statechange', () => this._observeContextState());
+      this._applyOutputPreferences();
     }
     return this._ctx;
+  }
+
+  _applyOutputPreferences() {
+    this._outputRouter.setVolume(this._outputPreferences.volume);
+    this._outputRouter.setMuted(this._outputPreferences.muted);
+  }
+
+  _isOutputReady(ctx) {
+    return ctx?.state === 'running' && this._readyOutputGeneration === this._outputGeneration &&
+      this._outputRouter?.state.status === 'ready';
+  }
+
+  async _completeOutputReadiness(ctx, generation) {
+    try {
+      this._applyOutputPreferences();
+      if (ctx.state === 'suspended') await ctx.resume();
+      if (ctx.state !== 'running' || generation !== this._outputGeneration) {
+        throw new OutputNotReadyError('OUTPUT_NOT_READY');
+      }
+      const requested = this._outputPreferences.outputId;
+      try {
+        await this._outputRouter.select(requested);
+      } catch (error) {
+        if (this._readyOutputGeneration >= 0) throw error;
+        await this._outputRouter.select(SYSTEM_DEFAULT_OUTPUT);
+        this._outputPreferences = { ...this._outputPreferences, outputId: SYSTEM_DEFAULT_OUTPUT };
+        this._outputReconciledFrom = requested;
+      }
+      if (ctx.state !== 'running' || generation !== this._outputGeneration) {
+        throw new OutputNotReadyError('OUTPUT_NOT_READY');
+      }
+      const route = this._outputRouter.state;
+      if (!route.active) throw new OutputNotReadyError('OUTPUT_NOT_READY');
+      this._outputRouter.clearSafetyMute();
+      this._outputFault = null;
+      this._readyOutputGeneration = generation;
+      this._emitOutputState();
+      return this.outputState;
+    } catch (error) {
+      if (generation === this._outputGeneration) {
+        this._readyOutputGeneration = -1;
+        this._outputFault = error instanceof OutputNotReadyError ? error :
+          new OutputNotReadyError('OUTPUT_NOT_READY', error);
+        this._suppressOutputState = true;
+        try { this._outputRouter.failClosed('OUTPUT_NOT_READY'); } finally { this._suppressOutputState = false; }
+        this._emitOutputState();
+      }
+      if (error instanceof OutputNotReadyError) throw error;
+      throw new OutputNotReadyError('OUTPUT_NOT_READY', error);
+    }
+  }
+
+  _observeContextState() {
+    const state = this._ctx?.state;
+    if (state === 'suspended') this.handleOutputLoss('OUTPUT_SUSPENDED');
+    else if (state === 'interrupted') this.handleOutputLoss('OUTPUT_INTERRUPTED');
+    else if (state === 'closed') this.handleOutputLoss('OUTPUT_CLOSED');
+  }
+
+  _emitOutputState() {
+    this.dispatchEvent(new CustomEvent('outputstate', { detail: this.outputState }));
   }
 
   _haltPlayback() {

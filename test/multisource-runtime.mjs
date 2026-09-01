@@ -817,34 +817,22 @@ function assertInstalledState(engine, expected, events, expectedEvents, label) {
 }
 
 async function withFakeDecodeContext(decodedBuffers, run) {
-  const priorWindow = globalThis.window;
-  const priorOffline = globalThis.OfflineAudioContext;
   const inputs = [];
-  class FakeAudioContext {
-    constructor() {
-      this.sampleRate = 48000;
-      this.destination = {};
-    }
-
-    createGain() { return { connect() {} }; }
-
+  const node = () => ({
+    gain: { value: 1, setTargetAtTime(value) { this.value = value; } },
+    connect() {}, disconnect() {},
+  });
+  const context = new EventTarget();
+  Object.assign(context, {
+    state: 'running', sampleRate: 48000, currentTime: 0, destination: node(),
+    createGain: node,
+    async setSinkId() {},
     async decodeAudioData(input) {
       inputs.push(input);
       return decodedBuffers.shift();
-    }
-  }
-  globalThis.window = { AudioContext: FakeAudioContext };
-  globalThis.OfflineAudioContext = class {
-    constructor() { throw new Error('the 48 kHz fixture must use the live context'); }
-  };
-  try {
-    await run(inputs);
-  } finally {
-    if (priorWindow === undefined) delete globalThis.window;
-    else globalThis.window = priorWindow;
-    if (priorOffline === undefined) delete globalThis.OfflineAudioContext;
-    else globalThis.OfflineAudioContext = priorOffline;
-  }
+    },
+  });
+  await run(inputs, context);
 }
 
 export const engineTransactionCases = [
@@ -860,8 +848,8 @@ export const engineTransactionCases = [
       channels: [Float32Array.of(1, 0, -1, 0.5), Float32Array.of(-1, 0.5, 1, -0.5)],
     });
 
-    await withFakeDecodeContext([b], async (inputs) => {
-      const engine = new Engine();
+    await withFakeDecodeContext([b], async (inputs, context) => {
+      const engine = new Engine({ contextFactory: () => context });
       const events = [];
       for (const type of ['state', 'loaded']) {
         engine.addEventListener(type, (event) => events.push([type, event.detail]));

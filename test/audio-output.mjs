@@ -12,6 +12,14 @@ function fakeNode(name, log) {
         this.value = value;
         this.calls.push([value, time, constant]);
       },
+      setValueAtTime(value, time) {
+        this.value = value;
+        this.calls.push(['setValue', value, time]);
+      },
+      linearRampToValueAtTime(value, time) {
+        this.value = value;
+        this.calls.push(['ramp', value, time]);
+      },
     },
     connect(target) {
       connections.add(target);
@@ -69,6 +77,7 @@ function deferred() {
 assertRouterFixtures();
 const { AudioOutputRouter, SYSTEM_DEFAULT_OUTPUT } =
   await import('../js/audio-output-router.js');
+const { Engine } = await import('../js/audio-engine.js');
 
 function newDirectRouter(fixture = directFixture()) {
   return {
@@ -250,14 +259,18 @@ async function duplicateCommittedDeviceDoesNotMutateTheSinkAgain() {
 async function volumeAndMuteUseExactlyOneAppGainStage() {
   const { fixture, router } = newDirectRouter();
   await router.select(SYSTEM_DEFAULT_OUTPUT);
+  const [routeGain] = fixture.input.connections;
   router.setVolume(0.5);
   assert.equal(fixture.input.gain.value, 0.5);
+  assert.equal(routeGain.gain.value, 1, 'the committed private route gain stays unity');
   assert.equal(router.state.volume, 0.5);
   assert.equal(fixture.input.gain.calls.at(-1)[2], 0.015);
   router.setMuted(true);
   assert.equal(fixture.input.gain.value, 0);
+  assert.equal(routeGain.gain.value, 1, 'mute does not multiply the route gain');
   router.setMuted(false);
   assert.equal(fixture.input.gain.value, 0.5);
+  assert.equal(routeGain.gain.value, 1, 'unmute restores only the app gain');
   assert.throws(() => router.setVolume(-0.1), RangeError);
   assert.throws(() => router.setVolume(1.1), RangeError);
   assert.throws(() => router.setVolume(Number.NaN), RangeError);
@@ -367,4 +380,258 @@ export const audioOutputRouterCases = [
   disposedDirectMutationCannotReviveTheRouter,
   constructorRejectsOptionAccessorsWithoutReadingThem,
   proxyOptionTrapFailuresLeaveNoConnectedRoute,
+];
+
+function engineNode(name, log) {
+  const node = fakeNode(name, log);
+  node.connect = (target, ...ports) => {
+    node.connections.add(target);
+    log.push(['connect', name, target.name, ...ports]);
+    return target;
+  };
+  return node;
+}
+
+function fakeContext({ state = 'running', resume, setSinkId, log = [] } = {}) {
+  const context = new EventTarget();
+  context.state = state;
+  context.currentTime = 10;
+  context.destination = engineNode('destination', log);
+  context.nodes = [];
+  context.createGain = () => {
+    const gain = engineNode('gain-' + log.length, log);
+    context.nodes.push(gain);
+    return gain;
+  };
+  context.setSinkId = setSinkId || (async (id) => { log.push(['sink', id]); });
+  context.resume = resume || (() => {
+    context.state = 'running';
+    return Promise.resolve();
+  });
+  context.createOscillator = () => {
+    const oscillator = engineNode('oscillator', log);
+    oscillator.frequency = { value: 0 };
+    oscillator.start = (at) => log.push(['start', oscillator.frequency.value, at]);
+    oscillator.stop = (at) => log.push(['stop', oscillator.frequency.value, at]);
+    return oscillator;
+  };
+  context.createChannelMerger = (channels) => {
+    const merger = engineNode('merger', log);
+    merger.channels = channels;
+    return merger;
+  };
+  return context;
+}
+
+function engineFixture(options = {}) {
+  const log = [];
+  const context = options.context || fakeContext({ log, ...options });
+  let created = 0;
+  const engine = new Engine({
+    contextFactory: () => { created++; return context; },
+    ...options.engineOptions,
+  });
+  return { engine, context, log, get created() { return created; } };
+}
+
+async function resumeRejectionNeverClaimsReadyOrPlaying() {
+  const context = fakeContext({
+    state: 'suspended',
+    resume: () => Promise.reject(new DOMException('blocked', 'NotAllowedError')),
+  });
+  const engine = new Engine({ contextFactory: () => context });
+  await assert.rejects(() => engine.ensureOutputReady(), (error) => (
+    error.name === 'OutputNotReadyError' && error.code === 'OUTPUT_NOT_READY'
+  ));
+  assert.equal(engine.outputState.status, 'fault');
+  assert.equal(engine.playing, false);
+}
+
+async function readinessCreatesOnceSynchronouslyAndCoalescesResume() {
+  const resume = deferred();
+  let resumes = 0;
+  const fixture = engineFixture({
+    state: 'suspended',
+    resume: () => { resumes++; return resume.promise; },
+  });
+  const { engine, context } = fixture;
+  const first = engine.ensureOutputReady();
+  assert.equal(fixture.created, 1, 'the context is created in the gesture before the first await');
+  const second = engine.ensureOutputReady();
+  assert.equal(resumes, 1, 'concurrent callers share one resume');
+  context.state = 'running';
+  resume.resolve();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.status, 'ready');
+  assert.deepEqual(b, a);
+  assert.equal(engine.readyContext, context);
+}
+
+async function onlyRunningContextsBecomeReady() {
+  for (const state of ['suspended', 'interrupted']) {
+    const context = fakeContext({ state, resume: () => Promise.resolve() });
+    const engine = new Engine({ contextFactory: () => context });
+    await assert.rejects(() => engine.ensureOutputReady(), (error) => (
+      error.name === 'OutputNotReadyError' && error.code === 'OUTPUT_NOT_READY'
+    ), state + ' context is never claimed ready after resume fulfills');
+    assert.throws(() => engine.readyContext,
+      (error) => error.name === 'OutputNotReadyError' && error.code === 'OUTPUT_NOT_READY');
+  }
+}
+
+async function preferencesWaitForReadinessAndConfigureTheOneAppGain() {
+  const { engine, context, log, created } = engineFixture();
+  engine.configureOutputPreferences({ outputId: 'headphones', volume: 0.25, muted: true });
+  assert.equal(created, 0, 'persisted preferences do not create an AudioContext');
+  await engine.ensureOutputReady();
+  assert.equal(engine.outputState.requested, 'headphones');
+  assert.equal(engine.outputState.active, 'headphones');
+  assert.equal(engine.outputMeterSource.gain.value, 0,
+    'mute applies at the engine app-gain stage before the route');
+  assert.ok(log.some((entry) => entry[0] === 'sink' && entry[1] === 'headphones'));
+  engine.setOutputMuted(false);
+  assert.equal(engine.outputMeterSource.gain.value, 0.25);
+  engine.setOutputVolume(0.5);
+  assert.equal(engine.outputMeterSource.gain.value, 0.5);
+  assert.throws(() => engine.configureOutputPreferences({ volume: 2 }), RangeError);
+}
+
+async function readinessWaitsForTheRequestedSinkAndPublishesFrozenState() {
+  const sink = deferred();
+  const { engine, log } = engineFixture({
+    setSinkId: (id) => {
+      log.push(['sink', id]);
+      return sink.promise;
+    },
+  });
+  engine.configureOutputPreferences({ outputId: 'headphones' });
+  const states = [];
+  engine.addEventListener('outputstate', (event) => states.push(event.detail));
+  let settled = false;
+  const ready = engine.ensureOutputReady().then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false, 'readiness does not resolve before sink selection');
+  assert.equal(engine.outputState.status, 'switching');
+  sink.resolve();
+  await ready;
+  assert.equal(engine.outputState.active, 'headphones');
+  assert.equal(states.every(Object.isFrozen), true, 'router state changes emit detached frozen state');
+}
+
+async function persistedHintFallsBackButExplicitFailureKeepsVerifiedRoute() {
+  const { engine, log } = engineFixture({
+    setSinkId: async (id) => {
+      log.push(['sink', id]);
+      if (id === 'gone') throw new DOMException('gone', 'NotFoundError');
+    },
+  });
+  engine.configureOutputPreferences({ outputId: 'gone', volume: 1, muted: false });
+  const reconciled = await engine.ensureOutputReady();
+  assert.equal(reconciled.active, SYSTEM_DEFAULT_OUTPUT);
+  assert.equal(reconciled.requested, SYSTEM_DEFAULT_OUTPUT,
+    'an unavailable saved hint is reconciled during this explicit gesture');
+  assert.equal(reconciled.status, 'ready');
+  await assert.rejects(() => engine.selectOutput('gone'), (error) => (
+    error.code === 'OUTPUT_NOT_READY' && error.cause?.message === 'gone'
+  ));
+  assert.equal(engine.outputState.active, SYSTEM_DEFAULT_OUTPUT,
+    'a later explicit selection keeps the verified route');
+  assert.ok(log.some((entry) => entry[0] === 'sink' && entry[1] === 'gone'),
+    'the unavailable preference was attempted before reconciliation');
+}
+
+async function interruptionAndLossInvalidateBeforeImmutableNotification() {
+  const { engine, context } = engineFixture();
+  await engine.ensureOutputReady();
+  const order = [];
+  engine.setOutputInterruptionHandler((code) => order.push(['interrupt', code]));
+  engine.addEventListener('outputstate', (event) => {
+    order.push(['event', event.detail.status]);
+    assert.equal(Object.isFrozen(event.detail), true);
+  });
+  const before = engine.outputGeneration;
+  context.state = 'interrupted';
+  context.dispatchEvent(new Event('statechange'));
+  assert.equal(engine.outputGeneration, before + 1);
+  assert.deepEqual(order.slice(-2), [['interrupt', 'OUTPUT_INTERRUPTED'], ['event', 'lost']]);
+  assert.equal(engine.outputState.safetyMuted, true);
+
+  let failures = 0;
+  const originalFailClosed = engine._outputRouter.failClosed.bind(engine._outputRouter);
+  engine._outputRouter.failClosed = (code) => { failures++; return originalFailClosed(code); };
+  const generation = engine.outputGeneration;
+  const state = engine.handleOutputLoss('OUTPUT_LOST');
+  assert.equal(failures, 1, 'manual output loss fails closed exactly once');
+  assert.equal(engine.outputGeneration, generation + 1);
+  assert.equal(Object.isFrozen(state), true);
+  assert.equal(state.muted, false, 'loss does not edit the persisted user mute');
+}
+
+async function everyNonRunningContextStateFailsClosedBeforeNotification() {
+  for (const [state, code] of [
+    ['suspended', 'OUTPUT_SUSPENDED'],
+    ['interrupted', 'OUTPUT_INTERRUPTED'],
+    ['closed', 'OUTPUT_CLOSED'],
+  ]) {
+    const { engine, context } = engineFixture();
+    await engine.ensureOutputReady();
+    const order = [];
+    engine.setOutputInterruptionHandler((received) => order.push(['interrupt', received]));
+    engine.addEventListener('outputstate', (event) => order.push(['event', event.detail.status]));
+    context.state = state;
+    context.dispatchEvent(new Event('statechange'));
+    assert.deepEqual(order.slice(-2), [['interrupt', code], ['event', 'lost']], state);
+    assert.equal(engine.outputState.safetyMuted, true, state + ' mutes the route');
+  }
+}
+
+async function testSignalSchedulesBothChannelsOnlyAfterReadiness() {
+  const { engine, context, log } = engineFixture();
+  await assert.equal(await engine.testOutput(), true);
+  const peak = 10 ** (-24 / 20);
+  assert.deepEqual(log.filter((entry) => entry[0] === 'start'), [
+    ['start', 440, 10], ['start', 660, 10.2],
+  ]);
+  const stops = log.filter((entry) => entry[0] === 'stop');
+  assert.deepEqual(stops.map((entry) => entry.slice(0, 2)), [['stop', 440], ['stop', 660]]);
+  assert.ok(Math.abs(stops[0][2] - 10.2) < 1e-12);
+  assert.ok(Math.abs(stops[1][2] - 10.4) < 1e-12);
+  const signalGains = log
+    .filter((entry) => entry[0] === 'connect' && entry[2] === 'merger')
+    .map((entry) => entry[1]);
+  assert.equal(signalGains.length, 2, 'test signal uses two local gain nodes');
+  assert.equal(engine.outputMeterSource.gain.value, 1,
+    'the output test leaves the app gain at unity by default');
+  for (const [index, name] of signalGains.entries()) {
+    const gain = context.nodes.find((node) => node.name === name);
+    const start = 10 + index * 0.2;
+    const calls = gain.gain.calls;
+    assert.deepEqual(calls.map((entry) => entry.slice(0, 2)), [
+      ['setValue', 0], ['ramp', peak], ['setValue', peak], ['ramp', 0],
+    ]);
+    for (const [actual, expected] of calls.map((entry, i) => [entry[2],
+      [start, start + 0.005, start + 0.195, start + 0.2][i]])) {
+      assert.ok(Math.abs(actual - expected) < 1e-12);
+    }
+  }
+
+  const blocked = engineFixture({
+    state: 'suspended',
+    resume: () => Promise.reject(new DOMException('blocked', 'NotAllowedError')),
+  });
+  await assert.rejects(() => blocked.engine.testOutput(), (error) => error.code === 'OUTPUT_NOT_READY');
+  assert.equal(blocked.log.some((entry) => entry[1] === 'oscillator'), false,
+    'failed readiness schedules no oscillator');
+}
+
+export const engineOutputCases = [
+  resumeRejectionNeverClaimsReadyOrPlaying,
+  readinessCreatesOnceSynchronouslyAndCoalescesResume,
+  onlyRunningContextsBecomeReady,
+  preferencesWaitForReadinessAndConfigureTheOneAppGain,
+  readinessWaitsForTheRequestedSinkAndPublishesFrozenState,
+  persistedHintFallsBackButExplicitFailureKeepsVerifiedRoute,
+  interruptionAndLossInvalidateBeforeImmutableNotification,
+  everyNonRunningContextStateFailsClosedBeforeNotification,
+  testSignalSchedulesBothChannelsOnlyAfterReadiness,
 ];

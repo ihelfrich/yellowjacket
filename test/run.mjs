@@ -105,7 +105,7 @@ const {
 } = await import('./multisource-runtime.mjs');
 const { assetProvenanceCases, clipIdentityCases, crateAssetCases } = await import('./multisource-music.mjs');
 const { migrationCases, projectBundleV3Cases, projectFormatCases } = await import('./multisource-persist.mjs');
-const { audioOutputRouterCases } = await import('./audio-output.mjs');
+const { audioOutputRouterCases, engineOutputCases } = await import('./audio-output.mjs');
 const { processLimiter } = await import('../js/dsp/limiter.js');
 const { processLoudnorm } = await import('../js/dsp/loudnorm.js');
 
@@ -920,25 +920,23 @@ const lifecycleCases = [
     assert.equal(sourceReplacementNeedsConfirmation({ buffer: {} }), true);
   },
   async function engineCanWakeWithoutLoadingASource() {
-    const previousWindow = globalThis.window;
     let resumes = 0;
-    class FakeAudioContext {
-      constructor() { this.state = 'suspended'; this.destination = {}; }
-      createGain() { return { connect() {} }; }
-      resume() { resumes++; this.state = 'running'; return Promise.resolve(); }
-    }
-    globalThis.window = { AudioContext: FakeAudioContext };
-    try {
-      const engine = new Engine();
-      const first = engine.wake();
-      const second = engine.wake();
-      assert.equal(first, second, 'wake reuses one context');
-      assert.equal(engine.master != null, true, 'the source-free graph has a master output');
-      assert.equal(resumes, 1, 'only a suspended context is resumed');
-    } finally {
-      if (previousWindow === undefined) delete globalThis.window;
-      else globalThis.window = previousWindow;
-    }
+    const node = () => ({
+      gain: { value: 1, setTargetAtTime(value) { this.value = value; } },
+      connect() {}, disconnect() {},
+    });
+    const context = new EventTarget();
+    Object.assign(context, {
+      state: 'suspended', currentTime: 0, destination: node(), createGain: node,
+      setSinkId: async () => {},
+      resume() { resumes++; this.state = 'running'; return Promise.resolve(); },
+    });
+    const engine = new Engine({ contextFactory: () => context });
+    const first = engine.wake();
+    const second = engine.wake();
+    assert.equal(first, second, 'wake reuses one context');
+    assert.equal(engine.master != null, true, 'the source-free graph has a master output');
+    assert.equal(resumes, 1, 'only a suspended context is resumed');
   },
   function engineCanReturnToASourceFreeState() {
     const engine = new Engine();
@@ -4419,6 +4417,7 @@ const groups = [
   ['undo history', undoCases],
   ['conform', conformCases],
   ['audio output router', audioOutputRouterCases],
+  ['engine output', engineOutputCases],
 ];
 
 for (const [name, cases] of groups) {
