@@ -2,6 +2,7 @@
 // segment so playback skips cut ranges; time is reported on the original timeline.
 
 import { probeContainer, planDecodeRate } from './dsp/native-rate.js';
+import { bufferSecondsElapsed, realSecondsUntil, SPEED_FACTORS } from './dsp/varispeed.js';
 
 const SCHEDULE_DELAY = 0.03;      // s, shared start offset so segments align
 const MIN_SEG = 0.001;            // s, ignore slivers below this
@@ -27,6 +28,10 @@ export class Engine extends EventTarget {
     this._gen = 0;            // invalidates stale onended callbacks
     this._raf = 0;
     this._lastEmit = 0;
+    // Speed factor: 1, 2 or 4. Playback runs at 1/factor and every conversion
+    // between real time and buffer time goes through varispeed.js so the
+    // playhead neither races nor crawls.
+    this._rate = 1;
   }
 
   // decodeAudioData resamples to the context's rate, so a 96 or 192 kHz file
@@ -79,6 +84,7 @@ export class Engine extends EventTarget {
     this._alt = null;
     this._lastCuts = [];
     this._position = 0;
+    this._rate = 1;
     this.dispatchEvent(new CustomEvent('loaded', { detail: {} }));
   }
 
@@ -95,6 +101,7 @@ export class Engine extends EventTarget {
     this._position = 0;
     this._segs = [];
     this._totalKept = 0;
+    this._rate = 1;
     this.dispatchEvent(new CustomEvent('time', { detail: { t: 0 } }));
     this.dispatchEvent(new CustomEvent('loaded', { detail: {} }));
   }
@@ -132,7 +139,7 @@ export class Engine extends EventTarget {
   get currentTime() {
     if (!this._playing || !this._ctx) return this._position;
     const elapsed = Math.max(0, this._ctx.currentTime - this._t0);
-    const edited = Math.min(this._editedStart + elapsed, this._totalKept);
+    const edited = Math.min(this._editedStart + bufferSecondsElapsed(elapsed, this._rate), this._totalKept);
     return originalOf(edited, this._segs);
   }
 
@@ -169,8 +176,10 @@ export class Engine extends EventTarget {
       if (len < MIN_SEG) continue;
       const src = ctx.createBufferSource();
       src.buffer = buf;
+      src.playbackRate.value = 1 / this._rate;
       src.connect(this._master);
-      src.start(t0 + editedOf(segStart, segs) - editedStart, segStart, len);
+      // offset and duration are in buffer time; only the START moment is real time.
+      src.start(t0 + realSecondsUntil(editedOf(segStart, segs) - editedStart, this._rate), segStart, len);
       this._sources.push(src);
       last = src;
     }
@@ -193,6 +202,20 @@ export class Engine extends EventTarget {
     this._playing = true;
     if (!wasPlaying) this.dispatchEvent(new CustomEvent('state', { detail: { playing: true } }));
     this._startTick();
+  }
+
+  get rate() { return this._rate; }
+
+  // Change speed without losing the place. If playing, reschedule from the
+  // current buffer position so the new rate takes effect immediately.
+  setRate(factor) {
+    const f = SPEED_FACTORS.includes(factor) ? factor : 1;
+    if (f === this._rate) return;
+    const wasPlaying = this._playing;
+    const pos = wasPlaying ? this.currentTime : this._position;
+    this._rate = f;
+    if (wasPlaying) this.play(this._lastCuts, pos);
+    else this._position = pos;
   }
 
   pause() {

@@ -114,3 +114,22 @@ artifacts, not bandwidth. Do not promote either as hi-res *content*; the
 spectrogram is the authority on what a container actually holds. Nothing on
 archive.org with an open licence and genuine energy above 24 kHz was found in
 a 130-item sweep on 2026-09-01 — that material has to be recorded.
+
+## 7. SPEED prints the same samples under a slower clock
+
+Drop a 96 kHz file whose only content sits at 26–34 kHz (the generator in
+`test/run.mjs`'s varispeed block makes one) → SPEED to **¼×** → PLAY → WAV 32F.
+
+| checkpoint | expected |
+|---|---|
+| SPEED button | cycles `1× → ½× → ¼×`, lit blue when not 1× |
+| status at ¼× | `¼× SPEED · 24 kHz CLOCK · ABOVE 12 kHz IN THE SOURCE IS NOW AUDIBLE` |
+| playhead | buffer-seconds ÷ real-seconds = **0.25** (measured 0.493 / 2.00) |
+| export name | `…bench.quarter-speed.32.wav` |
+| export header | **24000 Hz**, frame count **identical** to the source (553,920 for 5.77 s) |
+| the payoff | the note authored at 26 kHz reads **−10.9 dBFS at 6.5 kHz**; 3 kHz control −93 |
+| back at 1× | export has no suffix and a 96000 Hz header |
+
+Nothing is resampled: the printed file is bit-exact, only the header rate
+changes. That is why the frame count must match the source exactly — a
+mismatch means something started interpolating.

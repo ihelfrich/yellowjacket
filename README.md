@@ -69,6 +69,18 @@ the cicada into a kit, transcribe Hiawatha and weave four of its words onto a
 gesture in LOOM, and something that was nobody's becomes something you can
 play.
 
+**SPEED**, on the transport, plays and prints the source at ½× or ¼×. This is
+the found-sound move that makes a 96 kHz recording worth keeping: run it at a
+quarter of its clock and everything drops two octaves, so the 24–48 kHz a 48 kHz
+file could never hold lands at 6–12 kHz where you can hear it. Done honestly it
+is not DSP at all. Playback is the buffer's own playback rate; the printed file is
+the **same samples under a header that says a quarter of the rate** — bit-exact,
+reversible, nothing resampled, nothing invented — and the filename says
+`quarter-speed` so it can never be mistaken for the source. Only ½ and ¼ are
+offered, and only when the resulting clock stays at or above 8 kHz, which is the
+floor WAV and the browser both enforce. Speed resets to 1× whenever a new source
+loads.
+
 ## Why this exists
 
 Descript proved that editing speech by editing text is the right interface, then built it

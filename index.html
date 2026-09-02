@@ -11,6 +11,7 @@
 <link rel="preload" href="assets/fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/plex-mono-600.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="modulepreload" href="js/dsp/native-rate.js">
+<link rel="modulepreload" href="js/dsp/varispeed.js">
 <link rel="modulepreload" href="js/audio-engine.js">
 <link rel="modulepreload" href="js/render/peaks.js">
 <link rel="modulepreload" href="js/waveform.js">
@@ -108,6 +109,7 @@
     <button id="btnPlay" class="yj-btn yj-btn-play" title="Play / pause (Space)">PLAY</button>
     <div class="yj-well yj-time" id="roTime">--:--.---</div>
     <div class="yj-well yj-time yj-time-dim" id="roDur">--:--.---</div>
+    <button id="btnSpeed" class="yj-btn yj-btn-compact" title="Play and print the source at ½ or ¼ speed — same samples, slower clock, pitched down. Bit-exact." disabled>1×</button>
   </div>
   <div class="yj-io">
     <div class="yj-history" role="group" aria-label="Edit history">

@@ -45,6 +45,7 @@ import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '..
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
 import { ndsi } from '../js/analysis/soundscape.js';
+import { slowedBuffer, speedFactorsFor, bufferSecondsElapsed, realSecondsUntil } from '../js/dsp/varispeed.js';
 import {
   harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS, planKitAssignment, kitGainFor, peakOfChannels,
 } from '../js/analysis/harvest.js';
@@ -4183,7 +4184,65 @@ const soundscapeCases = [
   },
 ];
 
+// ---------- varispeed: play and print the source at 1/2 or 1/4 speed ----------
+//
+// The found-sound technique that makes a 96 kHz recording worth keeping: run it
+// at a quarter of the clock and 24-48 kHz drops into the audible band. Done
+// honestly it is not DSP at all — the same samples with a slower clock, which is
+// bit-exact and reversible. Playback is AudioBufferSourceNode.playbackRate;
+// export is the same PCM under a header that says rate / factor.
+
+function vsBuffer(rate, frames, channels = 1, fill = (i) => Math.sin(i / 7)) {
+  const data = Array.from({ length: channels }, (_, c) => Float32Array.from({ length: frames }, (_, i) => fill(i + c)));
+  return { sampleRate: rate, length: frames, numberOfChannels: channels, duration: frames / rate,
+    getChannelData: (c) => data[c] };
+}
+
+const varispeedCases = [
+  function slowedBufferKeepsEverySampleAndQuartersTheClock() {
+    const src = vsBuffer(96000, 9600, 2);
+    const out = slowedBuffer(src, 4);
+    assert.equal(out.sampleRate, 24000, 'clock divided, nothing resampled');
+    assert.equal(out.length, 9600, 'same frame count');
+    assert.equal(out.numberOfChannels, 2);
+    assert.ok(Math.abs(out.duration - 0.4) < 1e-9, 'four times longer');
+    for (let c = 0; c < 2; c++) {
+      const a = src.getChannelData(c), b = out.getChannelData(c);
+      for (let i = 0; i < a.length; i += 97) assert.equal(b[i], a[i], 'bit-exact at ' + i);
+    }
+  },
+  function slowedBufferRefusesAClockTheContainerCannotCarry() {
+    // WAV and AudioBuffer both bottom out at 8 kHz; 22.05 / 4 = 5512 is not a file.
+    assert.throws(() => slowedBuffer(vsBuffer(22050, 100), 4), /8000|too low|floor/i);
+    assert.doesNotThrow(() => slowedBuffer(vsBuffer(32000, 100), 4), '32k / 4 = 8k is the edge and legal');
+  },
+  function slowedBufferOnlyOffersTheTwoHonestFactors() {
+    assert.throws(() => slowedBuffer(vsBuffer(48000, 100), 3), /factor/i);
+    assert.throws(() => slowedBuffer(vsBuffer(48000, 100), 1), /factor/i);
+    assert.throws(() => slowedBuffer(vsBuffer(48000, 100), 0.5), /factor/i);
+  },
+  function speedFactorsAreClampedToWhatTheSourceCanBear() {
+    // Offer 1/4 only when rate/4 >= 8000; offer 1/2 when rate/2 >= 8000.
+    assert.deepEqual(speedFactorsFor(96000), [1, 2, 4]);
+    assert.deepEqual(speedFactorsFor(48000), [1, 2, 4]);
+    assert.deepEqual(speedFactorsFor(32000), [1, 2, 4]);
+    assert.deepEqual(speedFactorsFor(22050), [1, 2]);
+    assert.deepEqual(speedFactorsFor(8000), [1]);
+    assert.deepEqual(speedFactorsFor(0), [1]);
+  },
+  function engineTimeMathScalesTheRightWay() {
+    // At 1/4 speed one real second advances a quarter second of buffer, and a
+    // segment two buffer-seconds ahead starts eight real seconds later. Getting
+    // either direction inverted makes the playhead race or crawl.
+    assert.equal(bufferSecondsElapsed(1.0, 4), 0.25);
+    assert.equal(bufferSecondsElapsed(1.0, 1), 1.0);
+    assert.equal(realSecondsUntil(2.0, 4), 8.0);
+    assert.equal(realSecondsUntil(2.0, 1), 2.0);
+  },
+];
+
 const groups = [
+  ['varispeed', varispeedCases],
   ['soundscape', soundscapeCases],
   ['starter groove', grooveCases],
   ['kit levelling', kitLevelCases],

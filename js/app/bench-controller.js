@@ -9,6 +9,7 @@ import { LOOM_TRANSCRIPT_MAX_WORDS } from '../loom/compile.js';
 import { mixdownMono } from '../audio-engine.js';
 import { buildPeakPyramid } from '../render/peaks.js';
 import { ndsi } from '../analysis/soundscape.js';
+import { speedFactorsFor, slowedBuffer, speedLabel } from '../dsp/varispeed.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -22,6 +23,7 @@ export function initBenchController(ctx) {
   // sides so the blue ghost costs nothing on toggle. Null until a render exists.
   let renderedMono = null;
   let renderedPeaks = null;
+  let speed = 1;               // 1, 2 or 4: play and print at 1/speed
   let cuts = [];
   let meterHooked = false;
   let deviceLabel = '—';
@@ -515,7 +517,20 @@ export function initBenchController(ctx) {
     if (!buf) {
       buf = cuts.length ? spliceCuts(R.buffer, cuts) : R.buffer;
     }
-    const name = (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '') + '.bench.' + bits + '.wav';
+    // Printing at speed is the same samples under a slower clock — bit-exact.
+    // The filename says so, because a quarter-speed file is not the source.
+    let speedTag = '';
+    if (speed > 1) {
+      try {
+        buf = slowedBuffer(buf, speed);
+      } catch (error) {
+        statusFault('EXPORT FAULT · ' + (error && error.message ? error.message : error));
+        return;
+      }
+      speedTag = speed === 4 ? '.quarter-speed' : '.half-speed';
+    }
+    const speedNote = speed > 1 ? speedLabel(speed) + ' SPEED · ' : '';
+    const name = (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '') + '.bench' + speedTag + '.' + bits + '.wav';
     // The whole file is built as one ArrayBuffer. Since the 48 kHz decode cap
     // was lifted and float was added, that single allocation can reach hundreds
     // of megabytes, and a RangeError inside a click handler would leave no
@@ -535,19 +550,43 @@ export function initBenchController(ctx) {
     download(blob, name, 'audio/wav');
     const rate = Math.round((buf && buf.sampleRate ? buf.sampleRate : 0) / 1000);
     if (stats.clippedSamples > 0 && bits !== 32) {
-      statusFault('EXPORTED WITH ' + stats.clippedSamples + ' OVERS · peak ' + stats.peakDb.toFixed(2) + ' dBFS — pull the limiter in.');
+      statusFault('EXPORTED ' + speedNote + 'WITH ' + stats.clippedSamples + ' OVERS · peak ' + stats.peakDb.toFixed(2) + ' dBFS — pull the limiter in.');
     } else if (bits === 32) {
       // Float keeps overs instead of clamping them, so an over is information
       // rather than damage: report it without calling it a fault.
-      status('EXPORTED 32-BIT FLOAT · ' + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS'
+      status('EXPORTED ' + speedNote + '32-BIT FLOAT · ' + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS'
         + (stats.clippedSamples > 0 ? ' · ' + stats.clippedSamples + ' OVERS KEPT' : ''));
     } else {
-      status('EXPORTED · ' + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS · DITHER ' + stats.dither.toUpperCase());
+      status('EXPORTED · ' + speedNote + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS · DITHER ' + stats.dither.toUpperCase());
     }
   }
   $('btnWav16').addEventListener('click', () => exportWav(16));
   $('btnWav24').addEventListener('click', () => exportWav(24));
   $('btnWav32').addEventListener('click', () => exportWav(32));
+
+  // ---------- speed: play and print at 1/2 or 1/4 ----------
+  function setSpeed(factor) {
+    const allowed = speedFactorsFor(R.sampleRate);
+    speed = allowed.includes(factor) ? factor : 1;
+    engine.setRate(speed);
+    const b = $('btnSpeed');
+    if (b) {
+      b.textContent = speedLabel(speed);
+      b.classList.toggle('is-active', speed > 1);
+      b.title = speed > 1
+        ? 'Playing and printing at ' + speedLabel(speed) + ' — same samples, clock at '
+          + Math.round(R.sampleRate / speed / 1000) + ' kHz, pitched down ' + (speed === 4 ? 'two octaves' : 'an octave')
+        : 'Play and print the source at ½ or ¼ speed — same samples, slower clock, pitched down. Bit-exact.';
+    }
+    if (speed > 1) status(speedLabel(speed) + ' SPEED · ' + Math.round(R.sampleRate / speed / 1000) + ' kHz CLOCK · '
+      + 'ABOVE ' + Math.round(R.sampleRate / 2 / speed / 1000) + ' kHz IN THE SOURCE IS NOW AUDIBLE');
+    else status(COPY.loaded);
+  }
+  $('btnSpeed').addEventListener('click', () => {
+    const allowed = speedFactorsFor(R.sampleRate);
+    const i = allowed.indexOf(speed);
+    setSpeed(allowed[(i + 1) % allowed.length]);
+  });
 
   // ---------- per-source reset (called by source-controller after decode) ----------
   function resetForSource(hasSource = true) {
@@ -556,6 +595,8 @@ export function initBenchController(ctx) {
     renderedMono = null;
     renderedPeaks = null;
     if ($('soundscape')) $('soundscape').hidden = true;
+    speed = 1;
+    if ($('btnSpeed')) { $('btnSpeed').textContent = speedLabel(1); $('btnSpeed').classList.remove('is-active'); $('btnSpeed').disabled = !hasSource; }
     liftRange = null;
     setAb('a');
     $('abToggle').hidden = true;
