@@ -22,7 +22,7 @@ import {
 } from '../js/app/persist.js';
 import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
 import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
-import { FIELD_RECORDINGS, fieldLicenseUrl } from '../js/app/field-library.js';
+import { FIELD_RECORDINGS, fieldLicenseUrl, SHELVES, variantFor } from '../js/app/field-library.js';
 import {
   sniffSampleRate, planDecodeRate, probeContainer, decodedFootprintBytes,
 } from '../js/dsp/native-rate.js';
@@ -958,21 +958,40 @@ const lifecycleCases = [
     // hand-license-checked archive.org stream. A malformed entry would render
     // a dead button on the drop zone with no console error to explain it.
     const ids = new Set();
-    assert.ok(FIELD_RECORDINGS.length >= 8, 'a real shelf, not a stub');
+    assert.ok(FIELD_RECORDINGS.length >= 16, 'five shelves, not a stub');
+    const shelves = new Set();
     for (const rec of FIELD_RECORDINGS) {
       assert.ok(rec.id && !ids.has(rec.id), 'unique id: ' + rec.id);
       ids.add(rec.id);
-      for (const key of ['title', 'place', 'kind', 'dur', 'url', 'source', 'license']) {
+      for (const key of ['title', 'place', 'kind', 'dur', 'source', 'license', 'shelf']) {
         assert.ok(rec[key], rec.id + ' has ' + key);
       }
-      assert.match(rec.url, /^https:\/\/archive\.org\/download\//, rec.id + ' streams from archive.org');
+      assert.ok(SHELVES.includes(rec.shelf), rec.id + ' sits on a known shelf');
+      shelves.add(rec.shelf);
       assert.match(rec.source, /^https:\/\/archive\.org\/details\//, rec.id + ' cites its item page');
-      assert.ok(rec.url.slice('https://archive.org/download/'.length)
-        .startsWith(rec.source.slice('https://archive.org/details/'.length) + '/'),
-        rec.id + ' url lives under its source item');
       assert.match(rec.dur, /^\d+:\d\d$/, rec.id + ' duration reads as M:SS');
       assert.ok(fieldLicenseUrl(rec.license), rec.id + ' license tag resolves to a deed URL');
+      // Every variant must stream from the item it cites, and a lossless
+      // variant must carry the header-read rate and depth the badge shows.
+      const item = rec.source.slice('https://archive.org/details/'.length) + '/';
+      assert.ok(rec.light || rec.hi, rec.id + ' has at least one variant');
+      for (const v of [rec.light, rec.hi].filter(Boolean)) {
+        assert.match(v.url, /^https:\/\/archive\.org\/download\//, rec.id + ' streams from archive.org');
+        assert.ok(v.url.slice('https://archive.org/download/'.length).startsWith(item),
+          rec.id + ' variant lives under its source item');
+        assert.ok(Number.isFinite(v.mb) && v.mb > 0, rec.id + ' states its size');
+        if (v.format === 'FLAC') {
+          assert.ok([44100, 48000, 88200, 96000, 192000].includes(v.rate), rec.id + ' plausible rate ' + v.rate);
+          assert.ok([16, 24].includes(v.bits), rec.id + ' plausible depth ' + v.bits);
+          assert.match(v.url, /\.flac$/i, rec.id + ' lossless variant is a .flac');
+        }
+      }
+      assert.equal(variantFor(rec, false), rec.light || rec.hi, rec.id + ' LIGHT prefers the MP3');
+      assert.equal(variantFor(rec, true), rec.hi || rec.light, rec.id + ' LOSSLESS prefers the original');
     }
+    for (const name of SHELVES) assert.ok(shelves.has(name), 'shelf ' + name + ' is not empty');
+    assert.ok(FIELD_RECORDINGS.some((r) => r.hi && r.hi.rate >= 96000), 'at least one genuine 96 kHz original');
+    assert.ok(FIELD_RECORDINGS.some((r) => r.shelf === 'VOICE'), 'the transcript bench has speech to try');
     // Discoverable: the drop zone hosts it, the worker precaches the module.
     const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     const worker = await readFile(new URL('../sw.js', import.meta.url), 'utf8');

@@ -90,3 +90,27 @@ toward one another the index has stopped measuring anything.
 The Berlin recording is the interesting one: its own title says songbirds
 against traffic, and it lands between the pure-nature and pure-city readings but
 on the city side, which is what a 4 a.m. rush-hour roar under birdsong should do.
+
+## 6. The shelf streams lossless originals at their real rate
+
+SHELF (header) → LOSSLESS → MUSIC → *Society Blues · 1921*.
+
+| checkpoint | expected |
+|---|---|
+| chips | FIELD · VOICE · SCORE · MUSIC · ODD, plus a blue LIGHT/LOSSLESS switch |
+| card badge, LOSSLESS | `96k · 24-bit`, `63.6 MB` — read from the FLAC header, not archive metadata |
+| load | status shows fetch %, then `96.0k · 03:12` on a 96 kHz output (or the offline native-rate path on a 48 kHz one) |
+| decode report | `nativeRate 96000, decodedRate 96000, upsampled false` |
+| VOICE → *Hiawatha's Childhood* | 4:52 of read speech — the first stock source the TRANSCRIPT bench has ever had |
+| reload | the LIGHT/LOSSLESS choice persists (`localStorage yj-shelf-lossless`) |
+
+Honesty check that belongs here, measured in the live app with a 32k Hann
+window and 250 Hz Goertzel steps: **Cicada Orni** (96 kHz FLAC) has **-114 dBFS**
+above 24 kHz, and **Kid Ory 1921** (96 kHz / 24-bit transfer) has **-110 dBFS**
+there, with its real energy at 0.25-2 kHz (-65) and a steep roll-off — a 1921
+acoustic recording physically tops out near 5 kHz. Both badges are factual and
+neither file is ultrasonic material. The gain on LOSSLESS is 24-bit and no codec
+artifacts, not bandwidth. Do not promote either as hi-res *content*; the
+spectrogram is the authority on what a container actually holds. Nothing on
+archive.org with an open licence and genuine energy above 24 kHz was found in
+a 130-item sweep on 2026-09-01 — that material has to be recorded.

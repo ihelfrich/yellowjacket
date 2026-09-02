@@ -813,3 +813,18 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-soundscape-note {
   font-family: var(--f-mono); font-size: 8.5px; line-height: 1.4; color: var(--yj-ink-dim); opacity: 0.8;
 }
+
+/* ---------- the shelf: five drawers, one quality switch ---------- */
+.yj-shelf-chips { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; width: 100%; }
+.yj-shelf-chip {
+  font-family: var(--f-mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.14em;
+  color: var(--yj-ink-dim); background: var(--yj-well); border: 1px solid var(--yj-line);
+  border-radius: 2px; padding: 4px 9px; cursor: pointer;
+}
+.yj-shelf-chip:hover { border-color: var(--yj-line-hi); color: var(--yj-ink); }
+.yj-shelf-chip.is-active { background: var(--yj-yellow); border-color: var(--yj-yellow); color: var(--yj-bg); }
+.yj-shelf-quality { margin-left: 10px; color: var(--yj-blue); border-color: var(--yj-blue-dim); }
+.yj-shelf-quality.is-active { background: var(--yj-blue); border-color: var(--yj-blue); color: var(--yj-bg); }
+.yj-field-head-row { display: flex; justify-content: space-between; width: 100%; align-items: baseline; }
+.yj-field-badge { font-size: 8.5px; letter-spacing: 0.08em; color: var(--yj-ink-dim); }
+.yj-field-badge.is-lossless { color: var(--yj-blue); }

@@ -41,18 +41,33 @@ that claim to are servers doing the ripping for you. Paste one of those links an
 Yellowjacket writes you the yt-dlp command with your URL already in it, so the rip
 happens on your machine and the file lands back on the bench.
 
-**FIELD** is a curated shelf of nine public-domain field recordings — a nightingale at
-midnight, Berlin songbirds against the rush-hour roar, ocean waves booming through the
-lava caves of Pico Island, surf at Cox's Bazar, a Somerset thunderstorm, thunder through
-rain, a small brook, spring peepers in the dark, and a Sevilla street marathon under
-church bells. Each one streams from archive.org (which serves audio with CORS headers,
-so a static page can fetch it) and lands on the bench like any other source. The point
-is not background ambience: load the dawn chorus and the spectrogram shows every bird as
-its own drawn line, the surf as a slow broadband heartbeat, the storm as a wall. SLICE a
-wave-crash into the sample machine, LOOM a birdsong phrase onto a MIDI gesture, and a
-place you've stood becomes something you can play. Every entry is CC0 or Public Domain
-Mark, checked by hand at its archive.org item page, so nothing you make from these owes
-anyone attribution.
+**THE SHELF** started as nine field recordings and grew into five drawers, all
+streamed from archive.org (which serves audio with CORS headers, so a static
+page can fetch it) and all licence-checked by hand at their item pages — CC0,
+Public Domain Mark, or old enough to be nobody's. **FIELD** holds places: a
+nightingale at midnight, Berlin songbirds against the rush-hour roar, waves in
+the lava caves of Pico Island, surf at Cox's Bazar, a Somerset thunderstorm, a
+brook, spring peepers, night insects in Los Gatos, a cicada in one Catalan tree,
+a Sevilla street under church bells. **VOICE** holds words, because a bench that
+transcribes speech had no speech to try: Longfellow's *Hiawatha's Childhood*
+read aloud, and eight minutes of the NASA control room on the day Voyager 1
+left. **SCORE** holds Bach's Goldberg Variations from Musopen, in 24-bit.
+**MUSIC** holds two 78s from 1921 and 1922 — Kid Ory's Sunshine Orchestra, the
+first jazz record by a Black New Orleans band, and Ethel Waters singing —
+transferred at 96 kHz/24-bit. **ODD** holds Stephen McGreevy's recordings of
+the Earth's magnetosphere: a dawn chorus that is not birds, and lightning heard
+as a descending whistler.
+
+The shelf has one switch. **LIGHT** streams the MP3 the archive derived;
+**LOSSLESS** streams the original where one exists, and the badge on each card
+shows the rate and depth read from that file's own header, not from the
+archive's metadata. A 96 kHz label is not 96 kHz of content — the cicada is 96
+kHz on the tin and ordinary bandwidth inside — so the spectrogram, not the
+badge, is the authority on what a recording holds. The point of any of it is
+not background listening: SLICE a wave-crash into the sample machine, HARVEST
+the cicada into a kit, transcribe Hiawatha and weave four of its words onto a
+gesture in LOOM, and something that was nobody's becomes something you can
+play.
 
 ## Why this exists
 
