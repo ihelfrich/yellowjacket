@@ -756,6 +756,12 @@ export function initMachineController(ctx) {
   patternView.addEventListener('fill', (e) => {
     sequencer.fill = !!e.detail.on;
   });
+  // The ninth lane's one-press fill. Loom owns the weave; this only relays.
+  patternView.addEventListener('loomquicktake', () => {
+    if (ctx.api.quickTake) ctx.api.quickTake();
+    else statusFault('QUICK TAKE · LOOM IS NOT READY');
+  });
+
   patternView.addEventListener('run', () => {
     if (!machineHasPerformance()) {
       statusFault('Nothing to run. Load a kit or arm a Semantic Take to this scene.');

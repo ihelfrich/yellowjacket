@@ -495,6 +495,14 @@ export class PatternView extends EventTarget {
       this._emit('loomgain', { gainDb });
     });
 
+    // Shown only while the lane is empty: the one-press way to fill it.
+    const quick = document.createElement('button');
+    quick.type = 'button';
+    quick.className = 'yj-btn yj-btn-primary';
+    quick.textContent = 'QUICK TAKE';
+    quick.title = 'Cut four spans from the loaded recording, weave them onto the starter phrase, arm this lane, and run';
+    quick.addEventListener('click', () => this._emit('loomquicktake', {}));
+
     const trace = document.createElement('button');
     trace.type = 'button';
     trace.className = 'yj-btn';
@@ -522,9 +530,9 @@ export class PatternView extends EventTarget {
     print.title = 'Render this Loom lane as a 24-bit WAV';
     print.addEventListener('click', () => this._emit('loomprint', {}));
 
-    controls.append(state, toggle, gain, gainVal, trace, edit, print);
+    controls.append(state, quick, toggle, gain, gainVal, trace, edit, print);
     root.append(identity, events, controls);
-    return { root, led, source, cells, state, toggle, gain, gainVal, trace, edit, print, groups: [] };
+    return { root, led, source, cells, state, quick, toggle, gain, gainVal, trace, edit, print, groups: [] };
   }
 
   _loomStep(event) {
@@ -568,6 +576,10 @@ export class PatternView extends EventTarget {
     const gestureLabel = plan && plan.gesture && plan.gesture.label;
     const identity = [sourceLabel || 'SOURCE', gestureLabel || 'GESTURE'].join(' × ').toUpperCase();
     row.source.textContent = plan ? identity : 'NO SEMANTIC TAKE ARMED';
+    // Offer the take whenever the lane has nothing PLAYABLE: empty, or holding a
+    // plan whose source has been swapped out from under it. An offline take is
+    // kept for its trace, not as a reason to hide the door.
+    if (row.quick) row.quick.hidden = !!(plan && online);
     row.source.title = plan ? identity : '';
     row.led.classList.toggle('is-online', !!plan && online);
     row.led.classList.toggle('is-offline', !!plan && !online);

@@ -150,3 +150,21 @@ The level is total power in the band relative to a full-scale sine (Hann gain
 corrected), measured once per source. The "nothing" threshold is −90 dBFS. A
 file that reads 96 kHz because the OUTPUT context upsampled it (see §7 of the
 audit) is exactly the case the second row exists for.
+
+## 9. QUICK TAKE fills the ninth lane in one press
+
+SHELF → *Nightingale* → MACHINE → PATTERN → **QUICK TAKE** (in the LOOM LANE row).
+
+| checkpoint | expected |
+|---|---|
+| empty lane | row reads `NO SEMANTIC TAKE ARMED` · `NO TAKE`, and a yellow **QUICK TAKE** sits in its control row |
+| press | status `QUICK TAKE · 9 EVENTS ON LANE 9 · RUNNING · EVERY HIT TRACES TO THE SOURCE` |
+| lane | `SCENE 1 · 9 EVENTS · ONLINE`, source `NIGHTINGALE … × STARTER GESTURE`, transport reads STOP (running), QUICK TAKE hidden |
+| press again | idempotent — same content-addressed plan, still 9 events (caught by accident: a swallowed `return` pressed it twice) |
+| swap source (load *A Small Brook*) | lane keeps the old plan **OFFLINE** for its trace, and **QUICK TAKE reappears** |
+| press | a new take on the brook: `A SMALL BROOK … × STARTER GESTURE`, ONLINE, running, button hidden |
+
+The button hides on `plan && online`, not on `plan` alone. Armed plans deliberately
+survive a source swap so TRACE still works; an offline plan must never be the
+reason the door to a new take is shut. The same action is `QUICK TAKE · WEAVE
+THIS SOURCE` in the command deck.

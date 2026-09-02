@@ -63,7 +63,7 @@ import {
 import { studioMidiFile, variableLength } from '../js/studio/midi.js';
 import { compileStudioScore } from '../js/studio/compile.js';
 import {
-  canonicalLoomPlanId, compileLoomPlan, demoMidiGesture, LOOM_TRANSCRIPT_MAX_VOICES,
+  canonicalLoomPlanId, compileLoomPlan, demoMidiGesture, demoRegionFor, LOOM_TRANSCRIPT_MAX_VOICES,
   LOOM_TRANSCRIPT_MAX_WORDS, sourceMatchesPlan, spanMaterials, studioGesture,
   sameLoomPlanContent, traceLoomEvent, transcriptMaterials, TranscriptMaterialError,
 } from '../js/loom/compile.js';
@@ -4280,7 +4280,43 @@ const slowCases = [
   },
 ];
 
+// ---------- quick take: the span a one-press weave picks ----------
+//
+// DEMO REGION's span math lived inline in the controller. QUICK TAKE reuses it
+// from MACHINE, so it becomes a pure function with the two rules pinned: the
+// bundled demo gets its fixed, auditioned bar; anything else gets a window of
+// at most 3.6 s taken a quarter of the way in, clamped to the file.
+
+const quickTakeCases = [
+  function bundledDemoGetsItsFixedBar() {
+    const r = demoRegionFor(160, 'Sparks — Zane Little.mp3');
+    assert.ok(Math.abs(r.startSec - 90.047) < 1e-9 && Math.abs(r.endSec - 93.646) < 1e-9);
+    assert.equal(r.label, 'SPARKS');
+  },
+  function otherSourcesGetAWindowAQuarterOfTheWayIn() {
+    const r = demoRegionFor(100, 'nightingale.flac');
+    assert.equal(r.startSec, 25, 'a quarter in');
+    assert.ok(Math.abs((r.endSec - r.startSec) - 3.599) < 1e-9, 'capped at 3.599 s');
+    assert.equal(r.label, 'SOURCE');
+  },
+  function shortSourcesAreClampedNotOverrun() {
+    const r = demoRegionFor(2, 'blip.wav');
+    assert.equal(r.startSec, 0, 'cannot start a quarter in when the window would spill past the end');
+    assert.equal(r.endSec, 2, 'ends at the file');
+    const tiny = demoRegionFor(0.2, 'tick.wav');
+    assert.equal(tiny.startSec, 0);
+    assert.ok(tiny.endSec <= 0.2 + 1e-9, 'never past the end');
+  },
+  function sparksNameAloneIsNotEnough() {
+    // A 30-second file called sparks.wav cannot contain second 90.
+    const r = demoRegionFor(30, 'sparks.wav');
+    assert.ok(r.endSec <= 30, 'falls back to the general rule');
+    assert.equal(r.label, 'SOURCE');
+  },
+];
+
 const groups = [
+  ['quick take', quickTakeCases],
   ['slow view', slowCases],
   ['varispeed', varispeedCases],
   ['soundscape', soundscapeCases],

@@ -467,3 +467,17 @@ export function sourceMatchesPlan(plan, { id = null, hash = null, name = null, s
   // considered online or enter an audio print without cryptographic identity.
   return !!expected && !!actual && expected === actual;
 }
+
+// The span DEMO REGION and QUICK TAKE cut from a source: the bundled demo gets
+// its auditioned bar, anything else a window of at most 3.6 s a quarter of the
+// way in, clamped to the file. A name alone does not earn the fixed bar — a
+// thirty-second file called sparks.wav has no second 90.
+export function demoRegionFor(durationSec, fileName = '') {
+  const duration = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0;
+  const sparks = /sparks/i.test(String(fileName || '')) && duration > 94;
+  if (sparks) return { startSec: 90.047, endSec: 93.646, label: 'SPARKS' };
+  const length = Math.min(3.599, Math.max(0.4, duration));
+  const startSec = Math.max(0, Math.min(duration - length, duration * 0.25));
+  const endSec = Math.min(duration, startSec + length);
+  return { startSec, endSec, label: 'SOURCE' };
+}

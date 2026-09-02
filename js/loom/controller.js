@@ -2,7 +2,7 @@
 // one reversible plan, and auditions it directly from the immutable source.
 
 import {
-  compileLoomPlan, demoMidiGesture, sameLoomPlanContent, sourceMatchesPlan, spanMaterials,
+  compileLoomPlan, demoMidiGesture, demoRegionFor, sameLoomPlanContent, sourceMatchesPlan, spanMaterials,
   studioGesture, traceLoomEvent, transcriptMaterials,
 } from './compile.js';
 import { captureBarDuration, capturedMidiGesture } from './capture.js';
@@ -449,16 +449,13 @@ export function initLoomController(ctx) {
   view.addEventListener('demomaterial', () => {
     if (!R.buffer) return;
     const source = sourceDescriptor(P, R);
-    const sparks = /sparks/i.test(P.fileName || '') && R.buffer.duration > 94;
-    const length = Math.min(3.599, Math.max(0.4, R.buffer.duration));
-    const start = sparks ? 90.047 : Math.max(0, Math.min(R.buffer.duration - length, R.buffer.duration * 0.25));
-    const end = sparks ? 93.646 : Math.min(R.buffer.duration, start + length);
+    const region = demoRegionFor(R.buffer.duration, P.fileName);
     const materials = spanMaterials({
       sourceId: source.id, sourceName: source.name, sourceSize: source.size,
-      startSec: start, endSec: end, segments: 4, label: sparks ? 'SPARKS' : 'SOURCE',
+      startSec: region.startSec, endSec: region.endSec, segments: 4, label: region.label,
     });
     setMaterial(materials, 'source-span');
-    status('LOOM MATERIAL · ' + (end - start).toFixed(2) + 'S · 4 REAL SOURCE SPANS');
+    status('LOOM MATERIAL · ' + (region.endSec - region.startSec).toFixed(2) + 'S · 4 REAL SOURCE SPANS');
   });
 
   view.addEventListener('gesturechange', (event) => {
@@ -705,6 +702,27 @@ export function initLoomController(ctx) {
   const restored = currentPlan();
   if (restored) restorePlanIntoEditor(restored);
   refresh();
+  // One press from anywhere: four real spans from the loaded source, woven
+  // onto the starter phrase, armed as the ninth lane, and running. The same
+  // three handlers a person would click, in order, with each step checked
+  // before the next — a failed weave must not arm a stale plan.
+  ctx.api.quickTake = () => {
+    if (!R.buffer) { statusFault('QUICK TAKE · LOAD A RECORDING FIRST'); return false; }
+    if (gestureChoice !== 'demo' || !gesture || gesture.kind === 'midi-capture') chooseDemoGesture();
+    const before = P.loom.activePlanId || null;
+    view.dispatchEvent(new CustomEvent('demomaterial'));
+    if (!material) return false;
+    view.dispatchEvent(new CustomEvent('weave'));
+    const plan = currentPlan();
+    if (!plan || (before === plan.id && P.loom.weaveCount === 0) || !planIsOnline(plan)) return false;
+    view.dispatchEvent(new CustomEvent('arm', { detail: {} }));
+    const armed = P.machine.scenes[P.machine.activeScene | 0];
+    if (!armed || !armed.loomLane || armed.loomLane.planId !== plan.id) return false;
+    if (ctx.api.jump) ctx.api.jump('machine', 'pattern');
+    if (!sequencer.running && views.patternView) views.patternView.dispatchEvent(new CustomEvent('run'));
+    status('QUICK TAKE · ' + plan.events.length + ' EVENTS ON LANE 9 · RUNNING · EVERY HIT TRACES TO THE SOURCE');
+    return true;
+  };
   ctx.api.weaveTranscriptSelection = (range) => loadTranscriptRange(range, true);
   ctx.api.traceLoomEvent = (eventId, planId = null) => traceEventById(eventId, planId);
   ctx.api.openLoomPlan = openPlanById;
