@@ -500,7 +500,7 @@ export class PatternView extends EventTarget {
     quick.type = 'button';
     quick.className = 'yj-btn yj-btn-primary';
     quick.textContent = 'QUICK TAKE';
-    quick.title = 'Cut four spans from the loaded recording, weave them onto the starter phrase, arm this lane, and run';
+    quick.title = 'Weave what is selected — transcript words, a drag on the waveform, or the selected clip; else four spans from the recording — onto the starter phrase, arm this lane, and run';
     quick.addEventListener('click', () => this._emit('loomquicktake', {}));
 
     const trace = document.createElement('button');

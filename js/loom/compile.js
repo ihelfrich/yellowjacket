@@ -481,3 +481,40 @@ export function demoRegionFor(durationSec, fileName = '') {
   const endSec = Math.min(duration, startSec + length);
   return { startSec, endSec, label: 'SOURCE' };
 }
+
+// QUICK TAKE's grain: the demo bar is 3.6 s cut four ways, so ~0.9 s per span.
+// A drag-selection is tiled at that grain, up to the eight spans a plan takes;
+// past 8 × 1.2 s the window is truncated to its head rather than stretched,
+// because every span plays whole per hit and a 4 s grain is a smear, not a note.
+export const QUICK_TAKE_GRAIN_SEC = 0.9;
+export const QUICK_TAKE_MAX_SPANS = 8;
+export const QUICK_TAKE_MAX_SEC = 9.6;
+
+// What QUICK TAKE weaves, in order of how deliberate the signal is: a live
+// waveform selection, then the selected MACHINE clip, then the demo window.
+// (Transcript words rank above all three; the controller handles them because
+// they need the word table.) Returns {startSec, endSec, segments, label, kind,
+// truncated}. Degenerate selections — empty, reversed-to-nothing, outside the
+// file — are ignored, not clamped into a sliver.
+export function quickTakeRegion({ durationSec, fileName = '', selection = null, clip = null } = {}) {
+  const duration = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0;
+  if (selection && Number.isFinite(selection.start) && Number.isFinite(selection.end)) {
+    const a = Math.max(0, Math.min(selection.start, selection.end));
+    const b = Math.min(duration, Math.max(selection.start, selection.end));
+    if (b - a >= 0.05) {
+      const truncated = b - a > QUICK_TAKE_MAX_SEC + 1e-9;
+      const endSec = truncated ? a + QUICK_TAKE_MAX_SEC : b;
+      const segments = Math.max(1, Math.min(QUICK_TAKE_MAX_SPANS, Math.round((endSec - a) / QUICK_TAKE_GRAIN_SEC)));
+      return { startSec: a, endSec, segments, label: 'SELECTION', kind: 'selection', truncated, selectedSec: b - a };
+    }
+  }
+  if (clip && Number.isFinite(clip.start) && Number.isFinite(clip.end) && clip.end > clip.start) {
+    const a = Math.max(0, clip.start);
+    const b = duration ? Math.min(duration, clip.end) : clip.end;
+    if (b > a) {
+      return { startSec: a, endSec: b, segments: 1, label: clip.label || clip.tag || 'CLIP', kind: 'clip', truncated: false, selectedSec: b - a };
+    }
+  }
+  const demo = demoRegionFor(duration, fileName);
+  return { ...demo, segments: 4, kind: 'demo', truncated: false, selectedSec: demo.endSec - demo.startSec };
+}

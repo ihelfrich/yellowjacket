@@ -107,6 +107,12 @@ export class WaveformView extends EventTarget {
     this._composite();          // blit static layer + overlays; no peak recompute
   }
 
+  // The live drag-selection, as {start,end} seconds, or null. Read by QUICK TAKE
+  // so a drag on the bench is the material — until a plain click clears it.
+  get selection() {
+    return this._sel ? { start: this._sel.start, end: this._sel.end } : null;
+  }
+
   setSelection(sel) {
     if (sel && isFinite(sel.start) && isFinite(sel.end) && sel.end !== sel.start) {
       const a = Math.min(sel.start, sel.end);

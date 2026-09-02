@@ -64,6 +64,7 @@ import { studioMidiFile, variableLength } from '../js/studio/midi.js';
 import { compileStudioScore } from '../js/studio/compile.js';
 import {
   canonicalLoomPlanId, compileLoomPlan, demoMidiGesture, demoRegionFor, LOOM_TRANSCRIPT_MAX_VOICES,
+  quickTakeRegion, QUICK_TAKE_MAX_SEC, QUICK_TAKE_MAX_SPANS,
   LOOM_TRANSCRIPT_MAX_WORDS, sourceMatchesPlan, spanMaterials, studioGesture,
   sameLoomPlanContent, traceLoomEvent, transcriptMaterials, TranscriptMaterialError,
 } from '../js/loom/compile.js';
@@ -4312,6 +4313,64 @@ const quickTakeCases = [
     const r = demoRegionFor(30, 'sparks.wav');
     assert.ok(r.endSec <= 30, 'falls back to the general rule');
     assert.equal(r.label, 'SOURCE');
+  },
+  // quickTakeRegion: what the press weaves, by how deliberate the signal is.
+  function nothingSelectedFallsBackToTheDemoWindow() {
+    const r = quickTakeRegion({ durationSec: 100, fileName: 'brook.flac' });
+    assert.equal(r.kind, 'demo');
+    assert.equal(r.segments, 4);
+    assert.equal(r.startSec, 25);
+    assert.equal(r.truncated, false);
+  },
+  function aWaveformSelectionOutranksTheClipAndTheDemo() {
+    const r = quickTakeRegion({
+      durationSec: 100, selection: { start: 10, end: 13.6 }, clip: { start: 50, end: 50.4, tag: 'KICK' },
+    });
+    assert.equal(r.kind, 'selection');
+    assert.equal(r.label, 'SELECTION');
+    assert.equal(r.startSec, 10);
+    assert.ok(Math.abs(r.endSec - 13.6) < 1e-9);
+    assert.equal(r.segments, 4, '3.6 s at the demo grain is four spans, like the demo bar');
+    assert.equal(r.truncated, false);
+  },
+  function selectionGrainScalesFromOneSpanToEight() {
+    assert.equal(quickTakeRegion({ durationSec: 100, selection: { start: 1, end: 1.5 } }).segments, 1);
+    assert.equal(quickTakeRegion({ durationSec: 100, selection: { start: 1, end: 6 } }).segments, 6);
+    const long = quickTakeRegion({ durationSec: 100, selection: { start: 20, end: 50 } });
+    assert.equal(long.segments, QUICK_TAKE_MAX_SPANS);
+    assert.equal(long.truncated, true, 'a 30 s drag is cut to its head, not stretched into 4 s grains');
+    assert.ok(Math.abs((long.endSec - long.startSec) - QUICK_TAKE_MAX_SEC) < 1e-9);
+    assert.equal(long.selectedSec, 30, 'the status can still say what was dragged');
+  },
+  function reversedAndOverhangingSelectionsAreNormalised() {
+    const r = quickTakeRegion({ durationSec: 100, selection: { start: 99, end: 96 } });
+    assert.equal(r.kind, 'selection');
+    assert.equal(r.startSec, 96);
+    assert.equal(r.endSec, 99);
+    const hang = quickTakeRegion({ durationSec: 100, selection: { start: 98, end: 140 } });
+    assert.equal(hang.endSec, 100, 'clamped to the file');
+    assert.equal(hang.segments, 2);
+  },
+  function degenerateSelectionsAreIgnoredNotClampedIntoASliver() {
+    const empty = quickTakeRegion({ durationSec: 100, selection: { start: 5, end: 5 }, clip: { start: 1, end: 2 } });
+    assert.equal(empty.kind, 'clip', 'zero-length selection falls through');
+    const outside = quickTakeRegion({ durationSec: 100, selection: { start: 120, end: 130 } });
+    assert.equal(outside.kind, 'demo', 'a selection wholly past the end falls through');
+    const nan = quickTakeRegion({ durationSec: 100, selection: { start: NaN, end: 3 } });
+    assert.equal(nan.kind, 'demo');
+  },
+  function aSelectedClipIsOneWholeSpanWithItsOwnName() {
+    const r = quickTakeRegion({ durationSec: 100, clip: { start: 50, end: 50.4, tag: 'KICK' } });
+    assert.equal(r.kind, 'clip');
+    assert.equal(r.segments, 1);
+    assert.equal(r.label, 'KICK');
+    assert.ok(Math.abs(r.endSec - 50.4) < 1e-9);
+    const named = quickTakeRegion({ durationSec: 100, clip: { start: 1, end: 2, label: 'BIRD', tag: 'TONE' } });
+    assert.equal(named.label, 'BIRD', 'label beats tag');
+    const bare = quickTakeRegion({ durationSec: 100, clip: { start: 1, end: 2 } });
+    assert.equal(bare.label, 'CLIP');
+    const inverted = quickTakeRegion({ durationSec: 100, clip: { start: 2, end: 1 } });
+    assert.equal(inverted.kind, 'demo', 'an inverted clip is not material');
   },
 ];
 

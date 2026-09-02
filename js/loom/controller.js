@@ -2,7 +2,8 @@
 // one reversible plan, and auditions it directly from the immutable source.
 
 import {
-  compileLoomPlan, demoMidiGesture, demoRegionFor, sameLoomPlanContent, sourceMatchesPlan, spanMaterials,
+  compileLoomPlan, demoMidiGesture, demoRegionFor, quickTakeRegion, sameLoomPlanContent, sourceMatchesPlan,
+  spanMaterials,
   studioGesture, traceLoomEvent, transcriptMaterials,
 } from './compile.js';
 import { captureBarDuration, capturedMidiGesture } from './capture.js';
@@ -428,11 +429,52 @@ export function initLoomController(ctx) {
     return wordCount;
   }
 
+  // The bench waveform's drag-selection, main view first, overview second.
+  function waveSelection() {
+    for (const name of ['waveMain', 'waveMini']) {
+      const wave = views[name];
+      const sel = wave && wave.selection;
+      if (sel) return sel;
+    }
+    return null;
+  }
+
+  // Region material for QUICK TAKE and MATERIAL: the same rule, one place.
+  function takeRegionMaterial(region) {
+    const source = sourceDescriptor(P, R);
+    const materials = spanMaterials({
+      sourceId: source.id, sourceName: source.name, sourceSize: source.size,
+      startSec: region.startSec, endSec: region.endSec, segments: region.segments, label: region.label,
+    });
+    setMaterial(materials, region.kind === 'clip' ? 'clip' : 'source-span');
+    return materials;
+  }
+
+  function describeRegion(region) {
+    const span = (region.endSec - region.startSec).toFixed(2) + 'S';
+    if (region.kind === 'selection') {
+      return (region.truncated
+        ? 'SELECTION ' + region.selectedSec.toFixed(1) + 'S → FIRST ' + span
+        : 'SELECTION ' + span) + ' · ' + region.segments + (region.segments === 1 ? ' SPAN' : ' SPANS');
+    }
+    if (region.kind === 'clip') return 'CLIP ' + region.label + ' · ' + span;
+    return region.segments + ' SPANS FROM THE SOURCE · ' + span;
+  }
+
   view.addEventListener('materialselect', () => {
     if (!R.buffer) return;
     const source = sourceDescriptor(P, R);
     const range = ctx.api.getLiftRange && ctx.api.getLiftRange();
     if (range && P.words && loadTranscriptRange(range)) return;
+    const selection = waveSelection();
+    if (selection) {
+      const region = quickTakeRegion({ durationSec: R.buffer.duration, fileName: P.fileName, selection });
+      if (region.kind === 'selection') {
+        takeRegionMaterial(region);
+        status('LOOM MATERIAL · ' + describeRegion(region) + ' · SOURCE PRESERVED');
+        return;
+      }
+    }
     const clip = views.sliceView && views.sliceView.selectedClip;
     if (clip) {
       const materials = spanMaterials({
@@ -443,7 +485,7 @@ export function initLoomController(ctx) {
       status('LOOM MATERIAL · 1 CLIP · SOURCE PRESERVED');
       return;
     }
-    statusFault('LOOM NEEDS A SELECTION · DRAG WORDS IN TRANSCRIPT OR PICK A MACHINE CLIP');
+    statusFault('LOOM NEEDS A SELECTION · DRAG WORDS IN TRANSCRIPT, DRAG THE WAVEFORM, OR PICK A MACHINE CLIP');
   });
 
   view.addEventListener('demomaterial', () => {
@@ -702,16 +744,32 @@ export function initLoomController(ctx) {
   const restored = currentPlan();
   if (restored) restorePlanIntoEditor(restored);
   refresh();
-  // One press from anywhere: four real spans from the loaded source, woven
-  // onto the starter phrase, armed as the ninth lane, and running. The same
-  // three handlers a person would click, in order, with each step checked
-  // before the next — a failed weave must not arm a stale plan.
+  // What QUICK TAKE weaves: selected words, else the waveform drag, else the
+  // selected MACHINE clip, else four spans from the source. Returns a label for
+  // the status line, or null when no material could be built.
+  function quickTakeMaterial() {
+    const range = ctx.api.getLiftRange && ctx.api.getLiftRange();
+    if (range && P.words && loadTranscriptRange(range)) {
+      return (material.wordCount || material.materials.length) + ' WORDS';
+    }
+    const region = quickTakeRegion({
+      durationSec: R.buffer.duration, fileName: P.fileName,
+      selection: waveSelection(), clip: views.sliceView && views.sliceView.selectedClip,
+    });
+    return takeRegionMaterial(region).length ? describeRegion(region) : null;
+  }
+
+  // One press from anywhere: material from whatever is selected (or four real
+  // spans from the loaded source), woven onto the starter phrase, armed as the
+  // ninth lane, and running. The same handlers a person would click, in order,
+  // with each step checked before the next — a failed weave must not arm a
+  // stale plan.
   ctx.api.quickTake = () => {
     if (!R.buffer) { statusFault('QUICK TAKE · LOAD A RECORDING FIRST'); return false; }
     if (gestureChoice !== 'demo' || !gesture || gesture.kind === 'midi-capture') chooseDemoGesture();
     const before = P.loom.activePlanId || null;
-    view.dispatchEvent(new CustomEvent('demomaterial'));
-    if (!material) return false;
+    const taken = quickTakeMaterial();
+    if (!taken || !material) return false;
     view.dispatchEvent(new CustomEvent('weave'));
     const plan = currentPlan();
     if (!plan || (before === plan.id && P.loom.weaveCount === 0) || !planIsOnline(plan)) return false;
@@ -720,7 +778,7 @@ export function initLoomController(ctx) {
     if (!armed || !armed.loomLane || armed.loomLane.planId !== plan.id) return false;
     if (ctx.api.jump) ctx.api.jump('machine', 'pattern');
     if (!sequencer.running && views.patternView) views.patternView.dispatchEvent(new CustomEvent('run'));
-    status('QUICK TAKE · ' + plan.events.length + ' EVENTS ON LANE 9 · RUNNING · EVERY HIT TRACES TO THE SOURCE');
+    status('QUICK TAKE · ' + taken + ' · ' + plan.events.length + ' EVENTS ON LANE 9 · RUNNING · EVERY HIT TRACES TO THE SOURCE');
     return true;
   };
   ctx.api.weaveTranscriptSelection = (range) => loadTranscriptRange(range, true);

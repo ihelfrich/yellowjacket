@@ -164,6 +164,20 @@ SHELF → *Nightingale* → MACHINE → PATTERN → **QUICK TAKE** (in the LOOM 
 | swap source (load *A Small Brook*) | lane keeps the old plan **OFFLINE** for its trace, and **QUICK TAKE reappears** |
 | press | a new take on the brook: `A SMALL BROOK … × STARTER GESTURE`, ONLINE, running, button hidden |
 
+**What it weaves.** The press takes, in order: selected transcript words → a drag
+on the bench waveform → the selected MACHINE clip → four spans from the source.
+The status line names which one.
+
+| checkpoint | expected |
+|---|---|
+| BENCH → drag 10.0–13.6 s on the main waveform → MACHINE → QUICK TAKE | status `QUICK TAKE · SELECTION 3.60S · 4 SPANS · …`; TRACE lands inside the dragged range |
+| drag 30 s instead | `SELECTION 30.0S → FIRST 9.60S · 8 SPANS` — the head, at ≤1.2 s grains, never eight 4-second smears |
+| plain-click the waveform (clears the drag) → SLICE → click a harvested clip → QUICK TAKE | `QUICK TAKE · CLIP KICK · 0.40S · …`, one span |
+| nothing selected | `QUICK TAKE · 4 SPANS FROM THE SOURCE · 3.60S · …` as before |
+
+LOOM's own MATERIAL button follows the same order, so what you see in the loom
+readout is what the press would have taken.
+
 The button hides on `plan && online`, not on `plan` alone. Armed plans deliberately
 survive a source swap so TRACE still works; an offline plan must never be the
 reason the door to a new take is shut. The same action is `QUICK TAKE · WEAVE
