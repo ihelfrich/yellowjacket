@@ -746,7 +746,14 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   letter-spacing: 0.04em;
   color: var(--yj-ink-dim);
 }
+.yj-status > * { min-width: 0; }
+.yj-status > :first-child { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.yj-status > :last-child { flex-shrink: 0; white-space: nowrap; margin-left: 12px; }
 .yj-status .is-hot { color: var(--yj-yellow); }
+@keyframes yj-status-pulse { from { box-shadow: inset 3px 0 0 var(--yj-yellow); padding-left: 8px; } to { box-shadow: inset 3px 0 0 transparent; padding-left: 8px; } }
+.yj-status .is-new { animation: yj-status-pulse 1.1s ease-out; padding-left: 8px; }
+.yj-wayfind { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.yj-wayfind-lede { flex-basis: 100%; font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--yj-ink-dim); }
 .yj-status .is-fault { color: var(--yj-fault); }
 
 /* ---------- scrollbars ---------- */

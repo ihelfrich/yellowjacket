@@ -129,12 +129,12 @@
 </header>
 
 <nav class="yj-tabs" role="tablist">
-  <button id="tabBtn-transcript" class="yj-tab-btn is-active" data-tab="transcript" role="tab" aria-controls="tab-transcript" aria-selected="true">TRANSCRIPT</button>
-  <button id="tabBtn-signal" class="yj-tab-btn" data-tab="signal" role="tab" aria-controls="tab-signal" aria-selected="false" tabindex="-1">SIGNAL</button>
-  <button id="tabBtn-rack" class="yj-tab-btn" data-tab="rack" role="tab" aria-controls="tab-rack" aria-selected="false" tabindex="-1">RACK</button>
-  <button id="tabBtn-machine" class="yj-tab-btn" data-tab="machine" role="tab" aria-controls="tab-machine" aria-selected="false" tabindex="-1">MACHINE</button>
-  <button id="tabBtn-studio" class="yj-tab-btn" data-tab="studio" role="tab" aria-controls="tab-studio" aria-selected="false" tabindex="-1">STUDIO</button>
-  <button id="tabBtn-loom" class="yj-tab-btn" data-tab="loom" role="tab" aria-controls="tab-loom" aria-selected="false" tabindex="-1">LOOM</button>
+  <button id="tabBtn-transcript" title="Speech to words. Cut a recording by deleting words; export captions." class="yj-tab-btn is-active" data-tab="transcript" role="tab" aria-controls="tab-transcript" aria-selected="true">TRANSCRIPT</button>
+  <button id="tabBtn-signal" title="Waveform and spectrogram at the file's true rate. Repair by painting, measure loudness, SLOW to hear above 20 kHz." class="yj-tab-btn" data-tab="signal" role="tab" aria-controls="tab-signal" aria-selected="false" tabindex="-1">SIGNAL</button>
+  <button id="tabBtn-rack" title="Clean and master: high-pass, de-hum, denoise, de-ess, EQ, gate, compressor, limiter, loudnorm — with a live blue preview." class="yj-tab-btn" data-tab="rack" role="tab" aria-controls="tab-rack" aria-selected="false" tabindex="-1">RACK</button>
+  <button id="tabBtn-machine" title="Chop any recording into a playable kit (HARVEST), sequence patterns and scenes, QUICK TAKE, freeze to audio." class="yj-tab-btn" data-tab="machine" role="tab" aria-controls="tab-machine" aria-selected="false" tabindex="-1">MACHINE</button>
+  <button id="tabBtn-studio" title="Six polyphonic synths, chords and notes, a mixer, stereo bounce — no recording needed." class="yj-tab-btn" data-tab="studio" role="tab" aria-controls="tab-studio" aria-selected="false" tabindex="-1">STUDIO</button>
+  <button id="tabBtn-loom" title="Weave selected words or spans onto a MIDI gesture; every note traces to the source second." class="yj-tab-btn" data-tab="loom" role="tab" aria-controls="tab-loom" aria-selected="false" tabindex="-1">LOOM</button>
 </nav>
 
 <div id="pipelineHost"></div>
@@ -146,8 +146,15 @@
     <div class="yj-cols">
       <div class="yj-panel yj-grow" data-label="TRANSCRIPT">
         <div id="transcriptHost" class="yj-transcript">
-          <p class="yj-hint" id="transcriptHint">No transcript yet. Load audio, then pick a model and hit TRANSCRIBE.
-          First run downloads the model and caches it in this browser; after that it works offline.</p>
+          <p class="yj-hint" id="transcriptHint">No transcript yet. For speech, pick a model and hit TRANSCRIBE.
+          The first run downloads the model and caches it in this browser; after that it works offline.</p>
+          <div class="yj-wayfind" id="transcriptWayfind">
+            <span class="yj-wayfind-lede">NOT SPEECH? THIS BENCH IS FOR WORDS. THE REST IS ONE CLICK AWAY:</span>
+            <button class="yj-btn yj-btn-compact" data-wayfind="signal" type="button" title="Waveform, spectrogram, loudness, SLOW">SEE IT · SIGNAL</button>
+            <button class="yj-btn yj-btn-compact" data-wayfind="rack" type="button" title="Denoise, de-hum, EQ, compress — with a live blue preview">CLEAN IT · RACK</button>
+            <button class="yj-btn yj-btn-compact" data-wayfind="harvest" type="button" title="Mine the recording for a labeled, playable kit">CHOP IT · HARVEST</button>
+            <button class="yj-btn yj-btn-compact yj-btn-primary" data-wayfind="quick" type="button" title="Weave a phrase of it onto the starter gesture and run it as lane 9">PLAY IT · QUICK TAKE</button>
+          </div>
         </div>
       </div>
       <aside class="yj-rail">
@@ -315,6 +322,10 @@
         <div class="yj-canvas-note" id="sliceNote">Load audio. Beats get mapped after the spectrogram finishes.</div>
       </div>
       <aside class="yj-rail">
+        <div class="yj-panel" data-label="HARVEST">
+          <button id="btnHarvest" class="yj-btn yj-btn-block yj-btn-primary" disabled>HARVEST · AUTO-KIT</button>
+          <p class="yj-canvas-note">Mines the whole track for its best material: kicks, snares, hats, bass notes, chops, risers. Replaces the clip list with a labeled kit.</p>
+        </div>
         <div class="yj-panel" data-label="BEATMAP" id="beatmapControls"></div>
         <div class="yj-panel" data-label="CLIPS">
           <div class="yj-well yj-count yj-count-wide" id="roClips">NO CLIPS</div>
@@ -327,10 +338,6 @@
         <div class="yj-panel" data-label="KIT MAP">
           <canvas id="constellationMain" class="yj-constellation"></canvas>
           <p class="yj-canvas-note">Each star is a slice, placed by timbre and coloured by role. Clusters are slices that sound alike, so you can keep one and drop the rest. Click to hear one.</p>
-        </div>
-        <div class="yj-panel" data-label="HARVEST">
-          <button id="btnHarvest" class="yj-btn yj-btn-block yj-btn-primary" disabled>HARVEST · AUTO-KIT</button>
-          <p class="yj-canvas-note">Mines the whole track for its best material: kicks, snares, hats, bass notes, chops, risers. Replaces the clip list with a labeled kit.</p>
         </div>
         <div class="yj-panel" data-label="PATCH">
           <button id="btnPatch" class="yj-btn yj-btn-block" disabled>PRINT DRUM KIT · .AIF</button>

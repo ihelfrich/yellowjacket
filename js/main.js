@@ -88,16 +88,26 @@ function fmtTime(t) {
 function fmtDb(v, unit = ' dB') {
   return v === -Infinity || !isFinite(v) ? '-∞' : v.toFixed(1) + unit;
 }
+// Every message lands in one small line at the foot of the page; the pulse
+// (a yellow rule that fades over a second) is what makes a change noticeable
+// without moving the eye's home.
+function pulseStatus(el) {
+  el.classList.remove('is-new');
+  void el.offsetWidth;
+  el.classList.add('is-new');
+}
 function status(left, hot = false) {
   const el = $('stLeft');
   el.textContent = left;
   el.classList.toggle('is-hot', hot);
   el.classList.remove('is-fault');
+  pulseStatus(el);
 }
 function statusFault(msg) {
   const el = $('stLeft');
   el.textContent = msg;
   el.classList.add('is-fault');
+  pulseStatus(el);
   el.classList.remove('is-hot');
 }
 function setLed(id, mode) {
@@ -421,6 +431,7 @@ refreshPipeline();
 // dismissing: the panel must not sit on top of the surface it just opened.
 const FIRSTRUN_KEY = 'yj.firstrun.done';
 const ROUTES = {
+  shelf: { tab: 'transcript' },
   drums: { tab: 'machine', mstate: 'pattern' },
   kit: { tab: 'machine', mstate: 'slice' },
   clean: { tab: 'transcript' },
@@ -434,6 +445,10 @@ function openStartRoute(path) {
     $('btnProjectOpen').click();
     return;
   }
+  if (path === 'shelf') {
+    if (ctx.api.revealFieldLibrary) ctx.api.revealFieldLibrary();
+    return;
+  }
   const route = ROUTES[path];
   if (!route) return;
   // SYNTH is deliberately source-free. The general intake overlay otherwise
@@ -445,6 +460,28 @@ function openStartRoute(path) {
     if (b) b.click();
   }
   if (path === 'drums' && ctx.api.loadDrumStarter) ctx.api.loadDrumStarter();
+}
+// The empty TRANSCRIPT bench is where a fresh load lands. For anything that is
+// not speech, the rest of the tool is one click away instead of a search.
+{
+  const row = $('transcriptWayfind');
+  if (row) {
+    row.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-wayfind]');
+      if (!b || b.disabled) return;
+      const go = b.dataset.wayfind;
+      if (go === 'signal') jump('signal');
+      else if (go === 'rack') jump('rack');
+      else if (go === 'harvest') { jump('machine', 'slice'); if (!$('btnHarvest').disabled) $('btnHarvest').click(); }
+      else if (go === 'quick' && ctx.api.quickTake) ctx.api.quickTake();
+    });
+    const sync = () => {
+      const has = !!store.runtime.buffer;
+      for (const b of row.querySelectorAll('[data-wayfind]')) b.disabled = !has;
+    };
+    store.addEventListener('change', sync);
+    sync();
+  }
 }
 if (views.firstRun) views.firstRun.addEventListener('start', (e) => {
   markFirstRunDone();

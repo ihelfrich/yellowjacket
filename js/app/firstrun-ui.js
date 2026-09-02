@@ -69,6 +69,11 @@ const STYLE = `
 // register as the rest of the bench: what happens, not how good it is.
 const PATHS = [
   {
+    path: 'shelf',
+    name: 'PLAY A SOUND FROM THE WORLD',
+    note: 'Open THE SHELF — rain, frogs, a city, a poem, a 1921 record — press HARVEST, then QUICK TAKE, and a place becomes a kit and an instrument in three presses.',
+  },
+  {
     path: 'drums',
     name: 'START WITH AN 808 KIT',
     note: 'Generate eight precision drum voices at 96 kHz, write a playable groove, then shape, sequence, arrange, and bounce it here.',
@@ -76,12 +81,12 @@ const PATHS = [
   {
     path: 'kit',
     name: 'CHOP A RECORD INTO A KIT',
-    note: 'Load a track, press HARVEST, and the bench mines the whole thing for kicks, snares, hats, and chops you can play.',
+    note: 'Load a track, press HARVEST for kicks, snares, hats, and chops you can play, then QUICK TAKE to play a phrase of it as an instrument.',
   },
   {
     path: 'clean',
     name: 'CLEAN UP A RECORDING',
-    note: 'Transcribe a voice recording, edit it by word, or weave selected words into a traceable performance over the drum machine.',
+    note: 'Transcribe speech and edit it by word, or take any recording to RACK — denoise, de-hum, EQ, compress — and watch the blue preview show what a render would change.',
   },
   {
     path: 'synth',
@@ -154,13 +159,15 @@ export class FirstRunView extends EventTarget {
     lede.className = 'yj-firstrun-lede';
     lede.textContent = 'This is a virtual production studio and audio bench that runs entirely in this browser tab.';
     const what = document.createElement('p');
-    what.textContent = 'It transcribes speech, so you can cut a recording by deleting words from the transcript. '
-      + 'Noise and coughs come out by painting over them on the spectrogram. '
-      + 'MACHINE builds precision factory drums or chops records into eight-track kits; STUDIO adds six melodic synth instruments, chords, mixing, and stereo bounce. '
-      + 'LOOM turns selected words into a scene instrument without losing their source trace.';
+    what.textContent = 'Drop in a recording, or open one from THE SHELF: public-domain places, voices, scores, and records. '
+      + 'SIGNAL shows it at its true rate and can slow it to hear what sits above hearing. '
+      + 'RACK cleans and masters it, with a live blue preview of what a render would do. '
+      + 'MACHINE chops it into a playable kit in one press, and QUICK TAKE plays a phrase of it as an instrument. '
+      + 'STUDIO adds six synths, chords, and a mixer. TRANSCRIPT edits speech by deleting words, and LOOM turns them into a scene instrument that still traces to the source.';
     const limits = document.createElement('p');
     limits.textContent = 'Nothing you load leaves this machine, because there is no server to send it to. '
-      + 'Everything runs on your own hardware, so a long file takes real time. Save a .yjkt project when the whole bench needs to travel with you.';
+      + 'Everything runs on your own hardware, so a long file takes real time. '
+      + 'KEEP holds your own files on MY SHELF, in this browser only. Save a .yjkt project when the whole bench needs to travel with you.';
     copy.append(lede, what, limits);
 
     const paths = document.createElement('div');

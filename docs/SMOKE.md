@@ -221,3 +221,17 @@ LOAD THE DEMO SONG → RACK.
 The strip is a third WaveformView bound to the same mono and peaks; the ghost
 carries an offset (`setGhost(mono, pyramid, offsetSec)`) so a windowed ghost
 sits on the source's clock and is zero elsewhere.
+
+## 12. Wayfinding: nobody is stranded on an empty bench
+
+Fresh browser (or clear `yj.firstrun.done`).
+
+| checkpoint | expected |
+|---|---|
+| first run | six paths; the first, **PLAY A SOUND FROM THE WORLD**, opens the drop zone on THE SHELF with the first card focused |
+| load the demo | TRANSCRIPT shows the hint plus a row: SEE IT · SIGNAL, CLEAN IT · RACK, CHOP IT · HARVEST, PLAY IT · QUICK TAKE — enabled only with a source |
+| CHOP IT | MACHINE / SLICE opens and HARVEST runs if the beatmap is ready |
+| PLAY IT | QUICK TAKE runs from wherever you are |
+| SLICE rail | HARVEST is the first panel, above BEATMAP and KIT MAP |
+| any status | the status line pulses a yellow rule for a second on every message |
+| hover a tab | one-line tooltip says what the bench does |
