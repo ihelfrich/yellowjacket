@@ -182,3 +182,21 @@ The button hides on `plan && online`, not on `plan` alone. Armed plans deliberat
 survive a source swap so TRACE still works; an offline plan must never be the
 reason the door to a new take is shut. The same action is `QUICK TAKE · WEAVE
 THIS SOURCE` in the command deck.
+
+## 10. MINE keeps your own file across visits, without uploading it
+
+AUDIO IN → any file you own (a 42 MB WAV rip works) → **KEEP** (header, next to SHELF).
+
+| checkpoint | expected |
+|---|---|
+| before a load | KEEP is disabled; SHELF → MINE reads `NOTHING KEPT YET · OPEN A FILE, THEN PRESS KEEP` |
+| KEEP | status `KEPT ON MY SHELF · <name> · STAYS IN THIS BROWSER, NEVER UPLOADED`; the drop zone opens on MINE with one card `<name> · 3:38 · 39.9 MB · 48k`; the LIGHT/LOSSLESS switch is hidden on this drawer |
+| KEEP again | `ALREADY ON MY SHELF · <name>` — dedupe is by SHA-256, one card |
+| reload, SHELF → MINE → card | the same bytes load; `runtime.sourceHash` is identical to the first load |
+| rate badge | is what the container header said (48k for a 48 kHz WAV); an MP3 shows no rate rather than the 96k the context upsampled it to |
+| REMOVE | first press arms (`SURE?`, 3 s), second press removes; status `REMOVED FROM MY SHELF`; the file on disk is untouched |
+| bar | `N KEPT · X MB IN THIS BROWSER · Y GB ALLOWED · NEVER UPLOADED` |
+
+Kept bytes live in OPFS under `yellowjacket-mine-v1`, separate from the project
+store and the crate, so a project DISCARD never touches them. Clearing site data
+does. The same action is `KEEP ON MY SHELF` in the command deck.

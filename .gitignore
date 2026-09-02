@@ -4,3 +4,11 @@ node_modules/
 *.log
 test_*.wav
 test_*.aif
+
+# dropped audio at the repo root is never source (public Pages would redistribute it)
+/*.wav
+/*.flac
+/*.mp3
+/*.m4a
+/*.aif
+/*.aiff

@@ -58,6 +58,15 @@ transferred at 96 kHz/24-bit. **ODD** holds Stephen McGreevy's recordings of
 the Earth's magnetosphere: a dawn chorus that is not birds, and lightning heard
 as a descending whistler.
 
+**MINE** is the sixth drawer and the only one not in the manifest: whatever you
+kept. Load any file, press **KEEP**, and the bytes are held in this browser's
+private storage (the same origin-private file system the crate and project
+store use, in their own directory), so it is one click away next visit. It is
+never uploaded — there is no server — and it is never published: the public
+drawers stay public-domain only, and your own material stays on the machine
+that kept it. KEEP dedupes by SHA-256, and a keep re-opens byte-identical, so
+every plan you weave from it keeps its lineage.
+
 The shelf has one switch. **LIGHT** streams the MP3 the archive derived;
 **LOSSLESS** streams the original where one exists, and the badge on each card
 shows the rate and depth read from that file's own header, not from the

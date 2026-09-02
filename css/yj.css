@@ -828,6 +828,17 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-field-head-row { display: flex; justify-content: space-between; width: 100%; align-items: baseline; }
 .yj-field-badge { font-size: 8.5px; letter-spacing: 0.08em; color: var(--yj-ink-dim); }
 .yj-field-badge.is-lossless { color: var(--yj-blue); }
+.yj-mine-bar { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.yj-mine-empty { grid-column: 1 / -1; margin: 0; padding: 12px; text-align: center; font-size: 9.5px; letter-spacing: 0.1em; color: var(--yj-ink-dim); border: 1px dashed var(--yj-line); border-radius: 2px; }
+.yj-mine-card { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.yj-mine-card .yj-field-btn { width: 100%; }
+.yj-mine-card .yj-field-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.yj-mine-remove {
+  align-self: flex-end; font-family: var(--f-mono); font-size: 8.5px; letter-spacing: 0.12em;
+  background: none; border: 1px solid var(--yj-line); color: var(--yj-ink-dim);
+  border-radius: 2px; padding: 2px 6px; cursor: pointer;
+}
+.yj-mine-remove:hover, .yj-mine-remove.is-armed { border-color: var(--yj-yellow); color: var(--yj-yellow); }
 
 /* Speed sits with the transport: one cycling button, lit when not 1x. */
 #btnSpeed { min-width: 44px; font-family: var(--f-mono); letter-spacing: 0.04em; }

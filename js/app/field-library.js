@@ -1,3 +1,5 @@
+import { MineStore, formatMineMeta } from './mine.js';
+
 // The SHELF: public-domain recordings streamed from archive.org on demand.
 // Started as FIELD (nature and city) and grew into five shelves, because a
 // bench that transcribes speech had no speech to try, and a bench that keeps
@@ -15,6 +17,9 @@
 // so the spectrogram, not the badge, is the authority on what a file holds.
 
 export const SHELVES = Object.freeze(['FIELD', 'VOICE', 'SCORE', 'MUSIC', 'ODD']);
+// The sixth drawer is not in the manifest: MINE is whatever this visitor kept,
+// held in the browser's private storage (js/app/mine.js), never published.
+export const MINE_SHELF = 'MINE';
 
 const IA = 'https://archive.org/download/';
 const IA_ITEM = 'https://archive.org/details/';
@@ -135,6 +140,83 @@ export function initFieldLibrary(ctx) {
 
   let shelf = 'FIELD';
   let lossless = readPref();
+  const R = ctx.store.runtime;
+  const P = ctx.store.project;
+
+  // ---- MINE: the visitor's own kept recordings ----
+  let mine = null;          // MineStore, or null where the browser has no OPFS write path
+  let mineOpened = false;
+  let mineItems = [];
+  let mineUsage = null;
+  async function refreshMine() {
+    mineItems = mine ? await mine.list() : [];
+    mineUsage = mine ? await mine.estimate() : null;
+  }
+  MineStore.open().then(async (store) => {
+    mine = store;
+    mineOpened = true;
+    await refreshMine();
+    render();
+  }).catch(() => { mineOpened = true; render(); });
+
+  function canKeep() { return !!(R.buffer && R.sourceBytes); }
+
+  async function keepLoaded() {
+    if (!canKeep()) { ctx.statusFault('KEEP · LOAD A RECORDING FIRST'); return false; }
+    if (!mine) { ctx.statusFault('KEEP · THIS BROWSER HAS NO PRIVATE STORAGE FOR A SHELF'); return false; }
+    const name = P.fileName || 'RECORDING';
+    const report = ctx.engine && ctx.engine.decodeReport;
+    try {
+      const res = await mine.put({
+        name, bytes: R.sourceBytes, hash: R.sourceHash, seconds: R.buffer.duration,
+        rate: (report && report.nativeRate) || 0, channels: R.buffer.numberOfChannels,
+      });
+      await refreshMine();
+      shelf = MINE_SHELF;
+      render();
+      ctx.status(res.duplicate
+        ? 'ALREADY ON MY SHELF · ' + name
+        : 'KEPT ON MY SHELF · ' + name + ' · STAYS IN THIS BROWSER, NEVER UPLOADED');
+      return true;
+    } catch (e) {
+      ctx.statusFault('KEEP FAILED · ' + (e && e.message ? e.message : 'STORAGE REFUSED'));
+      return false;
+    }
+  }
+
+  async function openMine(id) {
+    if (!mine || !ctx.api.loadArrayBuffer) return false;
+    const got = await mine.get(id);
+    if (!got) {
+      ctx.statusFault('THAT KEEP IS GONE · ITS BYTES ARE MISSING FROM STORAGE');
+      await refreshMine();
+      render();
+      return false;
+    }
+    await ctx.api.loadArrayBuffer(got.bytes, got.meta.name);
+    return true;
+  }
+
+  async function removeMine(id) {
+    if (!mine) return false;
+    const ok = await mine.remove(id);
+    await refreshMine();
+    render();
+    if (ok) ctx.status('REMOVED FROM MY SHELF');
+    return ok;
+  }
+
+  const keepBtn = $('btnKeep');
+  if (keepBtn) {
+    keepBtn.addEventListener('click', keepLoaded);
+    keepBtn.disabled = !canKeep();
+    ctx.store.addEventListener('change', () => {
+      keepBtn.disabled = !canKeep();
+      if (shelf === MINE_SHELF) render();
+    });
+  }
+  ctx.api.keepOnShelf = keepLoaded;
+  ctx.api.openKept = openMine;
 
   function reveal() {
     $('dropZone').classList.remove('is-hidden');
@@ -148,12 +230,13 @@ export function initFieldLibrary(ctx) {
   // ---- shelf chips ----
   const chips = document.createElement('div');
   chips.className = 'yj-shelf-chips';
-  for (const name of SHELVES) {
+  for (const name of [...SHELVES, MINE_SHELF]) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'yj-shelf-chip';
     b.dataset.shelf = name;
     b.textContent = name;
+    if (name === MINE_SHELF) b.title = 'Your own recordings, kept in this browser. Nothing is uploaded.';
     b.addEventListener('click', () => { shelf = name; render(); });
     chips.appendChild(b);
   }
@@ -181,8 +264,10 @@ export function initFieldLibrary(ctx) {
     }
     toggle.textContent = lossless ? 'LOSSLESS' : 'LIGHT';
     toggle.classList.toggle('is-active', lossless);
+    toggle.hidden = shelf === MINE_SHELF;
 
     grid.textContent = '';
+    if (shelf === MINE_SHELF) { renderMine(); return; }
     for (const rec of FIELD_RECORDINGS) {
       if (rec.shelf !== shelf) continue;
       const v = variantFor(rec, lossless);
@@ -215,6 +300,83 @@ export function initFieldLibrary(ctx) {
         ctx.api.loadFromUrl(v.url, rec.title + ' — ' + rec.place + (v.format === 'FLAC' ? '.flac' : '.mp3'));
       });
       grid.appendChild(btn);
+    }
+  }
+
+  function renderMine() {
+    const bar = document.createElement('div');
+    bar.className = 'yj-mine-bar';
+    const note = document.createElement('span');
+    note.className = 'yj-field-meta';
+    if (!mineOpened) note.textContent = 'OPENING YOUR SHELF…';
+    else if (!mine) note.textContent = 'THIS BROWSER CANNOT KEEP FILES · NO PRIVATE STORAGE WRITE PATH';
+    else {
+      const total = mineItems.reduce((sum, m) => sum + m.bytes, 0);
+      note.textContent = mineItems.length + (mineItems.length === 1 ? ' KEPT' : ' KEPT')
+        + ' · ' + (total / (1024 * 1024)).toFixed(1) + ' MB IN THIS BROWSER'
+        + (mineUsage && mineUsage.quota ? ' · ' + Math.round(mineUsage.quota / (1024 * 1024 * 1024)) + ' GB ALLOWED' : '')
+        + ' · NEVER UPLOADED';
+    }
+    const keep = document.createElement('button');
+    keep.type = 'button';
+    keep.className = 'yj-btn yj-btn-primary yj-btn-compact';
+    keep.textContent = 'KEEP THE LOADED RECORDING';
+    keep.disabled = !mine || !canKeep();
+    keep.title = canKeep() ? 'Keep ' + (P.fileName || 'this recording') + ' on this shelf' : 'Load a recording first';
+    keep.addEventListener('click', keepLoaded);
+    bar.append(note, keep);
+    grid.appendChild(bar);
+
+    if (mine && !mineItems.length) {
+      const empty = document.createElement('p');
+      empty.className = 'yj-mine-empty';
+      empty.textContent = 'NOTHING KEPT YET · OPEN A FILE, THEN PRESS KEEP';
+      grid.appendChild(empty);
+      return;
+    }
+    for (const m of mineItems) {
+      const card = document.createElement('div');
+      card.className = 'yj-mine-card';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'yj-field-btn';
+      btn.dataset.mineId = m.id;
+      btn.title = m.name + ' · ' + formatMineMeta(m);
+      const kind = document.createElement('span');
+      kind.className = 'yj-field-kind';
+      kind.textContent = 'MINE';
+      const badge = document.createElement('span');
+      badge.className = 'yj-field-badge' + (m.rate > 48000 ? ' is-lossless' : '');
+      badge.textContent = m.channels ? (m.channels === 1 ? 'MONO' : m.channels === 2 ? 'STEREO' : m.channels + 'CH') : '';
+      const title = document.createElement('span');
+      title.className = 'yj-field-title';
+      title.textContent = m.name;
+      const meta = document.createElement('span');
+      meta.className = 'yj-field-meta';
+      meta.textContent = formatMineMeta(m);
+      const head = document.createElement('span');
+      head.className = 'yj-field-head-row';
+      head.append(kind, badge);
+      btn.append(head, title, meta);
+      btn.addEventListener('click', () => openMine(m.id));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'yj-mine-remove';
+      remove.textContent = 'REMOVE';
+      remove.title = 'Remove this keep from the browser (the original file on disk is untouched)';
+      let armed = 0;
+      remove.addEventListener('click', () => {
+        if (!armed) {
+          remove.textContent = 'SURE?';
+          remove.classList.add('is-armed');
+          armed = setTimeout(() => { armed = 0; remove.textContent = 'REMOVE'; remove.classList.remove('is-armed'); }, 3000);
+          return;
+        }
+        clearTimeout(armed);
+        removeMine(m.id);
+      });
+      card.append(btn, remove);
+      grid.appendChild(card);
     }
   }
   render();

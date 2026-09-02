@@ -68,6 +68,9 @@ import {
   LOOM_TRANSCRIPT_MAX_WORDS, sourceMatchesPlan, spanMaterials, studioGesture,
   sameLoomPlanContent, traceLoomEvent, transcriptMaterials, TranscriptMaterialError,
 } from '../js/loom/compile.js';
+import {
+  addMine, findMineByHash, formatMineMeta, listMine, mineTotalBytes, nextMineId, normalizeMineIndex, removeMine,
+} from '../js/app/mine.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -4374,8 +4377,68 @@ const quickTakeCases = [
   },
 ];
 
+// ---------- my shelf: the visitor's own kept recordings ----------
+//
+// The public SHELF is public-domain only. MINE is whatever a person kept in
+// their own browser: index math mirrors the crate (ids never recycle, disk is
+// untrusted), plus a SHA dedupe so the same file is never held twice.
+
+const mineCases = [
+  function idsNeverRecycle() {
+    let index = { maxId: 0, items: [] };
+    const a = nextMineId(index);
+    index = addMine(index, { id: a, name: 'traum.wav', bytes: 10, hash: 'h1', addedAt: 1 });
+    const b = nextMineId(index);
+    assert.notEqual(a, b);
+    index = removeMine(index, a);
+    assert.equal(index.items.length, 0);
+    assert.notEqual(nextMineId(index), a, 'a removed id is never minted again');
+    assert.equal(nextMineId(index), b, 'the counter is unchanged by removal');
+  },
+  function sameIdReplacesRatherThanDuplicates() {
+    let index = addMine({ maxId: 0, items: [] }, { id: 'm1', name: 'A', bytes: 5, addedAt: 1 });
+    index = addMine(index, { id: 'm1', name: 'B', bytes: 6, addedAt: 2 });
+    assert.equal(index.items.length, 1);
+    assert.equal(index.items[0].name, 'B');
+  },
+  function hashFindsAKeepAndNullOtherwise() {
+    const index = addMine({ maxId: 0, items: [] }, { id: 'm1', name: 'A', bytes: 5, hash: 'sha-a', addedAt: 1 });
+    assert.equal(findMineByHash(index, 'sha-a').id, 'm1');
+    assert.equal(findMineByHash(index, 'sha-b'), null);
+    assert.equal(findMineByHash(index, null), null, 'no hash never matches a hashless keep');
+  },
+  function listIsNewestFirst() {
+    let index = { maxId: 0, items: [] };
+    index = addMine(index, { id: 'm1', name: 'OLD', bytes: 1, addedAt: 100 });
+    index = addMine(index, { id: 'm2', name: 'NEW', bytes: 1, addedAt: 300 });
+    index = addMine(index, { id: 'm3', name: 'MID', bytes: 1, addedAt: 200 });
+    assert.deepEqual(listMine(index).map((m) => m.name), ['NEW', 'MID', 'OLD']);
+    assert.equal(mineTotalBytes(index), 3);
+  },
+  function diskIsUntrusted() {
+    const index = normalizeMineIndex({ maxId: 1, items: [
+      { id: 'm7', name: 'ok', bytes: 9, addedAt: 1 },
+      { id: 'm7', name: 'dup', bytes: 9, addedAt: 2 },
+      { id: 'm8', name: 'empty', bytes: 0 },
+      { id: 'x9', name: 'bad id', bytes: 9 },
+      null, 'junk',
+    ] });
+    assert.equal(index.items.length, 1, 'duplicate ids, zero-byte keeps, bad ids, and junk are dropped');
+    assert.equal(index.maxId, 7, 'maxId lifts past every id present so a hand-edited index cannot mint a duplicate');
+    assert.equal(nextMineId(index), 'm8');
+    assert.equal(normalizeMineIndex(undefined).items.length, 0);
+    assert.throws(() => addMine(index, { id: 'm9', name: 'no bytes', bytes: 0 }));
+  },
+  function metaFormatsForTheCard() {
+    assert.equal(formatMineMeta({ seconds: 160.8, bytes: 41865102, rate: 48000 }), '2:41 · 39.9 MB · 48k');
+    assert.equal(formatMineMeta({ seconds: 5, bytes: 2048, rate: 44100 }), '0:05 · 2 KB · 44.1k');
+    assert.equal(formatMineMeta({ seconds: 61, bytes: 1024 * 1024 }), '1:01 · 1.0 MB');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['my shelf', mineCases],
   ['slow view', slowCases],
   ['varispeed', varispeedCases],
   ['soundscape', soundscapeCases],
