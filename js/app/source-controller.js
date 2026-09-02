@@ -134,10 +134,17 @@ export function initSourceController(ctx) {
     if (ctx.api.repairReset) ctx.api.repairReset();
 
     const report = engine.decodeReport;
+    const kHz = (hz) => Math.round(hz / 1000) + ' kHz';
     if (report && report.downgraded && report.reason) {
-      status('LOADED AT ' + Math.round(report.decodedRate / 1000) + ' kHz · ' + report.reason.toUpperCase());
-    } else if (report && report.nativeRate && report.decodedRate > 48000) {
-      status('LOADED AT ' + Math.round(report.decodedRate / 1000) + ' kHz · FULL RESOLUTION KEPT');
+      status('LOADED AT ' + kHz(report.decodedRate) + ' · ' + report.reason.toUpperCase());
+    } else if (report && report.upsampled) {
+      // Say what the file actually is. The output device is running faster than
+      // the recording, so the buffer reads high without carrying more detail.
+      status('LOADED · ' + kHz(report.nativeRate) + ' SOURCE, UPSAMPLED TO '
+        + kHz(report.decodedRate) + ' TO MATCH THE OUTPUT');
+    } else if (report && report.nativeRate && report.decodedRate === report.nativeRate
+      && report.decodedRate > 48000) {
+      status('LOADED AT ' + kHz(report.decodedRate) + ' · FULL RESOLUTION KEPT');
     } else {
       status(COPY.loaded);
     }

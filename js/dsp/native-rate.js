@@ -170,6 +170,12 @@ export function probeContainer(input) {
   return EMPTY_PROBE;
 }
 
+function budgetReason(rate, bytes) {
+  return 'this length at ' + Math.round(rate / 1000) + ' kHz needs about '
+    + Math.round(bytes / (1024 * 1024 * 1024) * 10) / 10
+    + ' GB of memory, which is more than the bench budgets for one source';
+}
+
 /**
  * Decide the rate to decode at. Returns {rate, downgraded, reason} so the caller
  * can say plainly when a file was not kept at its own resolution, rather than
@@ -179,8 +185,27 @@ export function planDecodeRate({
   nativeRate, seconds, channels = 2, contextRate = 48000, encodedBytes = 0,
 } = {}) {
   const native = plausible(nativeRate);
-  if (!native) return { rate: contextRate, downgraded: false, reason: null };
-  if (native <= contextRate) return { rate: native, downgraded: false, reason: null };
+
+  // decodeAudioData ALWAYS yields the context's rate; only an offline decode at
+  // the file's own rate can beat it. So when the file sits at or below the
+  // context, the decode produces the CONTEXT rate — upsampling a 48 kHz file on
+  // a 96 kHz system rather than leaving it alone. Reporting the file's rate here
+  // was wrong twice over: it told the UI a resolution the buffer did not have,
+  // and it returned before the memory budget, leaving that (now doubled) decode
+  // completely unguarded.
+  if (!native || native <= contextRate) {
+    const bytes = decodedFootprintBytes({
+      rate: contextRate, seconds, channels, encodedBytes,
+    });
+    const over = bytes > DECODE_BUDGET_BYTES;
+    return {
+      rate: contextRate,
+      downgraded: false,
+      upsampled: !!native && native < contextRate,
+      overBudget: over,
+      reason: over ? budgetReason(contextRate, bytes) : null,
+    };
+  }
 
   const bytes = decodedFootprintBytes({
     rate: native, seconds, channels, encodedBytes,
@@ -189,10 +214,12 @@ export function planDecodeRate({
     return {
       rate: contextRate,
       downgraded: true,
+      upsampled: false,
+      overBudget: true,
       reason: 'a ' + Math.round(native / 1000) + ' kHz decode of this length needs '
         + Math.round(bytes / (1024 * 1024 * 1024) * 10) / 10
         + ' GB of memory, so it was decoded at ' + Math.round(contextRate / 1000) + ' kHz',
     };
   }
-  return { rate: native, downgraded: false, reason: null };
+  return { rate: native, downgraded: false, upsampled: false, overBudget: false, reason: null };
 }

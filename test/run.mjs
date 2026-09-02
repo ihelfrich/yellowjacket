@@ -3555,6 +3555,34 @@ const nativeRateCases = [
     assert.equal(probe.sampleRate, null);
     assert.equal(probe.seconds, 0, 'unknown length, so the budget cannot be computed');
   },
+  function reportsUpsamplingRatherThanClaimingFullResolution() {
+    // With the system output at 96 kHz the AudioContext runs at 96 kHz, so
+    // decodeAudioData upsamples a 48 kHz file to match. The decoded buffer then
+    // reads 96 kHz while carrying 48 kHz of real content — calling that "full
+    // resolution kept" is a lie the readout must not tell.
+    const plan = planDecodeRate({ nativeRate: 48000, seconds: 30, channels: 2, contextRate: 96000 });
+    assert.equal(plan.rate, 96000, 'the decode really will produce 96 kHz');
+    assert.equal(plan.upsampled, true, 'and it is padding, not detail');
+    assert.equal(plan.downgraded, false, 'nothing was lost either');
+  },
+  function matchedRatesAreNeitherUpsampledNorDowngraded() {
+    const plan = planDecodeRate({ nativeRate: 96000, seconds: 30, channels: 2, contextRate: 96000 });
+    assert.equal(plan.rate, 96000);
+    assert.equal(plan.upsampled, false);
+    assert.equal(plan.downgraded, false);
+  },
+  function budgetsTheRateTheDecodeWillActuallyProduce() {
+    // The old early-return skipped the budget entirely whenever the file sat at
+    // or below the context rate — safe while contexts were 48 kHz, unguarded the
+    // moment the system output went to 96 kHz. Two hours of 48 kHz stereo
+    // upsampled to 96 kHz is ~5.5 GB, and nothing was checking.
+    const plan = planDecodeRate({
+      nativeRate: 48000, seconds: 7200, channels: 2, contextRate: 96000,
+      encodedBytes: 7200 * 48000 * 2 * 2,
+    });
+    assert.equal(plan.overBudget, true, 'the real cost is measured, not the file rate');
+    assert.ok(plan.reason, 'and the user is told');
+  },
   function decodePlanUsesContextRateWhenNativeRateIsUnknown() {
     const unknown = planDecodeRate({ nativeRate: null, seconds: 60, channels: 2, contextRate: 48000 });
     assert.equal(unknown.rate, 48000);

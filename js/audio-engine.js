@@ -68,6 +68,9 @@ export class Engine extends EventTarget {
       nativeRate: probe.sampleRate,
       decodedRate: buffer.sampleRate,
       downgraded: !!(probe.sampleRate && buffer.sampleRate < probe.sampleRate),
+      // The context upsampled a file that was already below its rate. The buffer
+      // reads high but carries no more detail than the file had.
+      upsampled: !!(probe.sampleRate && buffer.sampleRate > probe.sampleRate),
       reason: plan.reason,
     };
     this._haltPlayback();
