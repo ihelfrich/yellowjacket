@@ -8,8 +8,8 @@ import { encodeWavWithStats, toSrt, toVtt, toTxt, download, editedTime } from '.
 import { LOOM_TRANSCRIPT_MAX_WORDS } from '../loom/compile.js';
 import { mixdownMono } from '../audio-engine.js';
 import { buildPeakPyramid } from '../render/peaks.js';
-import { ndsi } from '../analysis/soundscape.js';
-import { speedFactorsFor, slowedBuffer, speedLabel } from '../dsp/varispeed.js';
+import { ndsi, bandLevelDb } from '../analysis/soundscape.js';
+import { speedFactorsFor, slowedBuffer, speedLabel, slowBand } from '../dsp/varispeed.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -24,6 +24,7 @@ export function initBenchController(ctx) {
   let renderedMono = null;
   let renderedPeaks = null;
   let speed = 1;               // 1, 2 or 4: play and print at 1/speed
+  let aboveCache = { gen: -1, lo: 0, hi: 0, db: -Infinity };   // energy above hearing, per source
   let cuts = [];
   let meterHooked = false;
   let deviceLabel = '—';
@@ -578,9 +579,41 @@ export function initBenchController(ctx) {
           + Math.round(R.sampleRate / speed / 1000) + ' kHz, pitched down ' + (speed === 4 ? 'two octaves' : 'an octave')
         : 'Play and print the source at ½ or ¼ speed — same samples, slower clock, pitched down. Bit-exact.';
     }
+    showSlowView();
     if (speed > 1) status(speedLabel(speed) + ' SPEED · ' + Math.round(R.sampleRate / speed / 1000) + ' kHz CLOCK · '
       + 'ABOVE ' + Math.round(R.sampleRate / 2 / speed / 1000) + ' kHz IN THE SOURCE IS NOW AUDIBLE');
     else status(COPY.loaded);
+  }
+
+  // Paint the band SPEED brings down and say whether anything lives there. The
+  // level is measured once per source; the honest answer for most files is
+  // "nothing", and the view must be willing to say so.
+  function showSlowView() {
+    const out = $('slowOut');
+    const band = R.mono ? slowBand(R.sampleRate, speed) : null;
+    if (!band) {
+      spec.setSlowBand(null);
+      if (out) out.hidden = true;
+      return;
+    }
+    if (aboveCache.gen !== R.generation || aboveCache.lo !== band.sourceLo || aboveCache.hi !== band.sourceHi) {
+      aboveCache = { gen: R.generation, lo: band.sourceLo, hi: band.sourceHi,
+        db: bandLevelDb(R.mono, R.sampleRate, band.sourceLo, band.sourceHi) };
+    }
+    const k = (hz) => Math.round(hz / 1000);
+    const db = aboveCache.db;
+    const nothing = !Number.isFinite(db) || db < -90;
+    const level = Number.isFinite(db) ? db.toFixed(1) + ' dBFS' : 'nothing';
+    spec.setSlowBand({ ...band,
+      label: speedLabel(speed) + ' BRINGS ' + k(band.sourceLo) + '–' + k(band.sourceHi) + ' kHz DOWN TO '
+        + k(band.playedLo) + '–' + k(band.playedHi) + ' kHz · ' + level });
+    if (out) {
+      out.hidden = false;
+      out.textContent = 'ABOVE ' + k(band.sourceLo) + ' kHz: ' + level
+        + (nothing ? ' · NOTHING TO REVEAL — THIS FILE IS ORDINARY BANDWIDTH IN A TALL CONTAINER'
+                   : ' · ' + speedLabel(speed) + ' LANDS IT AT ' + k(band.playedLo) + '–' + k(band.playedHi) + ' kHz');
+      out.classList.toggle('is-empty', nothing);
+    }
   }
   $('btnSpeed').addEventListener('click', () => {
     const allowed = speedFactorsFor(R.sampleRate);
@@ -596,6 +629,8 @@ export function initBenchController(ctx) {
     renderedPeaks = null;
     if ($('soundscape')) $('soundscape').hidden = true;
     speed = 1;
+    spec.setSlowBand(null);
+    if ($('slowOut')) $('slowOut').hidden = true;
     if ($('btnSpeed')) { $('btnSpeed').textContent = speedLabel(1); $('btnSpeed').classList.remove('is-active'); $('btnSpeed').disabled = !hasSource; }
     liftRange = null;
     setAb('a');

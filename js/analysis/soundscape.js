@@ -100,3 +100,23 @@ export function ndsi(mono, sampleRate, opts = {}) {
     windows,
   };
 }
+
+/**
+ * Total power in [loHz, hiHz), in dB relative to a full-scale sine. Used by the
+ * SLOW view to say whether there is anything above hearing worth bringing
+ * down, so a 96 kHz container around ordinary-bandwidth audio is called what it
+ * is. -Infinity when there is nothing to measure; a -140 dB floor otherwise.
+ */
+export function bandLevelDb(mono, sampleRate, loHz, hiHz, windowSize = WINDOW) {
+  const spectrum = welchPsd(mono, sampleRate, windowSize);
+  if (!spectrum) return -Infinity;
+  const { psd, binHz } = spectrum;
+  // Hann coherent gain is 0.5, so a full-scale sine of amplitude A lands with
+  // |X|^2 = (A * N / 4)^2 in its bin. Dividing by (N/4)^2 makes the sum read A^2.
+  const norm = (windowSize / 4) * (windowSize / 4);
+  const from = Math.max(0, Math.round(loHz / binHz));
+  const to = Math.min(psd.length, Math.round(hiHz / binHz));
+  let total = 0;
+  for (let k = from; k < to; k++) total += psd[k] / norm;
+  return 10 * Math.log10(Math.max(total, 1e-14));
+}

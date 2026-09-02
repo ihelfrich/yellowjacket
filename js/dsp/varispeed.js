@@ -63,3 +63,24 @@ export function realSecondsUntil(bufferSeconds, factor) {
 export function speedLabel(factor) {
   return factor === 4 ? '¼×' : factor === 2 ? '½×' : '1×';
 }
+
+// Upper edge of hearing used for the SLOW view. Conservative on purpose: the
+// point is to show what is above ANY listener's range, not to argue about the
+// last kilohertz.
+export const AUDIBLE_HZ = 20000;
+
+/**
+ * The band that SLOW brings down into hearing: source content above AUDIBLE_HZ
+ * that lands at or below AUDIBLE_HZ once divided by `factor`. Null when the
+ * source has nothing above hearing to begin with, or at 1x.
+ */
+export function slowBand(sampleRate, factor, audibleHz = AUDIBLE_HZ) {
+  const rate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : 0;
+  const f = SPEED_FACTORS.includes(factor) ? factor : 1;
+  const nyquist = rate / 2;
+  if (f === 1 || nyquist <= audibleHz) return null;
+  const sourceLo = audibleHz;
+  const sourceHi = Math.min(nyquist, audibleHz * f);
+  if (sourceHi <= sourceLo) return null;
+  return { sourceLo, sourceHi, playedLo: sourceLo / f, playedHi: sourceHi / f };
+}

@@ -96,6 +96,7 @@ export class SpectrogramView extends EventTarget {
 
     this._view = { start: 0, end: 0 };
     this._playhead = 0;
+    this._slowBand = null;    // {sourceLo, sourceHi, playedLo, playedHi, label} or null
 
     this._w = 0;              // backing store size, device px
     this._h = 0;
@@ -243,6 +244,13 @@ export class SpectrogramView extends EventTarget {
     return { start: this._view.start, end: this._view.end };
   }
 
+  // The band SPEED brings down into hearing, painted in blue across the whole
+  // view: everything above this line is what a slower clock makes audible.
+  setSlowBand(band) {
+    this._slowBand = band && band.sourceHi > band.sourceLo ? band : null;
+    this._composite();
+  }
+
   setRegion(region) {
     // external set (e.g. cleared after APPLY); does not emit 'regionselect'
     this._region = this._normRegion(region);
@@ -344,6 +352,7 @@ export class SpectrogramView extends EventTarget {
       well: v('--yj-well', '#070604'),
       line: v('--yj-line', '#262418'),
       playhead: v('--yj-yellow', '#FFD400'),
+      slow: v('--yj-blue', '#7FD4F5'),
       yellowHi: v('--yj-yellow-hi', '#FFE45C'),
       amber: v('--yj-amber', '#C79A00'),
       amberDim: v('--yj-amber-dim', '#6E5A10'),
@@ -462,6 +471,7 @@ export class SpectrogramView extends EventTarget {
       g.drawImage(this._img, sx0, 0, sw, this._bins, 0, 0, w, h);
     }
 
+    this._drawSlowBand(g, w, h, dpr, c);
     this._drawRepairs(g, w, h, dpr, c);
     this._drawRuler(g, w, h, dpr, c);
     this._drawSelection(g, w, h, dpr, c);
@@ -469,6 +479,30 @@ export class SpectrogramView extends EventTarget {
     if (this._playhead >= v.start && this._playhead <= v.end) {
       g.fillStyle = c.playhead;
       g.fillRect(Math.round(((this._playhead - v.start) / span) * w), 0, Math.max(1, Math.round(dpr)), h);
+    }
+  }
+
+  _drawSlowBand(g, w, h, dpr, c) {
+    const b = this._slowBand;
+    if (!b) return;
+    const fs = this._freqScale();
+    if (!fs) return;
+    // Log axis in device pixels: y = log(fMax / f) / logRatio * h, top is fMax.
+    const yOf = (f) => (Math.log(fs.fMax / Math.max(f, fs.fMin)) / fs.logRatio) * h;
+    const yTop = Math.max(0, yOf(Math.min(b.sourceHi, fs.fMax)));
+    const yBot = Math.min(h, yOf(b.sourceLo));
+    if (!(yBot > yTop)) return;
+    g.fillStyle = c.slow;
+    g.globalAlpha = 0.16;
+    g.fillRect(0, yTop, w, yBot - yTop);
+    g.globalAlpha = 1;
+    // A hairline at the edge of hearing, so the band reads as "above this".
+    g.fillRect(0, Math.round(yBot), w, Math.max(1, Math.round(dpr)));
+    if (b.label) {
+      g.font = Math.round(10 * dpr) + 'px ' + (c.mono || 'monospace');
+      g.textBaseline = 'top';
+      g.fillStyle = c.slow;
+      g.fillText(b.label, Math.round(8 * dpr), yTop + Math.round(4 * dpr));
     }
   }
 

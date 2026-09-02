@@ -832,3 +832,10 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 /* Speed sits with the transport: one cycling button, lit when not 1x. */
 #btnSpeed { min-width: 44px; font-family: var(--f-mono); letter-spacing: 0.04em; }
 #btnSpeed.is-active { background: var(--yj-blue); border-color: var(--yj-blue); color: var(--yj-bg); }
+
+/* SLOW readout: what SPEED will bring down, and whether anything is there. */
+.yj-slow-out {
+  margin-top: 8px; font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.08em;
+  line-height: 1.5; color: var(--yj-blue);
+}
+.yj-slow-out.is-empty { color: var(--yj-ink-dim); }

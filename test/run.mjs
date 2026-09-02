@@ -44,8 +44,8 @@ import { fitModal, synthModal } from '../js/analysis/modal.js';
 import { buildDrumPatch, parseDrumPatch, positionOf, PATCH_MAX_FRAMES } from '../js/export/op1patch.js';
 import { planTicks, midiTimestampFor, ClockIn } from '../js/midi/clock.js';
 import { parseMidiMessage } from '../js/midi/wire.js';
-import { ndsi } from '../js/analysis/soundscape.js';
-import { slowedBuffer, speedFactorsFor, bufferSecondsElapsed, realSecondsUntil } from '../js/dsp/varispeed.js';
+import { ndsi, bandLevelDb } from '../js/analysis/soundscape.js';
+import { slowedBuffer, speedFactorsFor, bufferSecondsElapsed, realSecondsUntil, slowBand } from '../js/dsp/varispeed.js';
 import {
   harvest, ROLE_QUOTAS, HARVEST_MAX_PICKS, planKitAssignment, kitGainFor, peakOfChannels,
 } from '../js/analysis/harvest.js';
@@ -4241,7 +4241,47 @@ const varispeedCases = [
   },
 ];
 
+// ---------- SLOW view: which band comes down into hearing, and is anything there ----------
+
+const slowCases = [
+  function slowBandIsWhatWasAboveHearingAndNowIsNot() {
+    // 96 kHz source at 1/4: everything above 20 kHz, up to Nyquist 48 kHz, lands
+    // at 5-12 kHz. That is the band the overlay paints and the readout measures.
+    const b = slowBand(96000, 4);
+    assert.deepEqual(b, { sourceLo: 20000, sourceHi: 48000, playedLo: 5000, playedHi: 12000 });
+  },
+  function slowBandAtHalfSpeedStopsWhereHearingStops() {
+    // At 1/2, 20-40 kHz lands at 10-20 kHz; 40-48 kHz would land above 20 kHz
+    // and stay inaudible, so it is not promised.
+    const b = slowBand(96000, 2);
+    assert.deepEqual(b, { sourceLo: 20000, sourceHi: 40000, playedLo: 10000, playedHi: 20000 });
+  },
+  function slowBandIsEmptyWhenTheSourceHasNothingAboveHearing() {
+    // A 44.1 kHz file has Nyquist 22.05 kHz: at 1/4 there is a sliver, at 1x nothing.
+    assert.equal(slowBand(44100, 1), null);
+    assert.equal(slowBand(32000, 4), null, 'Nyquist 16 kHz is already audible');
+    const sliver = slowBand(44100, 4);
+    assert.equal(sliver.sourceLo, 20000); assert.equal(sliver.sourceHi, 22050);
+  },
+  function bandLevelSeesAToneOnlyInsideItsBand() {
+    const rate = 96000, n = rate;
+    const hi = new Float32Array(n), lo = new Float32Array(n);
+    for (let i = 0; i < n; i++) { hi[i] = 0.5 * Math.sin(2 * Math.PI * 30000 * i / rate); lo[i] = 0.5 * Math.sin(2 * Math.PI * 5000 * i / rate); }
+    const above = bandLevelDb(hi, rate, 20000, 48000);
+    const below = bandLevelDb(lo, rate, 20000, 48000);
+    assert.ok(above > -20, '30 kHz tone is loud above 20 kHz: ' + above);
+    assert.ok(below < -80, '5 kHz tone is silent above 20 kHz: ' + below);
+    assert.ok(above - below > 50, 'the two are unmistakably different');
+  },
+  function bandLevelIsHonestAboutSilenceAndJunk() {
+    assert.ok(bandLevelDb(new Float32Array(96000), 96000, 20000, 48000) <= -120, 'digital silence is the floor');
+    assert.equal(bandLevelDb(null, 96000, 20000, 48000), -Infinity);
+    assert.equal(bandLevelDb(new Float32Array(10), 96000, 20000, 48000), -Infinity, 'shorter than a window');
+  },
+];
+
 const groups = [
+  ['slow view', slowCases],
   ['varispeed', varispeedCases],
   ['soundscape', soundscapeCases],
   ['starter groove', grooveCases],

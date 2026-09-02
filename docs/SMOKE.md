@@ -133,3 +133,20 @@ Drop a 96 kHz file whose only content sits at 26–34 kHz (the generator in
 Nothing is resampled: the printed file is bit-exact, only the header rate
 changes. That is why the frame count must match the source exactly — a
 mismatch means something started interpolating.
+
+## 8. SLOW view paints the band and tells the truth about it
+
+Drop a 96 kHz file carrying a 30 kHz tone → SPEED to **¼×** → SIGNAL.
+
+| checkpoint | expected |
+|---|---|
+| spectrogram | a translucent **blue** band from 20 kHz up to Nyquist, hairline at 20 kHz, label `¼× BRINGS 20–48 kHz DOWN TO 5–12 kHz · −6.2 dBFS` |
+| pixel probe | at 30 kHz ≈ (124,211,243) blue-tinted; at 5 kHz dark (38,36,24) |
+| readout (SIGNAL rail) | `ABOVE 20 kHz: -6.2 dBFS · ¼× LANDS IT AT 5–12 kHz` |
+| a 48 kHz file at ¼× | `ABOVE 20 kHz: -113.9 dBFS · NOTHING TO REVEAL — THIS FILE IS ORDINARY BANDWIDTH IN A TALL CONTAINER`, greyed |
+| back to 1× | readout hidden, band gone |
+
+The level is total power in the band relative to a full-scale sine (Hann gain
+corrected), measured once per source. The "nothing" threshold is −90 dBFS. A
+file that reads 96 kHz because the OUTPUT context upsampled it (see §7 of the
+audit) is exactly the case the second row exists for.
