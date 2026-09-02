@@ -71,6 +71,9 @@ import {
 import {
   addMine, findMineByHash, formatMineMeta, listMine, mineTotalBytes, nextMineId, normalizeMineIndex, removeMine,
 } from '../js/app/mine.js';
+import {
+  describePreview, previewChain, previewWindow, sliceAudioBuffer, PREVIEW_SPAN_SEC,
+} from '../js/dsp/preview.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -4436,8 +4439,72 @@ const mineCases = [
   },
 ];
 
+// ---------- live preview: the blue before the render ----------
+
+class FakeAudioBuffer {
+  constructor({ numberOfChannels, length, sampleRate }) {
+    this.numberOfChannels = numberOfChannels; this.length = length; this.sampleRate = sampleRate;
+    this._ch = Array.from({ length: numberOfChannels }, () => new Float32Array(length));
+  }
+  getChannelData(i) { return this._ch[i]; }
+  copyToChannel(src, i, offset = 0) { this._ch[i].set(src, offset); }
+}
+
+const previewCases = [
+  function windowFollowsThePlayheadWithAPreroll() {
+    const w = previewWindow({ playheadSec: 60, durationSec: 218 });
+    assert.equal(w.startSec, 60);
+    assert.equal(w.endSec, 60 + PREVIEW_SPAN_SEC);
+    assert.equal(w.prerollSec, 1);
+    assert.equal(w.renderStartSec, 59, 'a second of pre-roll so compressors and gates settle');
+  },
+  function windowSlidesBackNearTheEndAndClampsPrerollAtZero() {
+    const end = previewWindow({ playheadSec: 215, durationSec: 218 });
+    assert.equal(end.endSec, 218);
+    assert.ok(Math.abs(end.startSec - (218 - PREVIEW_SPAN_SEC)) < 1e-9, 'always a full window');
+    const head = previewWindow({ playheadSec: 0.2, durationSec: 100 });
+    assert.equal(head.prerollSec, 0.2, 'pre-roll cannot reach before the file');
+    assert.equal(head.renderStartSec, 0);
+    const short = previewWindow({ playheadSec: 3, durationSec: 4 });
+    assert.equal(short.startSec, 0);
+    assert.equal(short.endSec, 4, 'a short file is previewed whole');
+    assert.equal(previewWindow({ playheadSec: 1, durationSec: 0 }), null);
+  },
+  function chainDefersLoudnormAndIgnoresOffModules() {
+    const r = previewChain([{ id: 'highpass', on: true }, { id: 'loudnorm', on: true }, { id: 'comp', on: false }, null]);
+    assert.deepEqual(r.chain.map((c) => c.id), ['highpass']);
+    assert.deepEqual(r.deferred, ['loudnorm']);
+    assert.equal(r.flat, false);
+    assert.equal(previewChain([{ id: 'loudnorm', on: true }]).flat, true, 'loudnorm alone previews nothing');
+    assert.equal(previewChain(undefined).flat, true);
+  },
+  function sliceCopiesExactlyTheWindowPerChannel() {
+    const src = new FakeAudioBuffer({ numberOfChannels: 2, length: 100, sampleRate: 10 });
+    for (let i = 0; i < 100; i++) { src._ch[0][i] = i; src._ch[1][i] = -i; }
+    const out = sliceAudioBuffer(src, 2, 5, FakeAudioBuffer);
+    assert.equal(out.length, 30);
+    assert.equal(out.sampleRate, 10);
+    assert.equal(out.getChannelData(0)[0], 20);
+    assert.equal(out.getChannelData(0)[29], 49);
+    assert.equal(out.getChannelData(1)[0], -20);
+    const over = sliceAudioBuffer(src, 9, 20, FakeAudioBuffer);
+    assert.equal(over.length, 10, 'clamped to the file');
+    const empty = sliceAudioBuffer(src, 50, 3, FakeAudioBuffer);
+    assert.equal(empty.length, 1, 'an inverted window yields a one-frame silent buffer, never a throw');
+    assert.equal(empty.getChannelData(0)[0], 0);
+  },
+  function readoutSaysWhatTheBlueIsAndIsNot() {
+    const w = previewWindow({ playheadSec: 62, durationSec: 218 });
+    assert.equal(describePreview({ window: w, ms: 37.4 }), 'PREVIEW ≈ RENDER · 12.0S FROM 1:02 · 37 MS');
+    assert.equal(describePreview({ window: w, ms: 0.2, deferred: ['loudnorm'], cuts: true }),
+      'PREVIEW ≈ RENDER · 12.0S FROM 1:02 · 1 MS · LOUDNORM APPLIES AT RENDER · CUTS APPLY AT RENDER');
+    assert.equal(describePreview({}), 'NOTHING TO PREVIEW');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['live preview', previewCases],
   ['my shelf', mineCases],
   ['slow view', slowCases],
   ['varispeed', varispeedCases],

@@ -67,6 +67,7 @@
 <link rel="modulepreload" href="js/loom/identity.js">
 <link rel="modulepreload" href="js/loom/compile.js">
 <link rel="modulepreload" href="js/analysis/soundscape.js">
+<link rel="modulepreload" href="js/dsp/preview.js">
 <link rel="modulepreload" href="js/app/bench-controller.js">
 <link rel="modulepreload" href="js/app/fingerprint.js">
 <link rel="modulepreload" href="js/app/source-controller.js">
@@ -251,6 +252,14 @@
 
   <!-- ============ RACK ============ -->
   <section id="tab-rack" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-rack" aria-hidden="true">
+    <div class="yj-panel yj-preview" data-label="LIVE PREVIEW"
+         title="Yellow is the source. Blue is what RENDER would make of the twelve seconds after the playhead with the rack as it stands — it redraws as you turn knobs, before you render. Click to move the window.">
+      <canvas id="waveRack" class="yj-canvas yj-canvas-wave yj-canvas-preview"></canvas>
+      <div class="yj-preview-row">
+        <button id="btnPreview" class="yj-btn yj-btn-compact is-active" type="button" title="Redraw the blue as the rack changes">LIVE PREVIEW</button>
+        <span class="yj-preview-out is-dim" id="previewOut">LOAD AUDIO TO PREVIEW THE RACK</span>
+      </div>
+    </div>
     <div class="yj-cols">
       <div class="yj-grow" id="rackHost"><!-- modules rendered by main.js --></div>
       <aside class="yj-rail">

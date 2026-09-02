@@ -200,3 +200,24 @@ AUDIO IN → any file you own (a 42 MB WAV rip works) → **KEEP** (header, next
 Kept bytes live in OPFS under `yellowjacket-mine-v1`, separate from the project
 store and the crate, so a project DISCARD never touches them. Clearing site data
 does. The same action is `KEEP ON MY SHELF` in the command deck.
+
+## 11. LIVE PREVIEW paints the blue before you render
+
+LOAD THE DEMO SONG → RACK.
+
+| checkpoint | expected |
+|---|---|
+| rack flat | strip shows the source in yellow, no blue; readout `RACK IS FLAT · SWITCH A MODULE ON TO SEE WHAT IT WOULD DO` |
+| power on COMP | within ~¼ s a blue ghost appears inside a marked 12 s window from the playhead; readout `PREVIEW ≈ RENDER · 12.0S FROM 0:00 · <n> MS` |
+| turn a knob | the blue redraws after each change (debounced 220 ms); stale previews are dropped, never drawn late |
+| power on LOUDNORM | readout gains `· LOUDNORM APPLIES AT RENDER` — the blue does not pretend to know the whole-file gain |
+| cut a word in TRANSCRIPT | readout gains `· CUTS APPLY AT RENDER`; hatching shows the cut on the strip |
+| click the strip at 1:00 | playhead seeks; the window and the blue move to `FROM 1:00` |
+| LIVE PREVIEW off | no blue, no window; readout `PREVIEW OFF · …`; on again brings it back |
+| RENDER | readout `RENDERED · BLUE IS THE RENDER ITSELF · …`; the blue now covers the whole file |
+| change the rack after a render | render goes STALE and the windowed preview returns |
+| switch to another tab | no preview work runs while RACK is hidden; returning to RACK redraws once |
+
+The strip is a third WaveformView bound to the same mono and peaks; the ghost
+carries an offset (`setGhost(mono, pyramid, offsetSec)`) so a windowed ghost
+sits on the source's clock and is zero elsewhere.

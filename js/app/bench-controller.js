@@ -10,6 +10,7 @@ import { mixdownMono } from '../audio-engine.js';
 import { buildPeakPyramid } from '../render/peaks.js';
 import { ndsi, bandLevelDb } from '../analysis/soundscape.js';
 import { speedFactorsFor, slowedBuffer, speedLabel, slowBand } from '../dsp/varispeed.js';
+import { previewWindow, previewChain, sliceAudioBuffer, describePreview } from '../dsp/preview.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -112,6 +113,7 @@ export function initBenchController(ctx) {
     $('roTime').textContent = fmtTime(e.detail.t);
     waveMini.setPlayhead(t);
     waveMain.setPlayhead(t);
+    if (views.waveRack) views.waveRack.setPlayhead(t);
     spec.setPlayhead(t);
     if (P.words) transcript.setActiveTime(t);
   });
@@ -421,6 +423,123 @@ export function initBenchController(ctx) {
     }
   }
 
+  // ---------- live preview: the blue RENDER would give, before rendering ----------
+  //
+  // Twelve seconds after the playhead are cut from the source, run through
+  // the rack as it stands (loudnorm deferred: its gain is a whole-file
+  // measurement), and painted as the blue ghost over that window on the RACK
+  // strip. Redraws on any change to the rack, cuts, or source, and on seek;
+  // only while the RACK tab is showing. A fresh render replaces the window
+  // with the whole render, since that is now the honest blue.
+  const waveRack = views.waveRack || null;
+  // Only changes that can alter the blue schedule a preview; the machine and
+  // studio churn the store constantly and none of it touches the rack.
+  const PREVIEW_KINDS = new Set(['chain', 'source', 'source-clear', 'transcript-edit', 'words', 'repairs', 'history', 'undo', 'redo']);
+  let previewOn = true;
+  let previewGen = 0;
+  let previewTimer = 0;
+  let previewMono = null;
+  let previewBusy = false;
+  let previewDirty = false;
+
+  function previewVisible() {
+    const pane = $('tab-rack');
+    return !!(pane && pane.classList.contains('is-active'));
+  }
+  function setPreviewOut(text, dim = false) {
+    const el = $('previewOut');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('is-dim', dim);
+  }
+  function syncPreviewBuffer() {
+    if (!waveRack) return;
+    if (R.mono !== previewMono) {
+      previewMono = R.mono;
+      waveRack.setBuffer(R.mono, R.sampleRate, R.peaks);
+      waveRack.setGhost(null);
+      waveRack.setSelection(null);
+    }
+    waveRack.setCuts(activeCuts());
+  }
+  function schedulePreview(delay = 220) {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = setTimeout(runPreview, delay);
+  }
+  // One preview at a time: a change that lands mid-render marks the run dirty
+  // and the strip is redrawn once more afterwards, so a burst of knob moves
+  // never cancels every render before one can finish.
+  async function runPreview() {
+    previewTimer = 0;
+    if (!waveRack) return;
+    if (previewBusy) { previewDirty = true; return; }
+    previewBusy = true;
+    try {
+      await previewOnce();
+    } finally {
+      previewBusy = false;
+      if (previewDirty) { previewDirty = false; schedulePreview(0); }
+    }
+  }
+  async function previewOnce() {
+    syncPreviewBuffer();
+    const gen = ++previewGen;
+    if (!R.buffer) { waveRack.setGhost(null); waveRack.setSelection(null); setPreviewOut('LOAD AUDIO TO PREVIEW THE RACK', true); return; }
+    if (!previewOn) { waveRack.setGhost(null); waveRack.setSelection(null); setPreviewOut('PREVIEW OFF · BLUE RETURNS WHEN YOU SWITCH IT ON', true); return; }
+    if (R.renderedBuffer && renderFresh && renderedMono) {
+      waveRack.setGhost(renderedMono, renderedPeaks, 0);
+      waveRack.setSelection(null);
+      setPreviewOut('RENDERED · BLUE IS THE RENDER ITSELF · CHANGE THE RACK TO PREVIEW AGAIN');
+      return;
+    }
+    if (!previewVisible()) return;
+    const { chain, deferred, flat } = previewChain(P.chain);
+    const win = previewWindow({ playheadSec: engine.currentTime, durationSec: R.buffer.duration });
+    if (flat || !win) {
+      waveRack.setGhost(null);
+      waveRack.setSelection(null);
+      setPreviewOut(flat ? 'RACK IS FLAT · SWITCH A MODULE ON TO SEE WHAT IT WOULD DO' : 'NOTHING TO PREVIEW', true);
+      return;
+    }
+    const t0 = performance.now();
+    waveRack.setSelection({ start: win.startSec, end: win.endSec });
+    setPreviewOut('PREVIEWING · ' + (win.endSec - win.startSec).toFixed(1) + 'S FROM THE PLAYHEAD…', true);
+    try {
+      const slice = sliceAudioBuffer(R.buffer, win.renderStartSec, win.endSec);
+      const out = await renderChain(slice, [], chain);
+      if (gen !== previewGen || !R.buffer) return;
+      const mono = mixdownMono(out);
+      const skip = Math.min(mono.length, Math.round(win.prerollSec * out.sampleRate));
+      waveRack.setGhost(mono.subarray(skip), null, win.startSec);
+      setPreviewOut(describePreview({ window: win, ms: performance.now() - t0, deferred, cuts: activeCuts().length > 0 }));
+    } catch (e) {
+      if (gen !== previewGen) return;
+      waveRack.setGhost(null);
+      setPreviewOut('PREVIEW FAILED · ' + (e && e.message ? e.message : 'THE RACK REFUSED THE WINDOW'), true);
+    }
+  }
+  if (waveRack) {
+    waveRack.addEventListener('seek', (e) => { uiSeek(e.detail.t); schedulePreview(80); });
+    const previewBtn = $('btnPreview');
+    if (previewBtn) {
+      previewBtn.addEventListener('click', () => {
+        previewOn = !previewOn;
+        previewBtn.classList.toggle('is-active', previewOn);
+        runPreview();
+      });
+    }
+    store.addEventListener('change', (e) => {
+      const kind = e.detail && e.detail.kind;
+      if (!kind || PREVIEW_KINDS.has(kind)) schedulePreview();
+    });
+    const pane = $('tab-rack');
+    if (pane && typeof MutationObserver === 'function') {
+      new MutationObserver(() => { if (previewVisible()) schedulePreview(30); })
+        .observe(pane, { attributes: true, attributeFilter: ['class'] });
+    }
+    ctx.api.previewRack = runPreview;
+  }
+
   function setRenderState(text, led) {
     $('renderState').textContent = text;
     setLed('ledRender', led);
@@ -453,6 +572,7 @@ export function initBenchController(ctx) {
       const delta = after - before;
       $('roDelta').textContent = (delta >= 0 ? '+' : '') + delta.toFixed(1) + ' LU';
       renderFresh = true;
+      schedulePreview(0);
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
       setRenderState(COPY.renderFresh, 'on');
       $('abToggle').hidden = false;

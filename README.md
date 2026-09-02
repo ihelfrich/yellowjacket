@@ -152,6 +152,15 @@ sample rate, so a 96 kHz load is still 96 kHz on the way out. The float export w
 spec-correct IEEE header and keeps samples above full scale instead of clamping them, so a
 hot bounce can still be pulled back down in whatever you open it with next.
 
+**LIVE PREVIEW** shows that blue before you render. The RACK tab carries a strip
+of the source; twelve seconds after the playhead are cut, run through the rack
+as it stands, and painted as the blue ghost over that window, redrawn a few
+hundred milliseconds after every knob. Click the strip to move the window.
+Loudnorm is deferred (its gain is a whole-file measurement, and a window would
+invent a different one) and cuts apply at render; the readout says both. Once
+you render, the strip shows the render itself as the blue, until the rack
+changes again.
+
 **STUDIO** is the melodic production layer: six independent polyphonic instruments with
 eight starting architectures (sub, bass, keys, pluck, pad, lead, organ, and glass). Each
 part has two oscillators, detune or harmonic intervals, transpose, a resonant low-pass,

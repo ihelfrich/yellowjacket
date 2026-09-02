@@ -84,9 +84,12 @@ export class WaveformView extends EventTarget {
    * the signal the blue shows through, so what the rack did is visible instead
    * of only audible. Pass null to clear.
    */
-  setGhost(mono, pyramid) {
+  setGhost(mono, pyramid, offsetSec = 0) {
     const usable = mono && mono.length ? mono : null;
     this._ghostMono = usable;
+    // A ghost may cover only a window of the source (the live rack preview):
+    // offsetSec is where its first sample sits on the source's clock.
+    this._ghostOffset = isFinite(offsetSec) ? Math.max(0, offsetSec) : 0;
     this._ghostPyr = usable ? (pyramid || buildPeakPyramid(usable)) : null;
     this._ghostPeaks = null;
     this._peaksDirty = true;
@@ -191,8 +194,10 @@ export class WaveformView extends EventTarget {
       this._ghostPeaks = { mins: new Float32Array(w), maxs: new Float32Array(w) };
     }
     // Same time window as the live waveform, so the two are directly comparable
-    // column for column rather than merely similar in shape.
-    queryPeaks(this._ghostPyr, this._view.start * sr, this._view.end * sr, w,
+    // column for column rather than merely similar in shape. A windowed ghost
+    // is shifted by its offset; queryPeaks yields zeros outside its samples.
+    const off = (this._ghostOffset || 0) * sr;
+    queryPeaks(this._ghostPyr, this._view.start * sr - off, this._view.end * sr - off, w,
       this._ghostPeaks.mins, this._ghostPeaks.maxs);
   }
 

@@ -349,6 +349,11 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 /* ---------- canvases ---------- */
 .yj-canvas { width: 100%; background: var(--yj-well); border: 1px solid var(--yj-line); }
 .yj-canvas-wave { height: 180px; flex-shrink: 0; }
+.yj-canvas-preview { height: 110px; }
+.yj-preview { flex: 0 0 auto; }
+.yj-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+.yj-preview-out { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--yj-blue); }
+.yj-preview-out.is-dim { color: var(--yj-ink-dim); }
 .yj-canvas-spec { flex: 1; min-height: 220px; }
 .yj-canvas-slice { flex: 1; min-height: 260px; touch-action: none; }
 .yj-canvas-slice:focus-visible { outline: 1px solid var(--yj-yellow); outline-offset: -1px; }
