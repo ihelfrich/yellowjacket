@@ -368,6 +368,8 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-preview { flex: 0 0 auto; }
 #btnPlay.is-sounding { border-color: var(--yj-yellow); color: var(--yj-yellow); }
 .yj-sounding { min-width: 96px; }
+.yj-conversion { font-size: 8.5px; letter-spacing: 0.1em; color: var(--yj-ink-dim); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.yj-conversion.is-fault { color: var(--yj-fault); }
 .yj-sounding .yj-led.is-sounding { background: var(--yj-yellow); }
 .yj-sounding .yj-led-text { color: var(--yj-yellow); }
 .yj-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
@@ -813,6 +815,7 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 @media (max-width: 560px) {
   .yj-mark-sub, .yj-time-dim { display: none; }
   .yj-sounding { min-width: 0; } .yj-sounding .yj-led-text { display: none; }
+  .yj-conversion { display: none; }
   .yj-time { min-width: 104px; font-size: 12px; }
   .yj-transport { gap: 4px; }
   .yj-top .yj-btn { padding-left: 8px; padding-right: 8px; }

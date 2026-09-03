@@ -339,3 +339,27 @@ MACHINE staying on the device context and its buffers rate-matched once.
   `bumpTrack` schedules one coalesced prebake off the caller's stack. Live:
   the demo's 44.1 kHz slices on the 96 kHz device are 96 kHz buffers (ratio
   2.177), the machine runs and stops, no errors. 52 groups / 336 cases.
+
+## Playback rate, steps 3–4 shipped locally — the transport context
+`engine.transport` = `{ctx, master, rate, shared}`: opened at the loaded
+buffer's rate (`new AudioContext({sampleRate})`), or the device context itself
+when the rates match. `load()` awaits `_ensureTransport(buffer.sampleRate)`
+before 'loaded'; a rate change halts playback, fires `transportchange {from}`
+synchronously, awaits `close()` (2 s cap; Safari's four-context cap), then
+opens the new one and fires `transport`. A refused rate (a browser ignoring
+the hint) falls back to the device context and is reported as a fault-tone
+status. `play()`, `currentTime`, LOOM audition and clip audition run on the
+transport; MACHINE, STUDIO, and the MIDI clock stay on the device context.
+The meter takes one analyser per context (peak = max, RMS = root of summed
+mean squares, clip = any) and drops a closed one. A readout beside the
+timecode says `TRANSPORT 44.1 kHz → DEVICE 96 kHz · CHROMIUM SINC`,
+`MATCHED · NO CONVERSION`, or the refusal. Live (fresh origin, 96 kHz
+device): demo → transport 44 100 (not shared); HM01 window → `transportchange`
+44 100, transport 32 000; Traum → `transportchange` 32 000, transport 48 000;
+playback advances at 1× on each; QUICK TAKE runs; **R5 in-graph null test:
+a 48 kHz buffer through a 48 kHz OfflineAudioContext is bit-exact (max
+diff 0)** — the source node is a copy at unity ratio. The only resampler
+left in the monitoring path is Chromium's sinc stage to the device (modelled
+−94.9 dB at 19 kHz for 48 → 96; test/lab/chromium-sinc-model2.mjs), which
+E12's method cannot observe in-graph; hardware loopback is the remaining
+proof (R7). Tests: 52 groups / 339 cases.

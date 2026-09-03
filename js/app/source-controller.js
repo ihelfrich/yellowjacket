@@ -145,6 +145,15 @@ export function initSourceController(ctx) {
     const kHz = (hz) => (hz % 1000 === 0 ? hz / 1000 : (hz / 1000).toFixed(1)) + ' kHz';
     const heavy = report && report.overBudget && !report.downgraded && report.reason
       ? ' · ' + report.reason.toUpperCase() : '';
+    const T = engine.transport;
+    const tRep = engine.transportReport;
+    if (tRep && tRep.refused) {
+      statusFault('LOADED AT ' + kHz(report.decodedRate) + ' · THE BROWSER REFUSED A ' + kHz(tRep.requested)
+        + ' TRANSPORT · PLAYBACK INTERPOLATES ON THE ' + kHz(tRep.got) + ' DEVICE');
+      ctx.api.statusRight();
+      return;
+    }
+    const bench = T && !T.shared ? ' · BENCH AT ' + kHz(T.rate) + ' → ' + kHz(engine.deviceRate) + ' SINC' : '';
     if (report && report.downgraded && report.reason) {
       status('LOADED AT ' + kHz(report.decodedRate) + ' · ' + report.reason.toUpperCase(), !!heavy);
     } else if (report && report.upsampled) {
@@ -152,7 +161,7 @@ export function initSourceController(ctx) {
       status('LOADED · ' + kHz(report.nativeRate) + ' SOURCE, DECODED AT '
         + kHz(report.decodedRate) + ' · ' + String(report.reason || '').toUpperCase());
     } else if (report && report.nativeRate && report.decodedRate === report.nativeRate) {
-      status('LOADED AT ' + kHz(report.decodedRate) + ' · ITS OWN RATE, NOT THE OUTPUT\'S' + heavy, !!heavy);
+      status('LOADED AT ' + kHz(report.decodedRate) + ' · ITS OWN RATE' + bench + heavy, !!heavy);
     } else {
       status(COPY.loaded + heavy, !!heavy);
     }

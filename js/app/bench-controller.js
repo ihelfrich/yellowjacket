@@ -32,7 +32,12 @@ export function initBenchController(ctx) {
   }
   store.addEventListener('change', (e) => {
     const kind = e.detail && e.detail.kind;
-    if (kind === 'source' || kind === 'source-clear') releaseTranscriber(kind);
+    if (kind === 'source' || kind === 'source-clear') {
+      releaseTranscriber(kind);
+      // The engine's 'transport' and 'loaded' events fire before the runtime
+      // holds the buffer; the store change is the first moment both are true.
+      refreshConversion();
+    }
   });
   let renderFresh = false;
   // Peaks for the rendered take, built once per render and reused by both A/B
@@ -163,17 +168,47 @@ export function initBenchController(ctx) {
     if (P.words) transcript.setActiveTime(t);
   });
 
+  // Idempotent: hooks whichever contexts exist (the device context, and the
+  // transport when it is a second context), so it can run on every play, on
+  // every transport change, and when the machine or studio first runs.
   function hookMeter() {
-    if (meterHooked) return;
     queueMicrotask(() => {
-      if (!meterHooked && engine.ctx && engine.master) {
-        meter.connect(engine.ctx, engine.master);
+      if (engine.ctx && engine.master) meter.connect(engine.ctx, engine.master);
+      const T = engine.transport;
+      if (T && !T.shared) meter.connect(T.ctx, T.master);
+      if (!meterHooked) {
         meter.start();
         meter.onclip = () => $('btnClip').classList.add('is-lit');
         meterHooked = true;
       }
     });
   }
+  const kHzLabel = (hz) => (hz % 1000 === 0 ? hz / 1000 : (hz / 1000).toFixed(1)) + ' kHz';
+  function refreshConversion() {
+    const el = $('roConversion');
+    if (!el) return;
+    const T = engine.transport;
+    const rep = engine.transportReport;
+    el.classList.remove('is-fault');
+    if (!R.buffer || !T) { el.textContent = ''; return; }
+    if (rep && rep.refused) {
+      el.textContent = 'DEVICE KEPT ' + kHzLabel(engine.deviceRate) + ' · PLAYBACK INTERPOLATES';
+      el.classList.add('is-fault');
+    } else if (T.shared) {
+      el.textContent = 'MATCHED · NO CONVERSION';
+    } else {
+      el.textContent = 'TRANSPORT ' + kHzLabel(T.rate) + ' → DEVICE ' + kHzLabel(engine.deviceRate) + ' · CHROMIUM SINC';
+    }
+  }
+  engine.addEventListener('transport', () => { hookMeter(); refreshConversion(); });
+  engine.addEventListener('transportchange', (e) => {
+    meter.drop(e.detail && e.detail.from);
+    if (loomEngine && loomEngine.playing) loomEngine.stop();
+    if (auditioner && auditioner.playing) auditioner.stop();
+  });
+  engine.addEventListener('loaded', refreshConversion);
+  sequencer.addEventListener('state', (e) => { if (e.detail && e.detail.running) hookMeter(); });
+  if (studioEngine) studioEngine.addEventListener('state', (e) => { if (e.detail && e.detail.playing) hookMeter(); });
 
   $('btnClip').addEventListener('click', () => $('btnClip').classList.remove('is-lit'));
   $('btnPlay').addEventListener('click', togglePlay);

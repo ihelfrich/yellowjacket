@@ -44,8 +44,8 @@ export class LoomEngine extends EventTarget {
     this.stop();
     if (!plan || !Array.isArray(plan.events) || !plan.events.length) return false;
     const buffer = this.engine.buffer;
-    const ctx = this.engine.wake();
-    const master = this.engine.master;
+    const ctx = this.engine.wakeTransport ? this.engine.wakeTransport() : this.engine.wake();
+    const master = this.engine.transport ? this.engine.transport.master : this.engine.master;
     if (!buffer || !ctx || !master) return false;
     const token = ++this._token;
     const anchor = ctx.currentTime + START_DELAY;
@@ -108,7 +108,7 @@ export class LoomEngine extends EventTarget {
     this._token++;
     for (const timer of this._timers) clearTimeout(timer);
     this._timers.clear();
-    const ctx = this.engine.ctx;
+    const ctx = this.engine.transport ? this.engine.transport.ctx : this.engine.ctx;
     const now = ctx ? ctx.currentTime : 0;
     for (const voice of this._voices) {
       try {

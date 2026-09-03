@@ -932,6 +932,105 @@ const lifecycleCases = [
       else globalThis.window = previousWindow;
     }
   },
+  async function transportOpensAtTheFilesRateAndSharesWhenItMatches() {
+    const previousWindow = globalThis.window;
+    const made = []; const closed = [];
+    class FakeCtx {
+      constructor(opts) { this.sampleRate = opts && opts.sampleRate ? opts.sampleRate : 96000; this.state = 'running'; this.destination = {}; this.currentTime = 0; made.push(this.sampleRate); }
+      createGain() { return { connect() {}, disconnect() {} }; }
+      createBufferSource() { const n = { buffer: null, playbackRate: { value: 1 }, connect() {}, start() {}, stop() {}, disconnect() {}, onended: null }; this.lastSource = n; return n; }
+      resume() { this.state = 'running'; return Promise.resolve(); }
+      close() { this.state = 'closed'; closed.push(this.sampleRate); return Promise.resolve(); }
+    }
+    globalThis.window = { AudioContext: FakeCtx };
+    const prevRaf = globalThis.requestAnimationFrame, prevCaf = globalThis.cancelAnimationFrame;
+    globalThis.requestAnimationFrame = () => 1;
+    globalThis.cancelAnimationFrame = () => {};
+    try {
+      const engine = new Engine();
+      const events = [];
+      engine.addEventListener('transport', (e) => events.push(['transport', e.detail.rate, e.detail.shared]));
+      engine.addEventListener('transportchange', (e) => events.push(['change', e.detail.from.sampleRate]));
+      engine.wake();
+      assert.equal(engine.deviceRate, 96000);
+      // (a) a 48 k file opens a 48 k transport; the device context stays 96 k
+      await engine._ensureTransport(48000);
+      assert.equal(engine.transport.shared, false);
+      assert.equal(engine.transport.rate, 48000);
+      assert.equal(engine.ctx.sampleRate, 96000);
+      assert.deepEqual(made, [96000, 48000]);
+      // (d) same rate twice → no new context
+      await engine._ensureTransport(48000);
+      assert.deepEqual(made, [96000, 48000]);
+      // (f) play() schedules on the transport, unity ratio
+      engine._buffer = { duration: 2, sampleRate: 48000 };
+      engine.play([]);
+      const T = engine.transport.ctx;
+      assert.ok(T.lastSource, 'source created on the transport context');
+      assert.equal(T.lastSource.playbackRate.value, 1);
+      assert.equal(engine.ctx.lastSource, undefined, 'nothing scheduled on the device context');
+      // (c) another rate: transportchange first, then close, then construct
+      await engine._ensureTransport(44100);
+      assert.deepEqual(closed, [48000]);
+      assert.deepEqual(made, [96000, 48000, 44100]);
+      const order = events.map((e) => e[0]);
+      assert.deepEqual(order, ['transport', 'change', 'transport'], 'change fires before the new transport');
+      // (b) a 96 k file shares the device context: no constructor call
+      await engine._ensureTransport(96000);
+      assert.equal(engine.transport.shared, true);
+      assert.deepEqual(made, [96000, 48000, 44100]);
+      assert.deepEqual(closed, [48000, 44100]);
+      // (h) the device rate never moved
+      assert.equal(engine.deviceRate, 96000);
+      // (e) clear() closes a non-shared transport
+      await engine._ensureTransport(32000);
+      engine.clear();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.deepEqual(closed, [48000, 44100, 32000]);
+      assert.equal(engine.transport.shared, true, 'back on the device context');
+    } finally {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+      if (prevRaf === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = prevRaf;
+      if (prevCaf === undefined) delete globalThis.cancelAnimationFrame; else globalThis.cancelAnimationFrame = prevCaf;
+    }
+  },
+  async function aRefusedTransportRateFallsBackAndSaysSo() {
+    const previousWindow = globalThis.window;
+    class StubbornCtx {
+      constructor() { this.sampleRate = 96000; this.state = 'running'; this.destination = {}; }   // ignores the hint
+      createGain() { return { connect() {}, disconnect() {} }; }
+      resume() { return Promise.resolve(); }
+      close() { this.state = 'closed'; return Promise.resolve(); }
+    }
+    globalThis.window = { AudioContext: StubbornCtx };
+    try {
+      const engine = new Engine();
+      engine.wake();
+      await engine._ensureTransport(48000);
+      assert.equal(engine.transport.shared, true);
+      assert.equal(engine.transportReport.refused, true);
+      assert.equal(engine.transportReport.requested, 48000);
+      assert.equal(engine.transportReport.got, 96000);
+    } finally {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    }
+  },
+  async function meterAggregatesAcrossContexts() {
+    const { LevelMeter } = await import('../js/meters.js');
+    const a = new Float32Array([0.5, -0.2, 0.1, 0]);
+    const b = new Float32Array([0.999, 0, 0, 0]);
+    const agg = LevelMeter.aggregate([a, b]);
+    assert.ok(Math.abs(agg.peak - 0.999) < 1e-6, 'peak = max');
+    assert.equal(agg.clipped, true, 'clip = any');
+    const rmsA = Math.sqrt((0.25 + 0.04 + 0.01) / 4), rmsB = Math.sqrt(0.998001 / 4);
+    assert.ok(Math.abs(agg.rms - Math.sqrt(rmsA * rmsA + rmsB * rmsB)) < 1e-6, 'rms = root of summed mean squares (float32 inputs)');
+    const src = await readFile(new URL('../js/loom/engine.js', import.meta.url), 'utf8');
+    assert.match(src, /engine\.wakeTransport\(\)/, 'LOOM audition plays on the transport');
+    const clips = await readFile(new URL('../js/machine/cliprefs.js', import.meta.url), 'utf8');
+    assert.match(clips, /this\._engine\.transport/, 'clip audition plays on the transport');
+  },
   function engineCanReturnToASourceFreeState() {
     const engine = new Engine();
     engine._buffer = { duration: 4 };
@@ -4765,7 +4864,7 @@ const hygieneCases = [
     const b = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');
     const finallyAt = b.indexOf("releaseTranscriber('job done')");
     assert.ok(finallyAt > 0 && b.slice(finallyAt - 400, finallyAt).includes('finally {'), 'released in finally, success or failure');
-    assert.match(b, /kind === 'source' \|\| kind === 'source-clear'\) releaseTranscriber/, 'and when the source changes');
+    assert.match(b, /kind === 'source' \|\| kind === 'source-clear'\) \{\s*releaseTranscriber\(kind\);/, 'and when the source changes');
   },
   async function reRenderDropsTheOldTakeAndReusesTheSourceLoudness() {
     const b = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');

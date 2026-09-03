@@ -14,6 +14,15 @@ export class Engine extends EventTarget {
     super();
     this._ctx = null;
     this._master = null;
+    // The transport: the context every source node that plays the recording
+    // runs on, at the recording's own rate, so playback is a copy (unity
+    // ratio) and the only resampler left is Chromium's sinc stage from that
+    // context to the device. When the rates already match it IS the device
+    // context (shared). MACHINE, STUDIO, and the MIDI clock stay on the device
+    // context (engine.ctx). See docs/lab/2026-09-03-playback-rate-decision.md.
+    this._transport = null;   // {ctx, master, rate, shared}
+    this._deviceRate = 0;
+    this.transportReport = null;   // {requested, got, shared, refused}
     this._buffer = null;
     this._mono = null;
     this._alt = null;
@@ -34,12 +43,11 @@ export class Engine extends EventTarget {
     this._rate = 1;
   }
 
-  // decodeAudioData resamples to the context's rate, so a 96 or 192 kHz file
-  // would arrive already halved or quartered. When the container states a
-  // higher rate than the hardware context, decode through an
-  // OfflineAudioContext built at the file's own rate instead and keep every
-  // sample; playback resamples on the way out, which costs nothing here.
-  // `decodeReport` records what happened so the caller can say so out loud.
+  // Files decode at their own rate (an OfflineAudioContext at that rate) and
+  // play on a transport context opened at that same rate: no upsampling in
+  // memory, no linear interpolation on the way out (E12, lab log). The device
+  // context keeps its hardware rate for MACHINE and STUDIO. `decodeReport`
+  // and `transportReport` record what happened so the caller can say so.
   // Decode at the file's own rate whenever the container states one (an
   // OfflineAudioContext at that rate; AudioBufferSourceNode resamples on
   // playback), so a 48 kHz file on a 96 kHz output is not doubled in memory.
@@ -106,7 +114,80 @@ export class Engine extends EventTarget {
     this._lastCuts = [];
     this._position = 0;
     this._rate = 1;
+    await this._ensureTransport(buffer.sampleRate);
     this.dispatchEvent(new CustomEvent('loaded', { detail: {} }));
+  }
+
+  // ---------- transport context ----------
+
+  get transport() {
+    if (this._transport) return this._transport;
+    if (!this._ctx) return null;
+    return { ctx: this._ctx, master: this._master, rate: this._ctx.sampleRate, shared: true };
+  }
+  get deviceRate() { return this._deviceRate; }
+
+  // Like wake(), for the transport: the context sources play the recording on.
+  wakeTransport() {
+    const T = this.transport || (this._ensureCtx() && this.transport);
+    resumeContext(T.ctx);
+    return T.ctx;
+  }
+
+  _transportCtx() {
+    return this._transport ? this._transport.ctx : this._ensureCtx();
+  }
+
+  async _ensureTransport(rate) {
+    const ctx = this._ensureCtx();
+    const want = Math.round(Number(rate)) || ctx.sampleRate;
+    const cur = this._transport;
+    if (want === ctx.sampleRate) {
+      if (cur && !cur.shared) await this._closeTransport('rates now match');
+      this._transport = { ctx, master: this._master, rate: ctx.sampleRate, shared: true };
+      this.transportReport = { requested: want, got: ctx.sampleRate, shared: true, refused: false };
+      this.dispatchEvent(new CustomEvent('transport', { detail: { ...this._transport, refused: false } }));
+      return this._transport;
+    }
+    if (cur && !cur.shared && cur.rate === want && cur.ctx.state !== 'closed') return cur;
+    if (cur && !cur.shared) await this._closeTransport('rate change');
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    let tctx = null;
+    try {
+      tctx = new Ctx({ sampleRate: want });
+    } catch (error) {
+      tctx = null;
+    }
+    if (!tctx || Math.round(tctx.sampleRate) !== want) {
+      // The browser would not open a context at this rate: play on the device
+      // context (Chromium then interpolates linearly), and say so.
+      if (tctx) { try { await tctx.close(); } catch (e) { /* never opened */ } }
+      this._transport = { ctx, master: this._master, rate: ctx.sampleRate, shared: true };
+      this.transportReport = { requested: want, got: ctx.sampleRate, shared: true, refused: true };
+      this.dispatchEvent(new CustomEvent('transport', { detail: { ...this._transport, refused: true } }));
+      return this._transport;
+    }
+    const master = tctx.createGain();
+    master.connect(tctx.destination);
+    this._transport = { ctx: tctx, master, rate: want, shared: false };
+    this.transportReport = { requested: want, got: want, shared: false, refused: false };
+    this.dispatchEvent(new CustomEvent('transport', { detail: { ...this._transport, refused: false } }));
+    return this._transport;
+  }
+
+  // Close a non-shared transport. 'transportchange' fires synchronously with
+  // the old context so consumers drop their nodes while the graph is valid;
+  // close() is awaited with a timeout (Safari caps hardware contexts at four,
+  // so the old one must go before a new one opens).
+  async _closeTransport(reason) {
+    const cur = this._transport;
+    this._transport = null;
+    if (!cur || cur.shared) return;
+    this._haltPlayback();
+    this.dispatchEvent(new CustomEvent('transportchange', { detail: { from: cur.ctx, reason } }));
+    let closing;
+    try { closing = cur.ctx.close(); } catch (e) { closing = Promise.resolve(); }
+    await Promise.race([Promise.resolve(closing).catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);
   }
 
   // Return the bench to a true source-free state. SYNTH and CRATE can still
@@ -115,6 +196,8 @@ export class Engine extends EventTarget {
   // replaces a session that previously had a recording loaded.
   clear() {
     this._haltPlayback();
+    if (this._transport && !this._transport.shared) this._closeTransport('clear');
+    this._transport = null;
     this._buffer = null;
     this._mono = null;
     this._alt = null;
@@ -135,6 +218,7 @@ export class Engine extends EventTarget {
     if (wasPlaying) this.pause();
     this._buffer = audioBuffer;
     this._mono = mono || mixdownMono(audioBuffer);
+    if (this._ctx) this._ensureTransport(audioBuffer.sampleRate);   // same rate: a no-op
   }
 
   get buffer() { return this._buffer; }
@@ -159,7 +243,7 @@ export class Engine extends EventTarget {
 
   get currentTime() {
     if (!this._playing || !this._ctx) return this._position;
-    const elapsed = Math.max(0, this._ctx.currentTime - this._t0);
+    const elapsed = Math.max(0, this._transportCtx().currentTime - this._t0);
     const edited = Math.min(this._editedStart + bufferSecondsElapsed(elapsed, this._rate), this._totalKept);
     return originalOf(edited, this._segs);
   }
@@ -167,7 +251,10 @@ export class Engine extends EventTarget {
   play(cuts = [], from = null) {
     const buf = this._activeBuffer();
     if (!buf || buf.duration <= 0) return;
-    const ctx = this.wake();
+    this.wake();
+    const T = this.transport;
+    const ctx = T.ctx;
+    resumeContext(ctx);
 
     // Alt buffer plays verbatim: it is already rendered, cuts do not apply.
     if (!this._alt) this._lastCuts = normalizeCuts(cuts, buf.duration);
@@ -198,7 +285,7 @@ export class Engine extends EventTarget {
       const src = ctx.createBufferSource();
       src.buffer = buf;
       src.playbackRate.value = 1 / this._rate;
-      src.connect(this._master);
+      src.connect(T.master);
       // offset and duration are in buffer time; only the START moment is real time.
       src.start(t0 + realSecondsUntil(editedOf(segStart, segs) - editedStart, this._rate), segStart, len);
       this._sources.push(src);
@@ -274,6 +361,7 @@ export class Engine extends EventTarget {
       this._position = Math.min(this._position, next.duration);
     }
     this._alt = next;
+    if (next && this._ctx) this._ensureTransport(next.sampleRate);   // renders are at the source rate: a no-op
   }
 
   _activeBuffer() {
@@ -286,6 +374,9 @@ export class Engine extends EventTarget {
       this._ctx = new Ctx();
       this._master = this._ctx.createGain();
       this._master.connect(this._ctx.destination);
+      // A hint-free context runs at the hardware rate; the decode planner is
+      // always fed this rate, never a transport's.
+      this._deviceRate = this._ctx.sampleRate;
     }
     return this._ctx;
   }

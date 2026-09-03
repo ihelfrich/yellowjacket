@@ -90,8 +90,9 @@ export class ClipAuditioner {
   }
 
   play(clip, { rate = 1 } = {}) {
-    const ctx = this._engine.ctx;
-    const master = this._engine.master;
+    const T = this._engine.transport;
+    const ctx = T ? T.ctx : this._engine.ctx;
+    const master = T ? T.master : this._engine.master;
     const buffer = this._engine.buffer;
     if (!clip || !ctx || !master || !buffer) return;
 
@@ -148,7 +149,7 @@ export class ClipAuditioner {
     const voice = this._voice;
     this._voice = null;
     if (!voice) return;
-    const ctx = this._engine.ctx;
+    const ctx = this._engine.transport ? this._engine.transport.ctx : this._engine.ctx;
     voice.src.onended = () => releaseVoice(voice);
     if (ctx && ctx.state !== 'closed') {
       const now = ctx.currentTime;

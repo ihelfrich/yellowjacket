@@ -603,7 +603,7 @@ export function initLoomController(ctx) {
       statusFault('LOOM SOURCE OFFLINE · RECONNECT THE RECORDING TO HEAR THIS MATERIAL');
       return false;
     }
-    engine.wake();
+    if (engine.wakeTransport) engine.wakeTransport(); else engine.wake();
     auditioner.play({ start: origin.startSec, end: origin.endSec });
     return true;
   }

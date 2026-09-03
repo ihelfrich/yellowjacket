@@ -12,9 +12,10 @@ export class LevelMeter {
     this.canvas = canvas;
     this.onclip = null;         // called once per new clip event (|sample| >= 0.999)
     this._g = canvas.getContext('2d');
-    this._analyser = null;
-    this._tap = null;
-    this._data = null;
+    // One analyser per context. Two contexts cannot share a node; they sum in
+    // CoreAudio after the page, so the reading is peak = max, RMS = root of the
+    // summed mean squares, clip = any — exact whenever one context sounds.
+    this._taps = new Map();   // ctx → {analyser, node, data}
     this._peak = 0;             // displayed peak, linear
     this._hold = 0;             // peak-hold, linear
     this._holdAt = 0;           // ms timestamp of last hold capture
@@ -25,14 +26,40 @@ export class LevelMeter {
   }
 
   connect(audioContext, node) {
-    if (this._tap && this._analyser) {
-      try { this._tap.disconnect(this._analyser); } catch (e) { /* already detached */ }
+    if (!audioContext || !node) return;
+    const existing = this._taps.get(audioContext);
+    if (existing && existing.node === node) return;   // idempotent
+    if (existing) this.drop(audioContext);
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    node.connect(analyser);
+    this._taps.set(audioContext, { analyser, node, data: new Float32Array(analyser.fftSize) });
+  }
+
+  drop(audioContext) {
+    const tap = this._taps.get(audioContext);
+    if (!tap) return;
+    try { tap.node.disconnect(tap.analyser); } catch (e) { /* already detached */ }
+    this._taps.delete(audioContext);
+  }
+
+  get tapCount() { return this._taps.size; }
+
+  // Aggregate one frame over every live tap. Exposed for tests.
+  static aggregate(frames) {
+    let peak = 0, sumSq = 0, clipped = false;
+    for (const d of frames) {
+      let sq = 0;
+      for (let i = 0; i < d.length; i++) {
+        const v = d[i];
+        const a = v < 0 ? -v : v;
+        if (a > peak) peak = a;
+        sq += v * v;
+      }
+      sumSq += d.length ? sq / d.length : 0;
     }
-    this._analyser = audioContext.createAnalyser();
-    this._analyser.fftSize = 2048;
-    this._data = new Float32Array(this._analyser.fftSize);
-    node.connect(this._analyser);
-    this._tap = node;
+    if (peak >= CLIP_AT) clipped = true;
+    return { peak, rms: Math.sqrt(sumSq), clipped };
   }
 
   start() {
@@ -57,18 +84,17 @@ export class LevelMeter {
     let framePeak = 0;
     let frameRms = 0;
     let clipped = false;
-    if (this._analyser && this._data) {
-      this._analyser.getFloatTimeDomainData(this._data);
-      const d = this._data;
-      let sumSq = 0;
-      for (let i = 0; i < d.length; i++) {
-        const v = d[i];
-        const a = v < 0 ? -v : v;
-        if (a > framePeak) framePeak = a;
-        sumSq += v * v;
+    if (this._taps.size) {
+      const frames = [];
+      for (const [ctx, tap] of this._taps) {
+        if (ctx.state === 'closed') { this._taps.delete(ctx); continue; }
+        tap.analyser.getFloatTimeDomainData(tap.data);
+        frames.push(tap.data);
       }
-      frameRms = Math.sqrt(sumSq / d.length);
-      clipped = framePeak >= CLIP_AT;
+      const agg = LevelMeter.aggregate(frames);
+      framePeak = agg.peak;
+      frameRms = agg.rms;
+      clipped = agg.clipped;
     }
 
     // IEC 60268-18: instant attack; release gain per frame = 10^((-20/20) * dt/1.7)
