@@ -305,3 +305,12 @@ attempt: a failed restore leaves the panel. Above the size guard, the panel
 is shown with the hazard rule instead — a discard loop on a huge file would
 be worse than a click. Not reproducible in the in-app browser (no way to
 force a discard); pinned in source and covered by the RESUME live checks.
+
+## Experiment E15 (2026-09-03, in-app pane 518 × 791 CSS px, dpr 2)
+Spectrogram magnitude matrix: 8000 cols × 1024 bins × Float32 = **31.3 MB
+(fact)**; the 2D image stays 1 × 1 on the GPU path. Visible canvases on the
+RACK tab total 0.8 MB (waveRack 900 × 220 px); hidden tabs' canvases sit at
+their 300 × 150 defaults. On a full-width display the visible set scales
+with area, but it never exceeds a few tens of MB — the matrix is the only
+spectrogram allocation worth quantising (ledger rank 11: Uint8 halves it to
+7.8 MB on the CPU side and r8unorm on the GPU side).

@@ -166,15 +166,18 @@ Protocol:
 // out: { type:'error', message }
 ```
 
-MODELS export in transcribe.js (label sizes are approx WASM-q8 / WebGPU downloads):
+MODELS export in transcribe.js (label sizes are the actual downloads: WebGPU = fp32 encoder + q4 decoder, WASM = q8 + q8; measured against the HF Hub API on 2026-09-03 — see docs/lab/ledger/transcription.md §4):
+
 ```js
 export const MODELS = [
-  { id: 'onnx-community/whisper-tiny.en_timestamped',  label: 'WHISPER TINY EN · ~41 MB · fastest',  lang: 'en' },
-  { id: 'onnx-community/whisper-base.en_timestamped',  label: 'WHISPER BASE EN · ~77 MB · default',  lang: 'en' },
-  { id: 'onnx-community/whisper-small.en_timestamped', label: 'WHISPER SMALL EN · ~250 MB · best en', lang: 'en' },
-  { id: 'onnx-community/whisper-base_timestamped',     label: 'WHISPER BASE · ~77 MB · 99 languages', lang: null },
-  { id: 'onnx-community/whisper-small_timestamped',    label: 'WHISPER SMALL · ~250 MB · 99 languages', lang: null },
+  { id: 'onnx-community/whisper-tiny.en_timestamped',  label: 'WHISPER TINY EN · 120 MB GPU / 41 MB WASM · fastest',  lang: 'en' },
+  { id: 'onnx-community/whisper-base.en_timestamped',  label: 'WHISPER BASE EN · 206 MB GPU / 77 MB WASM · default',  lang: 'en' },
+  { id: 'onnx-community/whisper-small.en_timestamped', label: 'WHISPER SMALL EN · 586 MB GPU / 249 MB WASM · best en', lang: 'en' },
+  { id: 'onnx-community/whisper-base_timestamped',     label: 'WHISPER BASE · 206 MB GPU / 77 MB WASM · 99 languages', lang: null },
+  { id: 'onnx-community/whisper-small_timestamped',    label: 'WHISPER SMALL · 586 MB GPU / 249 MB WASM · 99 languages', lang: null },
 ];
+```
+The worker is released after every job and whenever the source changes (Transcriber.dispose()); the next TRANSCRIBE reloads from the Cache API.
 // default selection: whisper-base.en_timestamped. Pass language:'en' for .en models, null otherwise.
 ```
 Known upstream behavior: Whisper often SKIPS "um"/"uh" entirely (trained on clean text).
