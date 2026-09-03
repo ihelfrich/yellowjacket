@@ -157,17 +157,190 @@ function flacProbe(bytes) {
   return { sampleRate: rate, channels, seconds: total > 0 ? total / rate : 0 };
 }
 
+// ---------- MPEG audio (MP3) ----------
+//
+// The frame header carries version, layer, bitrate, rate, and channel mode; a
+// Xing/Info or VBRI tag in the first frame carries the frame count, which
+// gives an exact duration. Without one the stream is treated as CBR and the
+// duration is size × 8 / bitrate, which is exact for CBR and approximate for
+// a VBR file with no tag (rare: every common encoder writes one).
+const MPEG_RATES = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
+const MPEG_BITRATES = {
+  // [version][layer] → kbps by index 1..14
+  '3:3': [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],   // MPEG1 L1
+  '3:2': [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],      // MPEG1 L2
+  '3:1': [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],       // MPEG1 L3
+  '2:3': [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],      // MPEG2/2.5 L1
+  '2:2': [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],           // MPEG2/2.5 L2
+  '2:1': [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],           // MPEG2/2.5 L3
+};
+
+function id3v2Size(bytes) {
+  if (!tagAt(bytes, 0, 'ID3') || bytes.length < 10) return 0;
+  const size = ((bytes[6] & 0x7F) << 21) | ((bytes[7] & 0x7F) << 14) | ((bytes[8] & 0x7F) << 7) | (bytes[9] & 0x7F);
+  return 10 + size + ((bytes[5] & 0x10) ? 10 : 0);
+}
+
+function mpegFrameAt(bytes, at) {
+  if (at + 4 > bytes.length || bytes[at] !== 0xFF || (bytes[at + 1] & 0xE0) !== 0xE0) return null;
+  const version = (bytes[at + 1] >> 3) & 3;          // 0=2.5, 2=2, 3=1; 1 reserved
+  const layerBits = (bytes[at + 1] >> 1) & 3;        // 1=L3, 2=L2, 3=L1; 0 reserved
+  const bitrateIndex = (bytes[at + 2] >> 4) & 15;
+  const rateIndex = (bytes[at + 2] >> 2) & 3;
+  const channelMode = (bytes[at + 3] >> 6) & 3;
+  if (version === 1 || layerBits === 0 || bitrateIndex === 0 || bitrateIndex === 15 || rateIndex === 3) return null;
+  const rate = MPEG_RATES[version][rateIndex];
+  const table = MPEG_BITRATES[(version === 3 ? '3' : '2') + ':' + layerBits];
+  const kbps = table[bitrateIndex];
+  const samplesPerFrame = layerBits === 3 ? 384 : layerBits === 2 ? 1152 : (version === 3 ? 1152 : 576);
+  return { version, layer: 4 - layerBits, rate, kbps, channels: channelMode === 3 ? 1 : 2, samplesPerFrame };
+}
+
+function mp3Probe(bytes) {
+  const start = id3v2Size(bytes);
+  const limit = Math.min(bytes.length - 4, start + 65536);
+  let at = start;
+  let frame = null;
+  for (; at <= limit; at++) {
+    frame = mpegFrameAt(bytes, at);
+    if (frame) break;
+  }
+  if (!frame) return EMPTY_PROBE;
+  // Xing/Info sits after the side information; VBRI sits 32 bytes in.
+  const side = frame.version === 3 ? (frame.channels === 1 ? 17 : 32) : (frame.channels === 1 ? 9 : 17);
+  const xing = at + 4 + side;
+  let frames = 0;
+  if ((tagAt(bytes, xing, 'Xing') || tagAt(bytes, xing, 'Info')) && xing + 12 <= bytes.length) {
+    const flags = bytes[xing + 7];
+    if (flags & 1) frames = ((bytes[xing + 8] << 24) >>> 0) + (bytes[xing + 9] << 16) + (bytes[xing + 10] << 8) + bytes[xing + 11];
+  } else if (tagAt(bytes, at + 36, 'VBRI') && at + 36 + 18 <= bytes.length) {
+    const v = at + 36 + 14;
+    frames = ((bytes[v] << 24) >>> 0) + (bytes[v + 1] << 16) + (bytes[v + 2] << 8) + bytes[v + 3];
+  }
+  const seconds = frames > 0
+    ? frames * frame.samplesPerFrame / frame.rate
+    : (bytes.length - at) * 8 / (frame.kbps * 1000);
+  return { sampleRate: frame.rate, channels: frame.channels, seconds };
+}
+
+// ---------- ISO BMFF (M4A / MP4 / AAC in MP4) ----------
+//
+// Walk boxes to moov → trak → mdia; take the first track whose hdlr is 'soun':
+// mdhd gives timescale and duration, stsd's first entry gives channels and the
+// 16.16 sample rate. moov may sit at the end of a file that was not written
+// with faststart, so the whole buffer is walked, box header by box header.
+function be32(bytes, at) { return ((bytes[at] << 24) >>> 0) + (bytes[at + 1] << 16) + (bytes[at + 2] << 8) + bytes[at + 3]; }
+function be64(bytes, at) { return be32(bytes, at) * 4294967296 + be32(bytes, at + 4); }
+
+function* boxes(bytes, from, to) {
+  let at = from;
+  while (at + 8 <= to) {
+    let size = be32(bytes, at);
+    let head = 8;
+    if (size === 1) { size = be64(bytes, at + 8); head = 16; } else if (size === 0) size = to - at;
+    if (size < head) return;
+    const type = String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]);
+    yield { type, body: at + head, end: Math.min(to, at + size) };
+    at += size;
+  }
+}
+function findBox(bytes, from, to, type) {
+  for (const b of boxes(bytes, from, to)) if (b.type === type) return b;
+  return null;
+}
+
+function mp4Probe(bytes) {
+  const moov = findBox(bytes, 0, bytes.length, 'moov');
+  if (!moov) return EMPTY_PROBE;
+  for (const trak of boxes(bytes, moov.body, moov.end)) {
+    if (trak.type !== 'trak') continue;
+    const mdia = findBox(bytes, trak.body, trak.end, 'mdia');
+    if (!mdia) continue;
+    const hdlr = findBox(bytes, mdia.body, mdia.end, 'hdlr');
+    if (!hdlr || !tagAt(bytes, hdlr.body + 8, 'soun')) continue;
+    const mdhd = findBox(bytes, mdia.body, mdia.end, 'mdhd');
+    const minf = findBox(bytes, mdia.body, mdia.end, 'minf');
+    const stbl = minf && findBox(bytes, minf.body, minf.end, 'stbl');
+    const stsd = stbl && findBox(bytes, stbl.body, stbl.end, 'stsd');
+    if (!mdhd || !stsd) continue;
+    const version = bytes[mdhd.body];
+    const timescale = version === 1 ? be32(bytes, mdhd.body + 20) : be32(bytes, mdhd.body + 12);
+    const duration = version === 1 ? be64(bytes, mdhd.body + 24) : be32(bytes, mdhd.body + 16);
+    // stsd: version/flags (4), entry count (4), then the first sample entry.
+    const entry = stsd.body + 8;
+    const channels = (bytes[entry + 8 + 16] << 8) | bytes[entry + 8 + 17];
+    const rate = be32(bytes, entry + 8 + 24) / 65536;
+    return {
+      sampleRate: plausible(rate) || null,
+      channels: channels || 0,
+      seconds: timescale > 0 && duration > 0 ? duration / timescale : 0,
+    };
+  }
+  return EMPTY_PROBE;
+}
+
+// ---------- Ogg (Vorbis, Opus) ----------
+//
+// The identification header on the first page gives channels and rate; the
+// granule position of the LAST page (searched for within the final 64 KiB)
+// gives the total sample count. Opus always decodes at 48 kHz; its granule
+// counts at 48 kHz too, less the pre-skip.
+function le32(bytes, at) { return (bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16) | (bytes[at + 3] << 24)) >>> 0; }
+function le64(bytes, at) { return le32(bytes, at) + le32(bytes, at + 4) * 4294967296; }
+
+function oggProbe(bytes) {
+  const segments = bytes[26];
+  const packet = 27 + segments;                    // first packet of the first page
+  let sampleRate = null, channels = 0, granuleRate = 0, preskip = 0;
+  if (tagAt(bytes, packet + 1, 'vorbis') && bytes[packet] === 1) {
+    channels = bytes[packet + 11];
+    sampleRate = plausible(le32(bytes, packet + 12)) || null;
+    granuleRate = sampleRate || 0;
+  } else if (tagAt(bytes, packet, 'OpusHead')) {
+    channels = bytes[packet + 9];
+    preskip = bytes[packet + 10] | (bytes[packet + 11] << 8);
+    sampleRate = 48000;                             // Opus output rate; the input rate is advisory
+    granuleRate = 48000;
+  } else {
+    return EMPTY_PROBE;
+  }
+  let seconds = 0;
+  const from = Math.max(0, bytes.length - 65536);
+  for (let at = bytes.length - 27; at >= from; at--) {
+    if (tagAt(bytes, at, 'OggS')) {
+      const granule = le64(bytes, at + 6);
+      if (granule > 0 && granuleRate) seconds = Math.max(0, granule - preskip) / granuleRate;
+      break;
+    }
+  }
+  return { sampleRate, channels, seconds };
+}
+
 /**
- * Rate, channel count, and exact duration from a container header. Both formats
- * that can carry above 48 kHz state their own length, so the decode budget is
- * computed from the real figure rather than guessed from encoded byte count.
+ * Rate, channel count, and duration from a container header, for WAV, FLAC,
+ * MP3, MP4/M4A (AAC), and Ogg (Vorbis, Opus). The decode budget is computed
+ * from the real figure wherever a header states one, rather than guessed from
+ * encoded byte count.
  */
 export function probeContainer(input) {
   const bytes = asBytes(input);
   if (!bytes || bytes.length < 12) return EMPTY_PROBE;
   if (tagAt(bytes, 0, 'RIFF') && tagAt(bytes, 8, 'WAVE')) return wavProbe(bytes);
   if (tagAt(bytes, 0, 'fLaC')) return flacProbe(bytes);
+  if (tagAt(bytes, 0, 'OggS')) return oggProbe(bytes);
+  if (tagAt(bytes, 4, 'ftyp')) return mp4Probe(bytes);
+  if (tagAt(bytes, 0, 'ID3') || (bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0)) return mp3Probe(bytes);
   return EMPTY_PROBE;
+}
+
+// A container the probe cannot read still has a length: assume the cheapest
+// plausible encoding so the estimate errs high, never low. 64 kbps stereo is
+// below any music encoder's floor, so a real file of that size is shorter.
+export const UNKNOWN_KBPS_FLOOR = 64;
+export function assumedSeconds(encodedBytes, seconds) {
+  if (Number.isFinite(seconds) && seconds > 0) return seconds;
+  const bytes = Number.isFinite(encodedBytes) && encodedBytes > 0 ? encodedBytes : 0;
+  return bytes * 8 / (UNKNOWN_KBPS_FLOOR * 1000);
 }
 
 function budgetReason(rate, bytes) {
@@ -185,6 +358,10 @@ export function planDecodeRate({
   nativeRate, seconds, channels = 2, contextRate = 48000, encodedBytes = 0,
 } = {}) {
   const native = plausible(nativeRate);
+  // Unknown length or channel count must not read as "free" (a long MP3 that
+  // the probe missed used to budget as its encoded size alone).
+  seconds = assumedSeconds(encodedBytes, seconds);
+  channels = Number.isFinite(channels) && channels > 0 ? channels : 2;
 
   // decodeAudioData ALWAYS yields the context's rate; only an offline decode at
   // the file's own rate can beat it. So when the file sits at or below the

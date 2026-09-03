@@ -1,0 +1,163 @@
+# 2026-09-03 · Memory: why the tab resets, and where the bytes go
+
+## The report
+Ian: the tab "resets itself" once it passes roughly 780 MB, e.g. a lossless
+file plus a larger Whisper model. Two distinct mechanisms fit that report:
+
+1. **Our own ceiling.** `DECODE_BUDGET_BYTES = 768 MiB` (js/dsp/native-rate.js:27)
+   governs only files whose native rate is ABOVE the context rate. A file at or
+   below the context rate is decoded regardless (js/audio-engine.js:74:
+   `if (!buffer) buffer = await ctx.decodeAudioData(arrayBuffer)`); the plan's
+   `overBudget` flag for that branch is computed and then ignored by the caller.
+2. **Chrome tab discard under system memory pressure.** On a Mac already deep
+   into swap, Chrome evicts the renderer and reloads the page on return. That is
+   the "reset". The only defence is a smaller footprint plus a restore that
+   needs no click.
+
+## Where the bytes go for one loaded file (Float32 everywhere)
+Let F = frames at the DECODED rate, C = channels.
+- decoded AudioBuffer: F·C·4 (js/audio-engine.js:81)
+- mono mixdown: F·4 (js/audio-engine.js:82) — and a SECOND mono in runtime
+  (`r.mono = engine.mono`, same reference; fine) plus `r.peaks` ≈ 0.14·F
+- encoded source bytes: kept in memory for persistence and RESTORE
+  (js/app/source-controller.js:85 `ab.slice(0)`); for WAV this equals the PCM
+- after RENDER: a second full AudioBuffer (F·C·4) plus renderedMono (F·4) and
+  its peaks (js/app/bench-controller.js:447–451)
+- spectrogram: `_mags` column-major dB, cols·bins·4 on the CPU plus a full
+  resolution canvas image cols·bins·4 (js/spectrogram.js:85–91), plus GPU
+  textures (js/render/spectrogram-gpu.js)
+- transcription: a 16 kHz mono copy (js/transcribe.js:19) plus the model in
+  the worker (41 MB–250 MB on disk; several times that resident, dtype
+  dependent) plus ONNX runtime arenas
+- undo: `store.update()` snapshots project state before every mutation
+  (js/app/project-store.js:222); whether snapshots carry large arrays is a
+  question for the ledger
+
+## The multiplier nobody asked for
+Ian's output runs at 96 kHz (audiofmt max). `decodeAudioData` on the live
+context yields the CONTEXT rate, so a 44.1 kHz or 48 kHz file is upsampled on
+load: 2.18× or 2× the frames, with no added information ("LOADED · 48 kHz
+SOURCE, UPSAMPLED TO 96 kHz TO MATCH THE OUTPUT"). Traum (218 s, 48 kHz,
+stereo) becomes 167 MB decoded + 84 MB mono + 42 MB source ≈ 293 MB before a
+single render, transcription, or spectrogram. Web Audio resamples an
+AudioBufferSourceNode whose buffer rate differs from the context, so decoding
+at the file's own rate via an OfflineAudioContext (the path already used for
+files ABOVE the context rate) is sufficient for playback and halves the
+resident size for the common case.
+
+## Questions the ledger must answer (Understand phase)
+- Exact allocation formulas and lifetimes per subsystem; which are releasable.
+- Whether undo snapshots or the sequencer/machine keep PCM copies alive.
+- Whether transcription and harvest copies are freed after use.
+- What the Whisper worker holds resident per model and dtype.
+- Whether anything holds the encoded bytes twice.
+
+## Experiment 1 (2026-09-03, in-app Chromium, output at 96 kHz) — native-rate decode
+Traum (42 MB WAV, 48 kHz stereo, 218 s) fetched once, decoded two ways:
+
+| path | rate out | decode time | heap delta |
+|---|---|---|---|
+| `new OfflineAudioContext(2, frames, 48000).decodeAudioData` | 48 000 | 223 ms | 0 |
+| live `AudioContext.decodeAudioData` (context at 96 kHz) | 96 000 | 651 ms | 0 |
+
+- A 0.3 s excerpt of the 48 kHz buffer played through the 96 kHz context ran
+  0.301 s: `AudioBufferSourceNode` resamples automatically. **Native-rate
+  decode is sufficient for playback**, halves the resident buffer for 48 kHz
+  sources on this machine, and is ~3× faster to decode.
+- `performance.memory.usedJSHeapSize` did not move for either decode (44 MB
+  before and after ~250 MB of channel data). **The JS heap counter is blind to
+  AudioBuffer storage**, so any in-app memory meter must be computed from the
+  footprint formulas, not read from the browser.
+- `performance.measureUserAgentSpecificMemory` is undefined here: the page is
+  not cross-origin isolated (`crossOriginIsolated === false`), and GitHub Pages
+  cannot set COOP/COEP. `document.wasDiscarded` exists (false on a fresh load)
+  — the signal for a silent auto-restore after a tab discard.
+- `navigator.deviceMemory` reports 16 (GB, capped by the API at 8 in some
+  builds; here 16).
+
+## Experiment 2 (2026-09-03) — windowed decode of a long archive MP3
+WWV 1991 MP3 (10.7 MB, 13:10). A 1 MiB `Range` fetch starting at 40% of the
+file (no ID3 header, no frame alignment) returned 206 with CORS and decoded via
+`OfflineAudioContext.decodeAudioData` to 77.7 s of stereo 44.1 kHz audio in
+187 ms, peak 0.66 (real signal, not silence). The first 1 MiB decoded to
+73.7 s. **A windowed loader for long captures needs no WASM decoder for MP3**:
+fetch a byte range, decode, place it at offset ≈ bytes/avg-bitrate (refined
+from the head slice or the archive's stated length). FLAC and WAV need their
+headers, so a window there is header + range, which is also a plain fetch.
+This unlocks the 63-minute HM01, the 91-minute Marine Electric SOS, and the
+87-minute Voyager launch commentary at a few minutes per load.
+
+## Experiment 3 (2026-09-03) — OPFS as a spill for the encoded source
+Main-thread OPFS (`createWritable`), Traum's 39.9 MB WAV:
+
+| operation | time |
+|---|---|
+| write 39.9 MB | 40 ms |
+| read back whole (`File.arrayBuffer`) | 14 ms |
+| read a 2 MB slice from the middle (`Blob.slice`) | 2 ms |
+| decode the read-back bytes at 48 kHz | 58 ms |
+
+Quota reported: 4 GB; usage after cleanup unchanged. **The encoded source
+bytes do not need to live in memory.** Persisting them to OPFS on load costs
+tens of milliseconds and a later RESTORE, KEEP, or export reads them back in
+the same. The only in-memory reason left is the SHA-256 already computed at
+load, which is a 64-character string.
+
+## Experiment 4 (2026-09-03) — compact backing store: Int16 with on-demand Float32
+Traum at 48 kHz (10.47 M frames × 2):
+
+| operation | time | size |
+|---|---|---|
+| Float32 pair → interleaved Int16 | 36 ms | 79.9 MB → 39.9 MB |
+| 12 s window → fresh AudioBuffer | 2 ms | — |
+| whole file back to Float32 (a full render's input) | 24 ms | — |
+| mono mixdown straight from Int16 | 14 ms | — |
+| max round-trip error against the decoded float (16-bit source) | 6.1e-5 | — |
+
+**A compact store costs nothing a user can feel**: windows for playback,
+preview, and audition are single-digit milliseconds; a full-file DSP stage
+pays ~25 ms once. The depth must follow the source: Int16 is exact for 16-bit
+material, but a 24-bit FLAC needs Int32 (or a 24-in-32 pack) to stay
+lossless — the badge promise on the SHELF. So the store's element type is a
+property of the load, not a global setting.
+
+## Corrections after cross-model review (Codex, 2026-09-03)
+See 2026-09-03-codex-review-memory.md. Accepted:
+- Experiment 1 measured rate and time, not memory: the halving is a footprint
+  calculation (frames × channels × 4), not an observed number.
+- The tab-discard cause is inferred, not reproduced. `wasDiscarded` presence
+  proves only that the signal exists.
+- One mid-file MP3 range decoding is one data point: VBR timing, frame
+  alignment, and seek continuity are untested; FLAC/WAV "header + range" is a
+  hypothesis, not a result.
+- Experiment 4's 6.1e-5 error came from asymmetric scaling (×32767 on the
+  positive side); with symmetric ×32768 a 16-bit source round-trips exactly.
+  Int32 costs the same bytes as Float32; only packed 24-bit saves space for
+  24-bit sources.
+- Undo snapshots omit PCM (js/app/persist.js:129-166) — question closed.
+- A flat rack without cuts returns the input buffer (js/dsp/chain.js:152-169),
+  so RENDER is not always a second buffer.
+- Five budget bugs are real and take priority over any new architecture:
+  overBudget unenforced (engine.load ignores it); the context-rate fallback
+  is itself unbudgeted; MP3/AAC probe to zero seconds so the estimate is only
+  the encoded size; peak load holds three encoded copies; a failed offline
+  decode reports a downgrade with no reason.
+
+## Step 1 shipped locally — container probes for MP3, MP4/M4A, Ogg (Vorbis, Opus)
+Codex's point: native-rate decode is only as good as the probe, and only WAV
+and FLAC were read. `probeContainer` now reads MPEG frame headers with
+Xing/Info/VBRI frame counts (CBR fallback), ISO BMFF `moov/trak/mdia` for the
+first `soun` track (moov-at-end handled), and Ogg identification headers with
+the last page's granule. Unknown containers now budget at a 64 kbps floor
+(`assumedSeconds`) so a long file the probe cannot read errs long, not free.
+Real-file check (node, byte heads from archive.org unless noted):
+
+| file | probe | truth |
+|---|---|---|
+| UVB-76 .ogg (whole) | 8 000 Hz · 2 ch · 160.04 s | 160.04 s |
+| VOA newscast .mp3 (256 KB head) | 44 100 Hz · 1 ch · 298.06 s | 298.06 s |
+| HM01 .mp3 (256 KB head) | 8 000 Hz · 2 ch · 174.31 s | 174.14 s |
+| Sparks demo .mp3 (local) | 44 100 Hz · 2 ch · 160.84 s | 160.836 s |
+| Traum .wav (local) | 48 000 Hz · 2 ch · 218.05 s | 218.047 s |
+
+Tests: +8 cases (container probes group).

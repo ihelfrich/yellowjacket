@@ -75,6 +75,7 @@ import {
   describePreview, previewChain, previewView, previewWindow, sliceAudioBuffer, PREVIEW_SPAN_SEC,
 } from '../js/dsp/preview.js';
 import { soundingSources, transportLabel, transportTitle } from '../js/app/transport.js';
+import { assumedSeconds } from '../js/dsp/native-rate.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -4539,8 +4540,110 @@ const transportCases = [
   },
 ];
 
+// ---------- container probes: MP3, MP4/M4A, Ogg ----------
+//
+// Native-rate decode needs the file's own rate; the budget needs its length.
+// Only WAV and FLAC were read before, so every MP3, M4A, and Ogg budgeted as
+// its encoded size alone and decoded at the context rate.
+
+function be32b(n) { return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]; }
+function le32b(n) { return [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255]; }
+function ascii(s) { return [...s].map((c) => c.charCodeAt(0)); }
+function box(type, ...parts) { const body = parts.flat(); return [...be32b(8 + body.length), ...ascii(type), ...body]; }
+function mp3Frame({ mpeg1 = true, bitrateIndex = 9, rateIndex = 0, mono = false } = {}) {
+  // sync(11) version(2) layer(2)=01 L3 protection(1)=1 | bitrate(4) rate(2) pad(1) priv(1) | mode(2) ...
+  const b1 = 0xE0 | ((mpeg1 ? 3 : 2) << 3) | (1 << 1) | 1;
+  const b2 = (bitrateIndex << 4) | (rateIndex << 2);
+  const b3 = (mono ? 3 : 0) << 6;
+  return [0xFF, b1, b2, b3];
+}
+
+const probeCases = [
+  function mp3WithXingGivesExactDuration() {
+    // ID3v2 header of 100 bytes, then a 44.1 kHz stereo MPEG1 L3 frame with a
+    // Xing tag stating 1000 frames → 1000 × 1152 / 44100 = 26.12 s.
+    const id3 = [...ascii('ID3'), 4, 0, 0, 0, 0, 0, 100, ...new Array(100).fill(0)];
+    const frame = mp3Frame();
+    const side = new Array(32).fill(0);
+    const xing = [...ascii('Xing'), ...be32b(1), ...be32b(1000)];
+    const bytes = new Uint8Array([...id3, ...frame, ...side, ...xing, ...new Array(400).fill(0)]);
+    const p = probeContainer(bytes);
+    assert.equal(p.sampleRate, 44100);
+    assert.equal(p.channels, 2);
+    assert.ok(Math.abs(p.seconds - 1000 * 1152 / 44100) < 1e-9);
+  },
+  function mp3WithoutXingIsBudgetedAsCbr() {
+    // 128 kbps (index 9) mono 48 kHz, 160 000 bytes of frames → 10.0 s.
+    const frame = mp3Frame({ bitrateIndex: 9, rateIndex: 1, mono: true });
+    const bytes = new Uint8Array([...frame, ...new Array(160000 - 4).fill(0)]);
+    const p = probeContainer(bytes);
+    assert.equal(p.sampleRate, 48000);
+    assert.equal(p.channels, 1);
+    assert.ok(Math.abs(p.seconds - 10) < 1e-9, 'size × 8 / bitrate');
+  },
+  function mp3Mpeg2RatesAndReservedValuesAreHandled() {
+    const p = probeContainer(new Uint8Array([...mp3Frame({ mpeg1: false, bitrateIndex: 8, rateIndex: 0 }), ...new Array(100).fill(0)]));
+    assert.equal(p.sampleRate, 22050, 'MPEG2 rate table');
+    // reserved rate index 3 is not a frame; the scan finds nothing and stays honest
+    const bad = probeContainer(new Uint8Array([0xFF, 0xFB, 0x9C, 0x00, ...new Array(100).fill(0)]));
+    assert.equal(bad.sampleRate, null);
+  },
+  function m4aProbeReadsTheAudioTrack() {
+    const mdhd = box('mdhd', [0, 0, 0, 0], be32b(0), be32b(0), be32b(48000), be32b(48000 * 90));
+    const hdlr = box('hdlr', [0, 0, 0, 0], be32b(0), ascii('soun'), new Array(12).fill(0));
+    const mp4a = box('mp4a', new Array(6).fill(0), [0, 1], new Array(8).fill(0), [0, 2], [0, 16], [0, 0], [0, 0], be32b(48000 << 16));
+    const stsd = box('stsd', [0, 0, 0, 0], be32b(1), mp4a);
+    const stbl = box('stbl', stsd);
+    const minf = box('minf', stbl);
+    const mdia = box('mdia', mdhd, hdlr, minf);
+    const trak = box('trak', mdia);
+    const moov = box('moov', trak);
+    const ftyp = box('ftyp', ascii('M4A '), be32b(0));
+    const mdat = box('mdat', new Array(64).fill(0));
+    // moov AFTER mdat, as a non-faststart file writes it
+    const p = probeContainer(new Uint8Array([...ftyp, ...mdat, ...moov]));
+    assert.equal(p.sampleRate, 48000);
+    assert.equal(p.channels, 2);
+    assert.equal(p.seconds, 90);
+  },
+  function m4aVideoOnlyTrackIsNotAudio() {
+    const mdhd = box('mdhd', [0, 0, 0, 0], be32b(0), be32b(0), be32b(600), be32b(6000));
+    const hdlr = box('hdlr', [0, 0, 0, 0], be32b(0), ascii('vide'), new Array(12).fill(0));
+    const moov = box('moov', box('trak', box('mdia', mdhd, hdlr)));
+    const p = probeContainer(new Uint8Array([...box('ftyp', ascii('isom'), be32b(0)), ...moov]));
+    assert.equal(p.sampleRate, null);
+  },
+  function oggVorbisReadsIdentAndLastGranule() {
+    const ident = [1, ...ascii('vorbis'), ...le32b(0), 2, ...le32b(44100), ...new Array(16).fill(0)];
+    const page0 = [...ascii('OggS'), 0, 2, ...new Array(8).fill(0), ...le32b(1), ...le32b(0), ...le32b(0), 1, ident.length, ...ident];
+    const last = [...ascii('OggS'), 0, 4, ...le32b(44100 * 30), ...le32b(0), ...le32b(1), ...le32b(9), ...le32b(0), 1, 4, 0, 0, 0, 0];
+    const p = probeContainer(new Uint8Array([...page0, ...new Array(500).fill(0), ...last]));
+    assert.equal(p.sampleRate, 44100);
+    assert.equal(p.channels, 2);
+    assert.equal(p.seconds, 30);
+  },
+  function opusReportsFortyEightKilohertz() {
+    const head = [...ascii('OpusHead'), 1, 1, 0x38, 1, ...le32b(16000), 0, 0, 0];
+    const page0 = [...ascii('OggS'), 0, 2, ...new Array(8).fill(0), ...le32b(1), ...le32b(0), ...le32b(0), 1, head.length, ...head];
+    const last = [...ascii('OggS'), 0, 4, ...le32b(48000 * 5 + 312), ...le32b(0), ...le32b(1), ...le32b(2), ...le32b(0), 1, 1, 0];
+    const p = probeContainer(new Uint8Array([...page0, ...last]));
+    assert.equal(p.sampleRate, 48000, 'Opus decodes at 48 kHz whatever the input rate was');
+    assert.equal(p.channels, 1);
+    assert.ok(Math.abs(p.seconds - 5) < 1e-9, 'granule minus pre-skip');
+  },
+  function unknownContainersBudgetAsLongNotFree() {
+    assert.equal(assumedSeconds(0, 0), 0);
+    assert.equal(assumedSeconds(8000, 0), 1, '8000 bytes at the 64 kbps floor is one second');
+    assert.equal(assumedSeconds(8000, 42), 42, 'a stated length wins');
+    // 40 MB of unknown bytes must not budget as 40 MB: at the floor it is 5000 s
+    const plan = planDecodeRate({ nativeRate: null, seconds: 0, channels: 0, contextRate: 96000, encodedBytes: 40 * 1024 * 1024 });
+    assert.equal(plan.overBudget, true, 'a large unknown file is over budget at 96 kHz until its length is known');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['container probes', probeCases],
   ['transport', transportCases],
   ['live preview', previewCases],
   ['my shelf', mineCases],
