@@ -258,15 +258,16 @@ export function parseProjectEntries(entries) {
   let json;
   try { json = JSON.parse(decoder.decode(doc)); }
   catch (e) { throw new Error('project.json is not valid JSON'); }
+  // readBundle already hands each entry a standalone buffer; copying it again
+  // doubled every source and sample at import. Slice only a shared view.
+  const owned = (v) => (v.byteOffset === 0 && v.byteLength === v.buffer.byteLength
+    ? v.buffer : v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
   const sourceEntry = entries.get('source.bin') || null;
-  const source = sourceEntry
-    ? sourceEntry.buffer.slice(sourceEntry.byteOffset, sourceEntry.byteOffset + sourceEntry.byteLength)
-    : null;
+  const source = sourceEntry ? owned(sourceEntry) : null;
   const samples = new Map();
   for (const [name, value] of entries) {
     const match = /^samples\/([^/]+)\.f32$/.exec(name);
-    if (match) samples.set(match[1],
-      value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    if (match) samples.set(match[1], owned(value));
   }
   return { json, source, samples };
 }

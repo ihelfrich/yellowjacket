@@ -125,6 +125,9 @@ export function initSourceController(ctx) {
       // One pyramid, shared by every view that draws this source.
       r.peaks = buildPeakPyramid(r.mono);
     });
+    // A new source is a new starting point: the old stack's docs (and the
+    // machine-sample references they hold) are not something to undo into.
+    if (typeof store.clearHistory === 'function') store.clearHistory();
 
     $('dropZone').classList.add('is-hidden');
     $('resumePanel').hidden = true;
@@ -381,6 +384,7 @@ export function initSourceController(ctx) {
         const buf = new Uint8Array(got);
         let o = 0;
         for (const p of parts) { buf.set(p, o); o += p.length; }
+        parts.length = 0;   // the chunks are one full encoded copy; drop them before decode
         ab = buf.buffer;
       } else {
         ab = await resp.arrayBuffer();

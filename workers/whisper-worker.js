@@ -121,11 +121,14 @@ async function handleTranscribe(mono, sampleRate, language) {
     postMessage({ type: 'error', message: 'No model loaded.' });
     return;
   }
-  const native = mono instanceof Float32Array ? mono : new Float32Array(mono || 0);
+  let native = mono instanceof Float32Array ? mono : new Float32Array(mono || 0);
   const inRate = Number(sampleRate) || TARGET_RATE;
   // Kaiser polyphase sinc (js/dsp/resample.js): >= 80 dB stopband where the old
   // linear path aliased everything above 8 kHz straight into the speech bands.
   const audio = inRate === TARGET_RATE ? native : resample(native, inRate, TARGET_RATE);
+  // Only the 16 kHz copy is needed from here; let the transferred input go
+  // rather than pinning it (up to 3× the 16 kHz array) through inference.
+  if (audio !== native) { native = null; mono = null; }
   const duration = audio.length / TARGET_RATE;
   if (audio.length === 0) {
     postMessage({ type: 'result', words: [] });

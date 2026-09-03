@@ -333,6 +333,13 @@ export function initBenchController(ctx) {
   let loudnessWorker = null;
   let measureSeq = 0;
   const measureJobs = new Map();   // job id -> {resolve, reject, onPct}
+  // The worker keeps the transferred channel copies until its own next GC;
+  // with no job pending it is cheaper to let the isolate go (~100 ms spawn).
+  function retireLoudnessWorker() {
+    if (measureJobs.size || !loudnessWorker) return;
+    try { loudnessWorker.terminate(); } catch (e) { /* already gone */ }
+    loudnessWorker = null;
+  }
   function measureViaWorker(buf, onPct) {
     if (!loudnessWorker) {
       loudnessWorker = new Worker(new URL('../../workers/loudness-worker.js', import.meta.url), { type: 'module' });
@@ -348,10 +355,11 @@ export function initBenchController(ctx) {
         const job = measureJobs.get(msg.job);
         if (!job) return;   // a job whose caller has already gone away
         if (msg.type === 'progress') { if (job.onPct) job.onPct(msg.pct); }
-        else if (msg.type === 'done') { measureJobs.delete(msg.job); job.resolve(msg.result); }
+        else if (msg.type === 'done') { measureJobs.delete(msg.job); job.resolve(msg.result); retireLoudnessWorker(); }
         else if (msg.type === 'error') {
           measureJobs.delete(msg.job);
           job.reject(new Error(msg.message));
+          retireLoudnessWorker();
         }
       };
     }

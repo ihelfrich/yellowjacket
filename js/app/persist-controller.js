@@ -476,6 +476,9 @@ export function initPersistController(ctx) {
       if (R.repairs.length) await ctx.api.repairRebuild();
       // A restored session is a fresh starting point, not something to undo into.
       store.clearHistory();   // a restored session is a starting point, not a step
+      // The bytes just read ARE source.bin (the size check proved it), so the
+      // first autosave after a resume need not write the same 42 MB back.
+      if (hasSource) bytesGeneration = R.generation;
 
       $('resumePanel').hidden = true;
       if (!hasSource) {

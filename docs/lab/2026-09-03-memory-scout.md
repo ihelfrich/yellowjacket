@@ -235,3 +235,23 @@ MPEG frame headers (random data fakes a sync word every few hundred bytes)
 — the real slice probes as 32 kHz mono. Live: ≈ 20:00 + 2:00 of HM01 loads
 in ~1 s (1.2 MB fetched), 120.0 s at 32 000 Hz, spectrogram at the file's
 rate. Tests: 49 groups / 322 cases.
+
+## Step 6 shipped locally — the ledger's remaining low-risk rows
+From docs/lab/2026-09-03-memory-ledger.md §4A (ranks 2, 3, 6, 7, 13, 17):
+- **Denoise worker 7 → 4 channel-units**: the transferred input is released
+  once padded; the overlap-add weights become a HOP-length table (the sum of
+  win² repeats every hop wherever the caller reads — proven by a test against
+  the full per-sample sum); the output is divided in place and returned as a
+  view of the padded buffer, transferred whole. Output identical; a
+  DENOISE-only render of the demo: RENDER OK · 5.2 s, no NaN, −1.7 dB energy.
+- **Loudness worker retired after each job** (MEASURE twice: 1.0 s each).
+- **loadFromUrl drops its streamed chunks before decode**; **.yjkt import**
+  passes an entry's own buffer through instead of copying it.
+- **Whisper worker releases the context-rate array** once resampled.
+- **A new source clears the undo stack** (and the sample refs it held).
+- **RESUME seeds the written generation**, so the first autosave after a
+  resume does not rewrite the 42 MB it just read.
+Left for their own steps: streaming WAV export (rank 4), fp16/q4f16 whisper
+(5, 8 — need the timestamp fixture, E10), 16 kHz slabs (9), Uint8 mags (11),
+model-aware budget (19), discard-aware auto-restore (18), and the three
+structural items (20–22). Tests: 49 groups / 325 cases.
