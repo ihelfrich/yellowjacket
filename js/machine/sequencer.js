@@ -121,6 +121,33 @@ export class Sequencer extends EventTarget {
     return resolver.bufferFor(planId) || null;
   }
 
+  // The live semantic voice, resolved against the context it will play on.
+  // When the recording's rate already matches, that is the recording itself
+  // (no copy, today's path). Otherwise the resolver hands back a short
+  // rate-matched excerpt around this event and the offset rebased into it.
+  // The excerpt's AudioBuffer is cached per context on the excerpt object.
+  _semanticVoice(planId, event, ctx) {
+    const buffer = this._semanticSource(planId);
+    if (!buffer || !ctx) return null;
+    const rate = Math.round(ctx.sampleRate);
+    if (Math.round(buffer.sampleRate) === rate) return { buffer, offsetSec: null };
+    const resolver = this._performanceSources;
+    if (!resolver || typeof resolver.excerptFor !== 'function') return { buffer, offsetSec: null };
+    const excerpt = resolver.excerptFor(planId, event, rate);
+    if (!excerpt || !excerpt.channels.length) return { buffer, offsetSec: null };
+    if (!this._excerptBuffers) this._excerptBuffers = new WeakMap();
+    let byCtx = this._excerptBuffers.get(excerpt);
+    if (!byCtx) { byCtx = new Map(); this._excerptBuffers.set(excerpt, byCtx); }
+    let baked = byCtx.get(ctx);
+    if (!baked) {
+      const length = excerpt.channels[0].length;
+      baked = ctx.createBuffer(excerpt.channels.length, length, excerpt.sampleRate);
+      for (let c = 0; c < excerpt.channels.length; c++) baked.getChannelData(c).set(excerpt.channels[c]);
+      byCtx.set(ctx, baked);
+    }
+    return { buffer: baked, offsetSec: excerpt.offsetSec };
+  }
+
   trackBuffer(i, reversed = false, fitSec = null, offsetSec = 0, sliceSec = 0) {
     const index = trackIndex(i);
     const ctx = this._engine && this._engine.ctx;
@@ -840,13 +867,14 @@ export class Sequencer extends EventTarget {
       scheduleEvent(scheduler, event, this._anchor + event.tSec);
     }
     for (const event of semanticEvents) {
-      const sourceBuffer = this._semanticSource(event.planId);
-      if (!sourceBuffer) continue;
+      const voice = this._semanticVoice(event.planId, event, ctx);
+      if (!voice) continue;
       scheduleSemanticEvent({
         ctx,
         destination: this._master,
-        sourceBuffer,
+        sourceBuffer: voice.buffer,
         event,
+        offsetSec: voice.offsetSec,
         when: this._anchor + event.tSec,
         voices: this._voices,
       });

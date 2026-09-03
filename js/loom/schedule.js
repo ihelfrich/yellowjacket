@@ -10,10 +10,14 @@ function clamp(value, low, high, fallback = low) {
 }
 
 export function scheduleSemanticEvent({
-  ctx, destination, sourceBuffer, event, when, voices = null,
+  ctx, destination, sourceBuffer, event, when, voices = null, offsetSec = null,
 } = {}) {
   if (!ctx || !destination || !sourceBuffer || !event) return null;
-  const offset = clamp(event.sourceOffsetSec, 0, sourceBuffer.duration, 0);
+  // `offsetSec` overrides the event's own offset when the buffer is an
+  // excerpt rather than the whole recording (js/loom/excerpt.js); everything
+  // downstream is unchanged, so no event object is cloned per hit.
+  const wanted = offsetSec == null ? event.sourceOffsetSec : offsetSec;
+  const offset = clamp(wanted, 0, sourceBuffer.duration, 0);
   const requestedSpan = clamp(event.sourceSpanSec, 0, sourceBuffer.duration - offset, 0);
   if (!(requestedSpan > 0)) return null;
   const rate = clamp(event.rate, 0.5, 2, 1);

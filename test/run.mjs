@@ -82,6 +82,7 @@ import { windowRange, windowLabel, parseClock, clock as windowClock } from '../j
 import { dbToByte, MAG_LEVELS } from '../js/render/spectrogram-quant.js';
 import { resample as kaiserResample, resampleChannels, PLAYBACK_CUTOFF_SCALE } from '../js/dsp/resample.js';
 import { createTrackBuffer } from '../js/machine/sequencer.js';
+import { cutExcerpt, excerptKey, ExcerptCache, EXCERPT_PAD_SEC } from '../js/loom/excerpt.js';
 import { denoiseChannel, overlapWeights } from '../workers/denoise-worker.js';
 import { FFT as DnFFT, hann as dnHann } from '../js/fft.js';
 import { sha256HexSync } from '../js/loom/identity.js';
@@ -1121,6 +1122,10 @@ const lifecycleCases = [
       await engine.setRate(1);
       assert.equal(engine.transport.rate, 48000, 'back to the file rate');
       assert.equal(engine.transport.ctx.lastSource.playbackRate.value, 1);
+      // A playing engine holds a 250 ms interval on purpose (rAF stalls in a
+      // hidden tab), so a test that leaves it playing never lets node exit.
+      engine.pause();
+      assert.equal(engine.playing, false);
     } finally {
       if (previousWindow === undefined) delete globalThis.window;
       else globalThis.window = previousWindow;
@@ -5372,6 +5377,97 @@ const rateMatchCases = [
   },
 ];
 
+// ---------- semantic excerpts: the live LOOM lane at the device rate ----------
+//
+// The lane plays on the DEVICE context (it shares the drum clock), so a
+// 44.1 kHz recording on a 96 kHz device reached Chromium's linear resampler.
+// Each event now gets a short rate-matched window instead of a second copy of
+// the whole recording. E12e: this is worth +34 dB unpitched, +16 dB pitched —
+// the pitch shift itself stays interpolated, and the claim says so.
+
+const kaiser = (ch, inRate, outRate) => kaiserResample(ch, inRate, outRate, { cutoffScale: PLAYBACK_CUTOFF_SCALE });
+
+const excerptCases = [
+  function theWindowCoversTheEventWithAirEachSide() {
+    // three seconds of ramp, so a sample's value reads back as its own time
+    const ch = new Float32Array(3 * 48000).map((_, i) => i / 48000);
+    const cut = cutExcerpt({ channels: [ch], sourceRate: 48000, offsetSec: 1.0, spanSec: 0.5, outRate: 48000, resampleFn: kaiser });
+    const from = Math.floor((1.0 - EXCERPT_PAD_SEC) * 48000);
+    const to = Math.ceil((1.0 + 0.5 + EXCERPT_PAD_SEC) * 48000);
+    assert.equal(cut.sampleRate, 48000);
+    assert.equal(cut.channels[0].length, to - from, 'the window spans the event plus a pad each side');
+    assert.ok(Math.abs(cut.offsetSec - EXCERPT_PAD_SEC) < 1e-9, 'the offset is rebased into the window');
+    assert.ok(Math.abs(cut.channels[0][0] - (1.0 - EXCERPT_PAD_SEC)) < 1e-4, 'and it starts one pad before the event');
+    assert.notEqual(cut.channels[0].buffer, ch.buffer, 'a matched rate still copies, never a view into the source');
+  },
+  function anEventRunningPastTheEndIsClampedNotRefused() {
+    const ch = new Float32Array(48000).map((_, i) => i / 48000);   // one second
+    const cut = cutExcerpt({ channels: [ch], sourceRate: 48000, offsetSec: 0.9, spanSec: 0.5, outRate: 48000, resampleFn: kaiser });
+    assert.ok(cut, 'the tail of the recording is still playable');
+    assert.equal(cut.channels[0].length, 48000 - Math.floor((0.9 - EXCERPT_PAD_SEC) * 48000));
+    assert.ok(cut.seconds < 0.2, 'only what the recording actually holds');
+  },
+  function aRateMismatchIsResampledAndTheOffsetFollows() {
+    const ch = new Float32Array(44100).fill(0.5);
+    const cut = cutExcerpt({ channels: [ch], sourceRate: 44100, offsetSec: 0.5, spanSec: 0.25, outRate: 96000, resampleFn: kaiser });
+    assert.equal(cut.sampleRate, 96000);
+    const inFrames = Math.ceil((0.5 + 0.25 + EXCERPT_PAD_SEC) * 44100) - Math.floor((0.5 - EXCERPT_PAD_SEC) * 44100);
+    assert.equal(cut.channels[0].length, Math.round(inFrames * 96000 / 44100), 'resampled length');
+    assert.ok(Math.abs(cut.offsetSec - EXCERPT_PAD_SEC) < 1e-4, 'the offset stays in seconds, so the rate change does not move it');
+    assert.ok(cut.seconds > 0.25 && cut.seconds < 0.3);
+  },
+  function theExcerptCarriesNoImagesAtTheDeviceRate() {
+    const f = snap(19000, 96000);
+    const cut = cutExcerpt({ channels: [e12Tone(48000, f)], sourceRate: 48000, offsetSec: 0.2, spanSec: 0.7, outRate: 96000, resampleFn: kaiser });
+    // enough audio for the analysis window: re-cut a long one
+    const long = cutExcerpt({ channels: [e12Tone(48000, f, 2)], sourceRate: 48000, offsetSec: 0.1, spanSec: 1.8, outRate: 96000, resampleFn: kaiser });
+    const m = e12Measure(long.channels[0], 96000, f, e12Tone(96000, f, 2));
+    assert.ok(m.imageDb <= -80, 'worst image ' + m.imageDb.toFixed(1) + ' dB');
+    assert.ok(cut.channels[0].length > 0);
+  },
+  function degenerateEventsAskForNothing() {
+    const ch = new Float32Array(4800);
+    assert.equal(cutExcerpt({ channels: [ch], sourceRate: 48000, offsetSec: 0, spanSec: 0, outRate: 48000, resampleFn: kaiser }), null);
+    assert.equal(cutExcerpt({ channels: [], sourceRate: 48000, offsetSec: 0, spanSec: 1, outRate: 48000, resampleFn: kaiser }), null);
+    assert.equal(cutExcerpt({ channels: [ch], sourceRate: 0, offsetSec: 0, spanSec: 1, outRate: 48000, resampleFn: kaiser }), null);
+    assert.equal(cutExcerpt({ channels: [ch], sourceRate: 48000, offsetSec: 99, spanSec: 1, outRate: 48000, resampleFn: kaiser }), null, 'past the end of the recording');
+  },
+  function theCacheIsBoundedBySecondsAndKeyedByEverythingThatCanChange() {
+    assert.equal(excerptKey('sha', 'plan', 'ev', 96000), 'sha|plan|ev|96000');
+    assert.notEqual(excerptKey('sha', 'plan', 'ev', 96000), excerptKey('sha', 'plan', 'ev', 48000), 'rate is part of the key');
+    assert.notEqual(excerptKey('a', 'plan', 'ev', 96000), excerptKey('b', 'plan', 'ev', 96000), 'a new source is a new key');
+    const cache = new ExcerptCache(1.0);
+    const mk = (s) => ({ channels: [new Float32Array(8)], sampleRate: 96000, offsetSec: 0, seconds: s });
+    cache.set('a', mk(0.4)); cache.set('b', mk(0.4));
+    assert.equal(cache.size, 2);
+    assert.ok(Math.abs(cache.seconds - 0.8) < 1e-9);
+    assert.ok(cache.get('a'), 'a is a hit, and now the most recent');
+    cache.set('c', mk(0.4));
+    assert.equal(cache.get('b'), null, 'b was least recently used and went');
+    assert.ok(cache.get('a') && cache.get('c'));
+    cache.set('huge', mk(50));
+    assert.equal(cache.size, 1, 'one entry larger than the budget is still kept, alone');
+    cache.clear();
+    assert.equal(cache.size, 0);
+    assert.equal(cache.seconds, 0);
+  },
+  async function theLiveLaneUsesTheExcerptAndTheOfflinePrintIsUntouched() {
+    const sched = await readFile(new URL('../js/loom/schedule.js', import.meta.url), 'utf8');
+    assert.match(sched, /offsetSec = null/, 'the scheduler takes an offset override');
+    assert.match(sched, /const wanted = offsetSec == null \? event\.sourceOffsetSec : offsetSec;/, 'and no event is cloned per hit');
+    const seq = await readFile(new URL('../js/machine/sequencer.js', import.meta.url), 'utf8');
+    assert.match(seq, /_semanticVoice\(planId, event, ctx\)/);
+    assert.match(seq, /if \(Math\.round\(buffer\.sampleRate\) === rate\) return \{ buffer, offsetSec: null \};/, 'a matched rate is the recording itself, no copy');
+    assert.match(seq, /const voice = this\._semanticVoice\(event\.planId, event, ctx\);/, 'the live path resolves against its context');
+    // the offline print still renders at max(track rates, source rate), so it
+    // is already at the source's rate in the common case: left alone.
+    assert.match(seq, /const sourceBuffer = compiled\.semanticEvents\.length \? this\._semanticSource\(planId\) : null;/);
+    const ctrl = await readFile(new URL('../js/machine/controller.js', import.meta.url), 'utf8');
+    assert.match(ctrl, /excerptFor: \(planId, event, rate\) =>/);
+    assert.match(ctrl, /excerptCache\.get\(key\)/);
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
   ['playback resample', playbackResampleCases],
@@ -5412,6 +5508,7 @@ const groups = [
   ['modal', modalCases],
   ['offline render', renderCases],
   ['machine rate match', rateMatchCases],
+  ['semantic excerpts', excerptCases],
   ['scene sends', sceneSendCases],
   ['restore hydration', hydrateCases],
   ['voice clamp parity', clampParityCases],

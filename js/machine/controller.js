@@ -2,11 +2,12 @@
 // Moved from main.js in the STRUCTURE refactor; logic unchanged except sample
 // assignment now also records an asset registry entry (persistence groundwork).
 
+import { cutExcerpt, excerptKey, ExcerptCache } from '../loom/excerpt.js';
 import { createVoice, registerAsset } from '../app/project-store.js';
 import { buildBundle } from '../app/project-bundle.js';
 import { encodeWav, download } from '../export.js';
 import { buildDrumPatch } from '../export/op1patch.js';
-import { resample } from '../dsp/resample.js';
+import { resample, PLAYBACK_CUTOFF_SCALE } from '../dsp/resample.js';
 import { patternLoopSteps, normalizeVoice } from './compile.js';
 import { CrateStore } from '../app/crate.js';
 import { renderFormula } from './synth.js';
@@ -60,6 +61,7 @@ export function initMachineController(ctx) {
     });
   }
 
+  const excerptCache = new ExcerptCache();
   sequencer.setPerformanceSources({
     plans: () => (P.loom && P.loom.plans) || {},
     bufferFor: (planId) => {
@@ -73,6 +75,25 @@ export function initMachineController(ctx) {
         name: P.fileName,
         size,
       }) ? R.buffer : null;
+    },
+    // Short, rate-matched windows of the recording for the live semantic
+    // lane, cut once per (source, plan, event, rate) and cached by seconds.
+    excerptFor: (planId, event, rate) => {
+      if (!R.buffer || !event) return null;
+      const key = excerptKey(R.sourceHash, planId, event.eventId || event.id, rate);
+      const hit = excerptCache.get(key);
+      if (hit) return hit;
+      const channels = [];
+      for (let c = 0; c < R.buffer.numberOfChannels; c++) channels.push(R.buffer.getChannelData(c));
+      const cut = cutExcerpt({
+        channels,
+        sourceRate: R.buffer.sampleRate,
+        offsetSec: event.sourceOffsetSec,
+        spanSec: event.sourceSpanSec,
+        outRate: rate,
+        resampleFn: (ch, inRate, outRate) => resample(ch, inRate, outRate, { cutoffScale: PLAYBACK_CUTOFF_SCALE }),
+      });
+      return cut ? excerptCache.set(key, cut) : null;
     },
     identityFor: (planId) => {
       const plan = P.loom && P.loom.plans && P.loom.plans[planId];

@@ -388,3 +388,53 @@ gap at each speed change: a context swap, not a reschedule.
 Also fixed: `_closeTransport` raced a 2 s timeout it never cleared, so every
 transport swap left a pending timer (harmless in a browser, but it kept node
 test runs alive).
+
+## Experiment E12e (2026-09-03) — what rate-matching can and cannot do for the semantic lane
+The decision's step 6 assumed that serving the semantic lane at the device
+rate removes its interpolation. It does not, and the measurement says by how
+much. Offline render of an 8 kHz tone through `AudioBufferSourceNode`, image =
+worst component outside ±6 bins of the played partial:
+
+| arrangement | playbackRate | image |
+|---|---|---|
+| 44.1 k buffer on a 96 k context (today) | 1 (unpitched) | −25.9 dB |
+| 96 k buffer on a 96 k context | 1 (unpitched) | **−59.8 dB** (window floor: clean) |
+| 44.1 k buffer on a 96 k context (today) | 1.2599 (+4 semitones) | −26.2 dB |
+| 96 k buffer on a 96 k context | 1.2599 (+4 semitones) | **−42.2 dB** |
+
+So rate-matching **completely fixes unpitched semantic events** (+34 dB) and
+**improves pitched ones by 16 dB**, but cannot make them clean: a Semantic
+Take plays at `2^(semitones/12)`, so `computed_playback_rate` is irrational
+and Chromium's interpolated path is taken no matter what context it runs on.
+The residual is the pitch-shifting sampler itself, and removing it needs a
+resampling voice (an AudioWorklet), which is a separate project — not step 6.
+Step 6 is still worth building at 16–34 dB; the claim it ships with is
+"rate-matched, not interpolation-free".
+
+## Playback rate, step 6 shipped locally — the live semantic lane
+`js/loom/excerpt.js` (pure, tested): `cutExcerpt` takes the window
+`[offset − 2 ms, offset + span + 2 ms]` out of the recording, rate-matches it
+with the Kaiser at the playback cutoff, and rebases the offset into it;
+`ExcerptCache` is an LRU bounded by total audio seconds (30 s), keyed
+`sourceHash|planId|eventId|rate` so a new source or a new render rate is a new
+key. `scheduleSemanticEvent` gained an `offsetSec` override, so no event object
+is cloned per hit. `Sequencer._semanticVoice(planId, event, ctx)` returns the
+recording itself when the rates match (today's path, no copy) and an excerpt
+otherwise, with its `AudioBuffer` cached per context on the excerpt.
+
+**Scope, stated plainly.** Only the LIVE lane changed. The offline print
+already renders at `max(track rates, source rate)`, so it is at the source's
+own rate in the common case; rewiring its rate decision would have risked the
+`offline render` contract for a case that is usually already correct.
+
+Live (demo at 44.1 kHz, device 96 kHz): QUICK TAKE armed and ran; the lane
+resolved a **96 000 Hz excerpt of 0.904 s** (a 0.9 s event plus both pads)
+with the offset rebased to 0.00202 s, reused from the cache on the next hit.
+The event's own rate was 0.8409 (three semitones down), so its computed ratio
+stays off unity — E12e said so, and the claim shipped is "rate-matched, not
+interpolation-free". Tests: 53 groups / 350 cases.
+
+Also fixed, in the harness rather than the product: a test that left the
+engine playing held the 250 ms hidden-tab interval `_startTick` installs on
+purpose, so `node test/run.mjs` ran every group and then never exited. The
+suite exits cleanly again.
