@@ -363,3 +363,28 @@ left in the monitoring path is Chromium's sinc stage to the device (modelled
 −94.9 dB at 19 kHz for 48 → 96; test/lab/chromium-sinc-model2.mjs), which
 E12's method cannot observe in-graph; hardware loopback is the remaining
 proof (R7). Tests: 52 groups / 339 cases.
+
+## Playback rate, steps 5 and 7 shipped locally
+**Step 5 — `engine.audition(pcm, {sampleRate, when, gain})`** replaces three
+hand-rolled one-shot graphs (repair preview, synth preview, modal `playPcm`).
+It picks the context whose rate already matches (transport first, then the
+device) so the common case is a copy, and rate-matches with the Kaiser at the
+playback cutoff otherwise. The synth preview's 44.1 kHz source-free buffer was
+being interpolated on the device context before this. Live: a 44.1 kHz
+audition lands on the 44.1 kHz transport uncopied, a 96 kHz one on the device
+context, a 48 kHz one is resampled to the transport's 44 100 (4800 → 4410).
+
+**Step 7 — SLOW on the transport clock.** `setRate(f)` now retunes the
+transport to `fileRate / f`, so `playbackRate (1/f) × (bufferRate/contextRate)`
+is exactly 1: the copy path again, with Chromium converting the slow clock up
+to the device. Before this, ¼× ran at a computed ratio of 0.25 through the
+linear interpolator, putting a 19 kHz component's image near 7.25 kHz — inside
+hearing. Live on Traum (48 kHz, 96 kHz device): ½× → transport 24 000, ¼× →
+12 000, computed ratio 1, the playhead advances 0.243 buffer-seconds per real
+second at ¼× (0.25 expected), the readout reads `SLOW ¼× · TRANSPORT 12 kHz →
+DEVICE 96 kHz · CHROMIUM SINC`, and 1× restores 48 000. The cost is a brief
+gap at each speed change: a context swap, not a reschedule.
+
+Also fixed: `_closeTransport` raced a 2 s timeout it never cleared, so every
+transport swap left a pending timer (harmless in a browser, but it kept node
+test runs alive).

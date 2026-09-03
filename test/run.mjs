@@ -1031,6 +1031,114 @@ const lifecycleCases = [
     const clips = await readFile(new URL('../js/machine/cliprefs.js', import.meta.url), 'utf8');
     assert.match(clips, /this\._engine\.transport/, 'clip audition plays on the transport');
   },
+  async function auditionPicksTheMatchingContextAndResamplesOtherwise() {
+    const previousWindow = globalThis.window;
+    class FakeCtx {
+      constructor(opts) {
+        this.sampleRate = opts && opts.sampleRate ? opts.sampleRate : 96000;
+        this.state = 'running'; this.destination = {}; this.currentTime = 0; this.built = [];
+      }
+      createGain() { return { connect() {}, disconnect() {}, gain: { value: 1 } }; }
+      createBuffer(ch, len, rate) { const b = new AudioBuffer({ numberOfChannels: ch, length: len, sampleRate: rate }); this.built.push(b); return b; }
+      createBufferSource() { const n = { buffer: null, playbackRate: { value: 1 }, connect() {}, start() {}, stop() {}, disconnect() {} }; this.lastSource = n; return n; }
+      resume() { return Promise.resolve(); }
+      close() { this.state = 'closed'; return Promise.resolve(); }
+    }
+    globalThis.window = { AudioContext: FakeCtx };
+    try {
+      const engine = new Engine();
+      engine.wake();                       // device at 96 k
+      await engine._ensureTransport(48000); // transport at 48 k
+      const pcm48 = new Float32Array(4800).fill(0.25);
+      const a = engine.audition(pcm48, { sampleRate: 48000 });
+      assert.ok(a, 'a node comes back');
+      assert.equal(engine.transport.ctx.lastSource, a, 'a 48 k audition lands on the transport');
+      assert.equal(engine.transport.ctx.built.at(-1).length, 4800, 'no resampling when the rate matches');
+      const pcm96 = new Float32Array(9600).fill(0.25);
+      engine.audition(pcm96, { sampleRate: 96000 });
+      assert.equal(engine.ctx.built.at(-1).sampleRate, 96000, 'a 96 k audition lands on the device context');
+      assert.equal(engine.ctx.built.at(-1).length, 9600);
+      // 44.1 k matches neither: rate-matched to the transport
+      const pcm441 = new Float32Array(4410).fill(0.25);
+      engine.audition(pcm441, { sampleRate: 44100 });
+      const made = engine.transport.ctx.built.at(-1);
+      assert.equal(made.sampleRate, 48000);
+      assert.equal(made.length, Math.round(4410 * 48000 / 44100), 'resampled length');
+      // multichannel and junk
+      engine.audition([pcm48, pcm48], { sampleRate: 48000 });
+      assert.equal(engine.transport.ctx.built.at(-1).numberOfChannels, 2);
+      assert.equal(engine.audition(null, { sampleRate: 48000 }), null);
+      assert.equal(engine.audition(pcm48, { sampleRate: 0 }), null);
+    } finally {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    }
+  },
+  async function theThreeHandRolledAuditionGraphsAreGone() {
+    const repair = await readFile(new URL('../js/app/repair-controller.js', import.meta.url), 'utf8');
+    assert.match(repair, /engine\.audition\(done\.map/, 'repair preview auditions');
+    assert.doesNotMatch(repair, /srcNode\.connect\(engine\.master\)/, 'its own graph is gone');
+    const machine = await readFile(new URL('../js/machine/controller.js', import.meta.url), 'utf8');
+    assert.equal((machine.match(/engine\.audition\(pcm/g) || []).length, 2, 'synth preview and modal playPcm audition');
+    assert.doesNotMatch(machine, /src\.connect\(engine\.master\);\s*\n\s*src\.start\(\);/, 'no hand-rolled one-shot graphs left');
+  },
+  async function slowRetunesTheTransportSoTheSourceStaysACopy() {
+    const previousWindow = globalThis.window;
+    const prevRaf = globalThis.requestAnimationFrame, prevCaf = globalThis.cancelAnimationFrame;
+    const made = [];
+    class FakeCtx {
+      constructor(opts) {
+        this.sampleRate = opts && opts.sampleRate ? opts.sampleRate : 96000;
+        this.state = 'running'; this.destination = {}; this.currentTime = 0; made.push(this.sampleRate);
+      }
+      createGain() { return { connect() {}, disconnect() {} }; }
+      createBufferSource() { const n = { buffer: null, playbackRate: { value: 1 }, connect() {}, start() {}, stop() {}, disconnect() {}, onended: null }; this.lastSource = n; return n; }
+      resume() { return Promise.resolve(); }
+      close() { this.state = 'closed'; return Promise.resolve(); }
+    }
+    globalThis.window = { AudioContext: FakeCtx };
+    globalThis.requestAnimationFrame = () => 1;
+    globalThis.cancelAnimationFrame = () => {};
+    try {
+      const engine = new Engine();
+      engine.wake();
+      engine._buffer = { duration: 4, sampleRate: 48000 };
+      await engine._ensureTransport(48000);
+      engine.play([]);
+      assert.equal(engine.transport.rate, 48000);
+      // quarter speed: the clock drops to 12 kHz and the ratio comes back to 1
+      await engine.setRate(4);
+      assert.equal(engine.rate, 4);
+      assert.equal(engine.transport.rate, 12000, '48000 / 4');
+      const src = engine.transport.ctx.lastSource;
+      assert.equal(src.playbackRate.value, 0.25);
+      assert.equal(src.playbackRate.value * (48000 / engine.transport.ctx.sampleRate), 1,
+        'computed playback rate is exactly 1: Chromium copies instead of interpolating');
+      assert.ok(made.includes(12000));
+      // half speed, then back
+      await engine.setRate(2);
+      assert.equal(engine.transport.rate, 24000);
+      await engine.setRate(1);
+      assert.equal(engine.transport.rate, 48000, 'back to the file rate');
+      assert.equal(engine.transport.ctx.lastSource.playbackRate.value, 1);
+    } finally {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+      if (prevRaf === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = prevRaf;
+      if (prevCaf === undefined) delete globalThis.cancelAnimationFrame; else globalThis.cancelAnimationFrame = prevCaf;
+    }
+  },
+  function slowClocksStayAboveTheBrowsersFloor() {
+    // Chromium accepts 3000 Hz and up; MIN_CLOCK_HZ is 8000, so every offered
+    // factor retunes to a rate a context will actually open.
+    for (const rate of [44100, 48000, 88200, 96000, 192000, 32000, 16000]) {
+      for (const f of speedFactorsFor(rate)) {
+        assert.ok(rate / f >= 8000, rate + ' at 1/' + f + ' is ' + (rate / f) + ' Hz');
+      }
+    }
+    assert.deepEqual(speedFactorsFor(8000), [1], 'an 8 kHz capture offers no slow factors at all');
+    assert.deepEqual(speedFactorsFor(32000), [1, 2, 4], '32 kHz reaches the floor exactly at a quarter');
+  },
   function engineCanReturnToASourceFreeState() {
     const engine = new Engine();
     engine._buffer = { duration: 4 };

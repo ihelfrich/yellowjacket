@@ -3,6 +3,7 @@
 
 import { probeContainer, planDecodeRate } from './dsp/native-rate.js';
 import { bufferSecondsElapsed, realSecondsUntil, SPEED_FACTORS } from './dsp/varispeed.js';
+import { resampleChannels, PLAYBACK_CUTOFF_SCALE } from './dsp/resample.js';
 
 const SCHEDULE_DELAY = 0.03;      // s, shared start offset so segments align
 const MIN_SEG = 0.001;            // s, ignore slivers below this
@@ -127,6 +128,50 @@ export class Engine extends EventTarget {
   }
   get deviceRate() { return this._deviceRate; }
 
+  /**
+   * Play a one-shot buffer of PCM: repair previews, synth previews, modal
+   * fits. Picks the context whose rate already matches (transport first, then
+   * the device), so the common case is a copy at unity ratio; anything else is
+   * rate-matched once with the repo's Kaiser at the playback cutoff rather
+   * than left to Chromium's linear interpolation (E12).
+   *
+   * `pcm` is a Float32Array (mono) or an array of them (one per channel).
+   * Returns the source node, or null when there is no context yet.
+   */
+  audition(pcm, { sampleRate, when = 0, gain = 1 } = {}) {
+    const channels = (Array.isArray(pcm) ? pcm : [pcm]).filter((c) => c && c.length);
+    const rate = Math.round(Number(sampleRate));
+    if (!channels.length || !(rate > 0)) return null;
+    const T = this.transport;
+    const device = this._ctx ? { ctx: this._ctx, master: this._master, rate: this._ctx.sampleRate } : null;
+    let target = null;
+    if (T && Math.round(T.rate) === rate) target = T;
+    else if (device && Math.round(device.rate) === rate) target = device;
+    else target = T || device;
+    if (!target || !target.ctx || !target.master) return null;
+    const outRate = Math.round(target.ctx.sampleRate);
+    const data = outRate === rate
+      ? channels
+      : resampleChannels(channels, rate, outRate, { cutoffScale: PLAYBACK_CUTOFF_SCALE });
+    const length = data[0] ? data[0].length : 0;
+    if (!length) return null;
+    resumeContext(target.ctx);
+    const buffer = target.ctx.createBuffer(data.length, length, outRate);
+    for (let c = 0; c < data.length; c++) buffer.getChannelData(c).set(data[c].subarray(0, length));
+    const src = target.ctx.createBufferSource();
+    src.buffer = buffer;
+    let node = src;
+    if (gain !== 1) {
+      const g = target.ctx.createGain();
+      g.gain.value = gain;
+      src.connect(g);
+      node = g;
+    }
+    node.connect(target.master);
+    src.start(when ? target.ctx.currentTime + when : 0);
+    return src;
+  }
+
   // Like wake(), for the transport: the context sources play the recording on.
   wakeTransport() {
     const T = this.transport || (this._ensureCtx() && this.transport);
@@ -187,7 +232,13 @@ export class Engine extends EventTarget {
     this.dispatchEvent(new CustomEvent('transportchange', { detail: { from: cur.ctx, reason } }));
     let closing;
     try { closing = cur.ctx.close(); } catch (e) { closing = Promise.resolve(); }
-    await Promise.race([Promise.resolve(closing).catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);
+    // The timer is cleared on the winning path: a race leaves the loser
+    // pending, and a stray two-second timer per swap keeps an event loop
+    // (and a node test run) alive for no reason.
+    let timer = 0;
+    const capped = new Promise((resolve) => { timer = setTimeout(resolve, 2000); });
+    await Promise.race([Promise.resolve(closing).catch(() => {}), capped]);
+    if (timer) clearTimeout(timer);
   }
 
   // Return the bench to a true source-free state. SYNTH and CRATE can still
@@ -218,7 +269,7 @@ export class Engine extends EventTarget {
     if (wasPlaying) this.pause();
     this._buffer = audioBuffer;
     this._mono = mono || mixdownMono(audioBuffer);
-    if (this._ctx) this._ensureTransport(audioBuffer.sampleRate);   // same rate: a no-op
+    if (this._ctx) this._ensureTransport(this._transportRateFor(audioBuffer));   // same rate: a no-op
   }
 
   get buffer() { return this._buffer; }
@@ -314,14 +365,33 @@ export class Engine extends EventTarget {
 
   get rate() { return this._rate; }
 
-  // Change speed without losing the place. If playing, reschedule from the
-  // current buffer position so the new rate takes effect immediately.
-  setRate(factor) {
+  // The transport rate that makes the source node a copy: at 1x it is the
+  // file's own rate; at 1/f it is the file's rate divided by f, so
+  // playbackRate (1/f) x (bufferRate / contextRate) is exactly 1 and Chromium
+  // takes its fast path instead of interpolating (E12; at 1/4 the images of a
+  // linear resampler land inside hearing).
+  _transportRateFor(buffer) {
+    const buf = buffer || this._activeBuffer();
+    if (!buf || !buf.sampleRate) return 0;
+    return buf.sampleRate / (this._rate || 1);
+  }
+
+  // Change speed without losing the place. The transport is retuned to the
+  // slower clock, which costs a brief gap (a context swap) and buys playback
+  // with no interpolation in the band SLOW brings down. If the browser
+  // refuses the rate the speed is still exact; only the resampling is
+  // Chromium's linear path, as it was before.
+  async setRate(factor) {
     const f = SPEED_FACTORS.includes(factor) ? factor : 1;
     if (f === this._rate) return;
     const wasPlaying = this._playing;
     const pos = wasPlaying ? this.currentTime : this._position;
     this._rate = f;
+    const want = this._transportRateFor();
+    if (want > 0 && this._ctx) {
+      if (wasPlaying) this._haltPlayback();
+      await this._ensureTransport(want);
+    }
     if (wasPlaying) this.play(this._lastCuts, pos);
     else this._position = pos;
   }
@@ -361,7 +431,7 @@ export class Engine extends EventTarget {
       this._position = Math.min(this._position, next.duration);
     }
     this._alt = next;
-    if (next && this._ctx) this._ensureTransport(next.sampleRate);   // renders are at the source rate: a no-op
+    if (next && this._ctx) this._ensureTransport(this._transportRateFor(next));   // renders are at the source rate: a no-op
   }
 
   _activeBuffer() {

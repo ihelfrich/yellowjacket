@@ -176,7 +176,7 @@ export function initRepairController(ctx) {
   }
 
   async function previewRepair(region, strength) {
-    if (!R.buffer || !region || !engine.ctx) {
+    if (!R.buffer || !region || (!engine.ctx && !engine.transport)) {
       if (!engine.ctx) statusFault('Play something once first — the audio engine wakes on a gesture.');
       return;
     }
@@ -198,13 +198,7 @@ export function initRepairController(ctx) {
       // Audition just around the region.
       const a = Math.max(0, Math.floor((t0 - PREVIEW_PAD_SEC) * sampleRate) - s);
       const b = Math.min(done[0].length, Math.ceil((t1 + PREVIEW_PAD_SEC) * sampleRate) - s);
-      const ctx2 = engine.ctx;
-      const buf = ctx2.createBuffer(done.length, b - a, sampleRate);
-      for (let c = 0; c < done.length; c++) buf.getChannelData(c).set(done[c].subarray(a, b));
-      const srcNode = ctx2.createBufferSource();
-      srcNode.buffer = buf;
-      srcNode.connect(engine.master);
-      srcNode.start();
+      engine.audition(done.map((ch) => ch.subarray(a, b)), { sampleRate });
       status('PREVIEW · ' + (b - a > 0 ? ((b - a) / sampleRate).toFixed(2) : '0') + 's REPAIRED');
     } catch (err) {
       statusFault('PREVIEW FAULT · ' + (err.message || err));

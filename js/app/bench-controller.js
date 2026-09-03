@@ -197,7 +197,8 @@ export function initBenchController(ctx) {
     } else if (T.shared) {
       el.textContent = 'MATCHED · NO CONVERSION';
     } else {
-      el.textContent = 'TRANSPORT ' + kHzLabel(T.rate) + ' → DEVICE ' + kHzLabel(engine.deviceRate) + ' · CHROMIUM SINC';
+      const slow = engine.rate > 1 ? 'SLOW ' + speedLabel(engine.rate) + ' · ' : '';
+      el.textContent = slow + 'TRANSPORT ' + kHzLabel(T.rate) + ' → DEVICE ' + kHzLabel(engine.deviceRate) + ' · CHROMIUM SINC';
     }
   }
   engine.addEventListener('transport', () => { hookMeter(); refreshConversion(); });
@@ -858,7 +859,7 @@ export function initBenchController(ctx) {
   function setSpeed(factor) {
     const allowed = speedFactorsFor(R.sampleRate);
     speed = allowed.includes(factor) ? factor : 1;
-    engine.setRate(speed);
+    Promise.resolve(engine.setRate(speed)).then(refreshConversion);
     const b = $('btnSpeed');
     if (b) {
       b.textContent = speedLabel(speed);

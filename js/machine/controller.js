@@ -1195,14 +1195,8 @@ export function initMachineController(ctx) {
     synthView.addEventListener('preview', (e) => {
       const pcm = buildSynth(e.detail) || synthPcm;
       if (!pcm) return;
-      const audioCtx = engine.wake();
-      const rate = R.sampleRate || 44100;
-      const buf = audioCtx.createBuffer(1, pcm.length, rate);
-      buf.getChannelData(0).set(pcm);
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(engine.master);
-      src.start();
+      engine.wake();
+      engine.audition(pcm, { sampleRate: R.sampleRate || 44100 });
     });
     synthView.addEventListener('make', (e) => {
       const pcm = buildSynth(e.detail);
@@ -1279,12 +1273,7 @@ export function initMachineController(ctx) {
         if (!engine.ctx) statusFault('Press play once first: the audio engine wakes on a gesture.');
         return;
       }
-      const buf = engine.ctx.createBuffer(1, pcm.length, modalRate);
-      buf.getChannelData(0).set(pcm);
-      const src = engine.ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(engine.master);
-      src.start();
+      engine.audition(pcm, { sampleRate: modalRate });
     }
 
     function fitSelected() {
