@@ -236,3 +236,20 @@ Fresh browser (or clear `yj.firstrun.done`).
 | SLICE rail | HARVEST is the first panel, above BEATMAP and KIT MAP |
 | any status | the status line pulses a yellow rule for a second on every message |
 | hover a tab | one-line tooltip says what the bench does |
+
+## 13. One transport: STOP stops whatever is sounding
+
+LOAD THE DEMO SONG → TRANSCRIPT → **PLAY IT · QUICK TAKE** (the machine runs).
+
+| checkpoint | expected |
+|---|---|
+| machine running, bench silent | header button reads **STOP** (yellow), title `Stop the machine (Space)` |
+| press it | the machine stops; the song does **not** start; button reads PLAY |
+| QUICK TAKE again, then Space (focus off any button) | same: stops, nothing starts |
+| PLAY the bench, then Escape | everything stops, from any tab, whatever has focus |
+| LOOM → AUDITION a plan | header reads STOP; pressing it stops the audition |
+| SLICE → click a clip while the bench plays | header title names both: `Stop the bench and the clip (Space)` |
+| command deck | `STOP EVERYTHING` (ESC) enabled only while something sounds |
+
+Before: the header knew only the bench. With the machine running it read PLAY,
+and pressing it stopped the machine *and started the song* — "I can't stop it".

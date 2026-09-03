@@ -328,7 +328,8 @@ const commandDefs = [
   { id: 'project-save', group: 'PROJECT', label: 'SAVE .YJKT PROJECT', note: 'Bundle the whole session into one local file', keywords: 'export backup share portable', button: 'btnProjectSave', reason: 'THE PROJECT IS EMPTY', run: () => $('btnProjectSave').click() },
   { id: 'undo', group: 'PROJECT', label: 'UNDO', note: 'Step backward through project edits', key: '⌘Z', enabled: () => store.canUndo, reason: 'NOTHING TO UNDO', run: () => ctx.api.undo() },
   { id: 'redo', group: 'PROJECT', label: 'REDO', note: 'Step forward through project edits', key: '⇧⌘Z', enabled: () => store.canRedo, reason: 'NOTHING TO REDO', run: () => ctx.api.redo() },
-  { id: 'play-bench', group: 'TRANSPORT', label: 'PLAY / PAUSE BENCH', note: 'Toggle source transport', key: 'SPACE', enabled: () => !!store.runtime.buffer, reason: 'LOAD AUDIO FIRST', run: () => ctx.api.togglePlay() },
+  { id: 'play-bench', group: 'TRANSPORT', label: 'PLAY / STOP', note: 'Stop whatever is sounding; otherwise play the bench', key: 'SPACE', enabled: () => !!store.runtime.buffer || (ctx.api.sounding && ctx.api.sounding().length > 0), reason: 'LOAD AUDIO FIRST', run: () => ctx.api.togglePlay() },
+  { id: 'stop-all', group: 'TRANSPORT', label: 'STOP EVERYTHING', note: 'Bench, machine, loom, studio, clip — all at once', key: 'ESC', keywords: 'panic silence halt', enabled: () => !!(ctx.api.sounding && ctx.api.sounding().length), reason: 'NOTHING IS SOUNDING', run: () => ctx.api.stopAll() },
   { id: 'return-zero', group: 'TRANSPORT', label: 'RETURN TO ZERO', note: 'Seek the source transport to the start', key: 'HOME', enabled: () => !!store.runtime.buffer, reason: 'LOAD AUDIO FIRST', run: () => engine.seek(0) },
   { id: 'play-studio', group: 'TRANSPORT', label: 'PLAY / PAUSE STUDIO', note: 'Toggle the melodic instrument loop', keywords: 'sequence instruments', run: () => { jump('studio'); ctx.api.toggleStudio(); } },
   { id: 'stop-loom', group: 'TRANSPORT', label: 'STOP LOOM AUDITION', note: 'Stop the semantic weave audition', keywords: 'loom stop semantic', enabled: () => loomEngine.playing, reason: 'LOOM IS NOT PLAYING', run: () => ctx.api.stopLoom() },
@@ -407,6 +408,8 @@ window.addEventListener('keydown', (e) => {
     else ctx.api.togglePlay();
   }
   if (e.code === 'Home') engine.seek(0);
+  // Panic: Escape stops every source, from any tab, whatever has focus.
+  if (e.code === 'Escape' && ctx.api.stopAll) ctx.api.stopAll();
 });
 
 // Undo lives outside the typing guard above: it must work while a control has

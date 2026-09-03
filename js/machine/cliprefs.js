@@ -140,6 +140,10 @@ export class ClipAuditioner {
     this._voice = voice;
   }
 
+  get playing() {
+    return !!this._voice;
+  }
+
   stop() {
     const voice = this._voice;
     this._voice = null;

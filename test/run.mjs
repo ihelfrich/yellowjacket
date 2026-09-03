@@ -74,6 +74,7 @@ import {
 import {
   describePreview, previewChain, previewView, previewWindow, sliceAudioBuffer, PREVIEW_SPAN_SEC,
 } from '../js/dsp/preview.js';
+import { soundingSources, transportLabel, transportTitle } from '../js/app/transport.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -4512,8 +4513,33 @@ const previewCases = [
   },
 ];
 
+// ---------- transport: one rule for five sound sources ----------
+
+const transportCases = [
+  function nothingSoundingMeansPlay() {
+    assert.deepEqual(soundingSources({}), []);
+    assert.equal(transportLabel([]), 'PLAY');
+    assert.equal(transportTitle([], true), 'Play the bench (Space)');
+    assert.equal(transportTitle([], false), 'Load audio to play');
+  },
+  function anySourceSoundingMeansStopAndNamesIt() {
+    const m = soundingSources({ machine: true });
+    assert.deepEqual(m, ['machine']);
+    assert.equal(transportLabel(m), 'STOP');
+    assert.equal(transportTitle(m), 'Stop the machine (Space)');
+    const two = soundingSources({ audition: true, bench: true, loom: false });
+    assert.deepEqual(two, ['bench', 'audition'], 'in a fixed order, whatever order the flags came in');
+    assert.equal(transportTitle(two), 'Stop the bench and the clip (Space)');
+  },
+  function junkStateIsSilence() {
+    assert.deepEqual(soundingSources(null), []);
+    assert.deepEqual(soundingSources({ bogus: true }), []);
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['transport', transportCases],
   ['live preview', previewCases],
   ['my shelf', mineCases],
   ['slow view', slowCases],

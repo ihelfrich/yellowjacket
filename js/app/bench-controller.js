@@ -11,6 +11,7 @@ import { buildPeakPyramid } from '../render/peaks.js';
 import { ndsi, bandLevelDb } from '../analysis/soundscape.js';
 import { speedFactorsFor, slowedBuffer, speedLabel, slowBand } from '../dsp/varispeed.js';
 import { previewWindow, previewChain, previewView, sliceAudioBuffer, describePreview } from '../dsp/preview.js';
+import { soundingSources, transportLabel, transportTitle } from './transport.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -89,21 +90,46 @@ export function initBenchController(ctx) {
   }
 
   // ---------- transport ----------
-  function togglePlay() {
-    if (!R.buffer) return;
-    if (engine.playing) {
-      engine.pause();
-    } else {
-      if (sequencer.running) sequencer.stop(); // one transport owns the output at a time
-      if (ctx.api.stopLoom) ctx.api.stopLoom();
-      hookMeter();
-      engine.play(activeCuts());
-    }
+  const { loomEngine, studioEngine, auditioner } = ctx;
+  function sounding() {
+    return soundingSources({
+      bench: !!engine.playing,
+      machine: !!sequencer.running,
+      loom: !!(loomEngine && loomEngine.playing),
+      studio: !!(studioEngine && studioEngine.running),
+      audition: !!(auditioner && auditioner.playing),
+    });
   }
-
-  engine.addEventListener('state', (e) => {
-    $('btnPlay').textContent = e.detail.playing ? 'STOP' : 'PLAY';
-  });
+  // Stop every source at once. Each engine's own stop is idempotent.
+  function stopAll() {
+    if (engine.playing) engine.pause();
+    if (sequencer.running) sequencer.stop();
+    if (loomEngine && loomEngine.playing) loomEngine.stop();
+    if (studioEngine && studioEngine.running) studioEngine.stop();
+    if (auditioner && auditioner.playing) auditioner.stop();
+    refreshTransport();
+  }
+  // The header button and Space: stop whatever is sounding; otherwise play
+  // the bench. One transport owns the output at a time.
+  function togglePlay() {
+    if (sounding().length) { stopAll(); return; }
+    if (!R.buffer) return;
+    hookMeter();
+    engine.play(activeCuts());
+  }
+  function refreshTransport() {
+    const now = sounding();
+    const btn = $('btnPlay');
+    btn.textContent = transportLabel(now);
+    btn.title = transportTitle(now, !!R.buffer);
+    btn.classList.toggle('is-sounding', now.length > 0);
+  }
+  engine.addEventListener('state', refreshTransport);
+  sequencer.addEventListener('state', refreshTransport);
+  if (loomEngine) loomEngine.addEventListener('state', refreshTransport);
+  if (studioEngine) studioEngine.addEventListener('state', refreshTransport);
+  ctx.api.stopAll = stopAll;
+  ctx.api.sounding = sounding;
   engine.addEventListener('ended', () => {
     $('btnPlay').textContent = 'PLAY';
   });

@@ -351,6 +351,7 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-canvas-wave { height: 180px; flex-shrink: 0; }
 .yj-canvas-preview { height: 110px; }
 .yj-preview { flex: 0 0 auto; }
+#btnPlay.is-sounding { border-color: var(--yj-yellow); color: var(--yj-yellow); }
 .yj-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
 .yj-preview-out { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--yj-blue); }
 .yj-preview-out.is-dim { color: var(--yj-ink-dim); }
