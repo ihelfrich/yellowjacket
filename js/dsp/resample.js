@@ -43,11 +43,18 @@ function kernelTable(cutoff) {
   return table;
 }
 
-export function resample(input, inRate, outRate) {
+// Cutoff as a fraction of the narrower rate. 0.45 (90 % of Nyquist) is the
+// →16 kHz transcription design and stays the default. For PLAYBACK rate
+// matching the transition band must sit above the audible edge: 0.4922 is
+// 0.5 − Δf/2 for this kernel's transition width, and measured 48 k → 96 k it
+// is 0.00 dB through 23 kHz with images ≤ −88 dB (lab: kaiser-cutoff.mjs).
+export const PLAYBACK_CUTOFF_SCALE = 0.4922;
+
+export function resample(input, inRate, outRate, { cutoffScale = 0.45 } = {}) {
   if (!input || !input.length) return new Float32Array(0);
   if (inRate === outRate) return input.slice();
-  // Anti-alias at 90% of the narrower Nyquist, in cycles per INPUT sample.
-  const cutoff = 0.45 * Math.min(inRate, outRate) / inRate;
+  // Anti-alias below the narrower Nyquist, in cycles per INPUT sample.
+  const cutoff = cutoffScale * Math.min(inRate, outRate) / inRate;
   const table = kernelTable(cutoff);
   const ratio = inRate / outRate;
   const outLen = Math.round(input.length * outRate / inRate);
@@ -75,4 +82,8 @@ export function resample(input, inRate, outRate) {
     out[m] = wsum !== 0 ? acc / wsum : 0;
   }
   return out;
+}
+
+export function resampleChannels(channels, inRate, outRate, opts) {
+  return (channels || []).map((ch) => resample(ch, inRate, outRate, opts));
 }

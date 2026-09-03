@@ -5,6 +5,7 @@
 // FREEZE replays the same compiled decisions. Its finite tail allocation and
 // fail-closed offline master are explicit exceptions to device-output identity.
 
+import { resample, PLAYBACK_CUTOFF_SCALE } from '../dsp/resample.js';
 import { encodeWav, encodeWavWithStats } from '../export.js';
 import { stretchSamples } from '../dsp/stretch.js';
 import { plateImpulse, delayTimeFor, dampingCoeff } from '../dsp/space.js';
@@ -141,7 +142,7 @@ export class Sequencer extends EventTarget {
         cached.fitted.clear();
         let baked = null;
         try {
-          baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+          baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec, cached.buffer);
         } catch (e) { baked = null; }
         cached.fitted.set(key, baked);
       }
@@ -170,7 +171,11 @@ export class Sequencer extends EventTarget {
       for (let i = 0; i < tracks.length; i++) {
         const track = tracks[i];
         const steps = track && track.voice ? track.voice.fitSteps : 0;
-        if (!track || !track.sample || !(steps > 0)) continue;
+        if (!track || !track.sample) continue;
+        // Rate-matching costs ~33 ms per mono-second at 2×: do it here, never
+        // inside trigger() or the scheduler (CONTRACT-CONFORM 3).
+        if (Math.round(Number(track.sample.sampleRate)) !== Math.round(ctx.sampleRate)) this.trackBuffer(i, false, 0);
+        if (!(steps > 0)) continue;
         const fitSec = steps * (60 / bpm / 4);
         const v = track.voice;
         const bufSec = track.sample.channels[0]
@@ -214,6 +219,14 @@ export class Sequencer extends EventTarget {
   bumpTrack(i) {
     const index = trackIndex(i);
     if (index >= 0) this._bufferCache[index] = null;
+    // Rebuild off the caller's stack, coalesced: rate-matching a slice is tens
+    // of milliseconds and must never land inside trigger() or the scheduler.
+    if (!this._prebakeTimer && typeof setTimeout === 'function') {
+      this._prebakeTimer = setTimeout(() => {
+        this._prebakeTimer = 0;
+        try { this.prebake(); } catch (e) { /* a bad sample is reported at trigger time */ }
+      }, 0);
+    }
   }
 
   // Send AMOUNTS are automated now, not baked, so they no longer need this.
@@ -319,7 +332,7 @@ export class Sequencer extends EventTarget {
           let baked = null;
           if (sample && fitSec > 0) {
             try {
-              baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+              baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec, entry.forward);
             } catch (e) { baked = null; }
           }
           buffers[index][key] = baked || createTrackBuffer(ctx, sample, reversed);
@@ -403,7 +416,7 @@ export class Sequencer extends EventTarget {
           let baked = null;
           if (sample && fitSec > 0) {
             try {
-              baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+              baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec, entry.forward);
             } catch (error) { baked = null; }
           }
           buffers[index][key] = baked || createTrackBuffer(ctx, sample, reversed);
@@ -520,7 +533,7 @@ export class Sequencer extends EventTarget {
       rack: null,
       buffer: (_track, reversed, fitSec, offsetSec, sliceSec) => {
         if (fitSec > 0) {
-          const fitted = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+          const fitted = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec, entry && entry.forward);
           if (fitted) return fitted;
         }
         return createTrackBuffer(ctx, sample, reversed);
@@ -1108,9 +1121,17 @@ function fitKey(reversed, fitSec, offsetSec, sliceSec) {
 // then applying original-domain trim offsets reads the wrong audio for the
 // wrong duration: with start .25 / end .5 on a 4 s sample fitted to 2 s it
 // played original seconds 2-4 for 1 s instead of 1-2 for 2 s (verified).
-export function createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec) {
-  const rate = Math.round(Number(sample.sampleRate));
-  const frames = sample.channels[0] ? sample.channels[0].length : 0;
+// `forward` is the rate-matched forward AudioBuffer for this (ctx, sample)
+// when the sample's rate differs from the context's: the fit then reads
+// channels already at the context rate instead of resampling twice.
+export function createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec, forward = null) {
+  const nativeRate = Math.round(Number(sample.sampleRate));
+  const useForward = !!(forward && forward.sampleRate && Math.round(forward.sampleRate) !== nativeRate);
+  const rate = useForward ? Math.round(forward.sampleRate) : nativeRate;
+  const channels = useForward
+    ? Array.from({ length: forward.numberOfChannels }, (_, c) => forward.getChannelData(c))
+    : sample.channels;
+  const frames = channels[0] ? channels[0].length : 0;
   if (!frames || !(fitSec > 0) || !(rate > 0)) return null;
   // offsetSec/sliceSec are already in the domain of the buffer that will be
   // read: for reversed playback the compiler flips them to (1 - end) * bufSec.
@@ -1123,7 +1144,7 @@ export function createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sli
   const mode = 'auto';
   const role = sample.role;
   const out = [];
-  for (const channel of sample.channels) {
+  for (const channel of channels) {
     const whole = reversed ? Float32Array.from(channel).reverse() : channel;
     const src = (from === 0 && span === frames) ? whole : whole.subarray(from, from + span);
     out.push(stretchSamples(src, ratio, rate, { mode, role }));
@@ -1135,7 +1156,15 @@ export function createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sli
   return buffer;
 }
 
-function createTrackBuffer(ctx, sample, reversed = false) {
+// A track buffer is built AT THE CONTEXT'S RATE. A source node whose buffer
+// rate differs from its context is resampled by Chromium with linear
+// interpolation (E12: a 19 kHz tone in a 48 kHz slice on a 96 kHz device
+// carries a 29 kHz image only 6 dB down), and the offline print at
+// max(track rates) interpolated the same way. Rate-matching once here, with
+// the repo's Kaiser at the playback cutoff, is a copy when the rates agree
+// and −88 dB images when they do not. Reversal happens after resampling
+// (linear phase: the order is immaterial).
+export function createTrackBuffer(ctx, sample, reversed = false) {
   if (!sample || !sample.channels || !sample.channels.length) return null;
   const sampleRate = Math.round(Number(sample.sampleRate));
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) return null;
@@ -1144,18 +1173,24 @@ function createTrackBuffer(ctx, sample, reversed = false) {
     if (channel && Number.isFinite(channel.length)) length = Math.max(length, channel.length);
   }
   if (!length) return null;
+  const targetRate = ctx && Number.isFinite(ctx.sampleRate) && ctx.sampleRate > 0 ? Math.round(ctx.sampleRate) : sampleRate;
+  const matched = targetRate === sampleRate;
+  const outLength = matched ? length : Math.round(length * targetRate / sampleRate);
 
   try {
-    const buffer = ctx.createBuffer(sample.channels.length, length, sampleRate);
+    const buffer = ctx.createBuffer(sample.channels.length, outLength, targetRate);
     for (let channel = 0; channel < sample.channels.length; channel++) {
       const source = sample.channels[channel];
       if (!source) continue;
       const dest = buffer.getChannelData(channel);
+      const data = matched
+        ? source.subarray(0, length)
+        : resample(source.subarray(0, length), sampleRate, targetRate, { cutoffScale: PLAYBACK_CUTOFF_SCALE });
       if (!reversed) {
-        dest.set(source.subarray(0, length));
+        dest.set(data.subarray(0, outLength));
       } else {
-        const n = Math.min(source.length, length);
-        for (let i = 0; i < n; i++) dest[i] = source[n - 1 - i];
+        const n = Math.min(data.length, outLength);
+        for (let i = 0; i < n; i++) dest[i] = data[n - 1 - i];
       }
     }
     return buffer;
@@ -1180,7 +1215,7 @@ function songBuffer(ctx, cache, tracks, index, reversed, fitSec, offsetSec, slic
     if (!entry.fitted.has(key)) {
       let baked = null;
       try {
-        baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);
+        baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec, entry.forward);
       } catch (e) { baked = null; }
       entry.fitted.set(key, baked);
     }

@@ -324,3 +324,18 @@ now happens on bytes, so a pixel can differ from the float path by one LUT
 step (0.35 dB) at most. Live (GPU path, demo): matrix 8000 × 1024 →
 **7.8 MB** (was 31.3), bytes span 0–228, no WebGPU validation errors, the
 spectrogram renders as before. Tests: 50 groups / 328 cases.
+
+## Playback rate, steps 0–2 shipped locally (docs/lab/2026-09-03-playback-rate-decision.md)
+The panel chose B: a transport context at the file's rate (step 3), with
+MACHINE staying on the device context and its buffers rate-matched once.
+- Step 0: the panel's models and measurements live in `test/lab/`.
+- Step 1: `resample(input, inRate, outRate, {cutoffScale})` with
+  `PLAYBACK_CUTOFF_SCALE = 0.4922`; node E12 tests: 48 k → 96 k flat within
+  0.05 dB through 23 kHz with images ≤ −80 dB, 44.1 k → 96 k at 21 kHz, 96 k
+  → 48 k at 23 kHz; the 0.45 transcription default untouched.
+- Step 2: `createTrackBuffer` builds at the context's rate (a copy when
+  matched, Kaiser at the playback cutoff otherwise, reversal after); fitted
+  buffers read the matched forward buffer; `prebake` warms mismatched tracks;
+  `bumpTrack` schedules one coalesced prebake off the caller's stack. Live:
+  the demo's 44.1 kHz slices on the 96 kHz device are 96 kHz buffers (ratio
+  2.177), the machine runs and stops, no errors. 52 groups / 336 cases.

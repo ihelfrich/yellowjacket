@@ -80,6 +80,8 @@ import { SourceHandle } from '../js/app/source-handle.js';
 import { PipelineView, deriveStages as deriveStagesForHere } from '../js/app/pipeline-ui.js';
 import { windowRange, windowLabel, parseClock, clock as windowClock } from '../js/dsp/window-load.js';
 import { dbToByte, MAG_LEVELS } from '../js/render/spectrogram-quant.js';
+import { resample as kaiserResample, resampleChannels, PLAYBACK_CUTOFF_SCALE } from '../js/dsp/resample.js';
+import { createTrackBuffer } from '../js/machine/sequencer.js';
 import { denoiseChannel, overlapWeights } from '../workers/denoise-worker.js';
 import { FFT as DnFFT, hann as dnHann } from '../js/fft.js';
 import { sha256HexSync } from '../js/loom/identity.js';
@@ -5050,8 +5052,122 @@ const streamCases = [
   },
 ];
 
+// ---------- playback resample: E12 in node ----------
+//
+// The repo's Kaiser resampler at the playback cutoff is what rate-matches
+// MACHINE slices to the device context (decision: docs/lab/2026-09-03-
+// playback-rate-decision.md). E12's method: a bin-centred tone, Hann
+// 65 536-point FFT, worst component outside ±6 bins of the tone.
+
+const E12_N = 65536;
+function e12Tone(rate, hz, seconds = 1) {
+  const n = Math.round(rate * seconds);
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = 0.5 * Math.sin(2 * Math.PI * hz * i / rate);
+  return x;
+}
+function e12Spectrum(y, rate, offset = 8192) {
+  const re = new Float32Array(E12_N), im = new Float32Array(E12_N);
+  const win = dnHann(E12_N);
+  for (let i = 0; i < E12_N; i++) re[i] = (y[i + offset] || 0) * win[i];
+  new DnFFT(E12_N).forward(re, im);
+  const mags = new Float64Array(E12_N / 2);
+  for (let k = 0; k < E12_N / 2; k++) mags[k] = Math.hypot(re[k], im[k]);
+  return { mags, bin: (hz) => Math.round(hz * E12_N / rate) };
+}
+function e12Measure(y, rate, hz, ref) {
+  const S = e12Spectrum(y, rate), R = e12Spectrum(ref, rate);
+  const tb = S.bin(hz);
+  let tone = 0; for (let k = tb - 6; k <= tb + 6; k++) tone = Math.max(tone, S.mags[k]);
+  let refTone = 0; for (let k = tb - 6; k <= tb + 6; k++) refTone = Math.max(refTone, R.mags[k]);
+  let worst = 0; for (let k = 20; k < E12_N / 2; k++) if (Math.abs(k - tb) > 6 && S.mags[k] > worst) worst = S.mags[k];
+  return { levelDb: 20 * Math.log10(tone / refTone), imageDb: 20 * Math.log10(worst / tone) };
+}
+const snap = (hz, rate) => Math.round(hz * E12_N / rate) * rate / E12_N;
+
+const playbackResampleCases = [
+  function playbackCutoffIsFlatToTwentyThreeKilohertzWithNoImages() {
+    assert.equal(PLAYBACK_CUTOFF_SCALE, 0.4922);
+    for (const hz of [1000, 19000, 23000]) {
+      const f = snap(hz, 96000);
+      const y = kaiserResample(e12Tone(48000, f), 48000, 96000, { cutoffScale: PLAYBACK_CUTOFF_SCALE });
+      const m = e12Measure(y, 96000, f, e12Tone(96000, f));
+      assert.ok(Math.abs(m.levelDb) <= 0.05, hz + ' Hz level ' + m.levelDb.toFixed(3) + ' dB');
+      assert.ok(m.imageDb <= -80, hz + ' Hz worst image ' + m.imageDb.toFixed(1) + ' dB');
+    }
+  },
+  function fortyFourOneAndDownsamplingHoldTheBand() {
+    const f = snap(21000, 96000);
+    const up = e12Measure(kaiserResample(e12Tone(44100, f), 44100, 96000, { cutoffScale: PLAYBACK_CUTOFF_SCALE }), 96000, f, e12Tone(96000, f));
+    assert.ok(Math.abs(up.levelDb) <= 0.1, '44.1 k → 96 k at 21 kHz: ' + up.levelDb.toFixed(3) + ' dB');
+    assert.ok(up.imageDb <= -80, up.imageDb.toFixed(1));
+    const g = snap(23000, 48000);
+    // two seconds: the 48 k output must outlast the 65 536-point window
+    const down = e12Measure(kaiserResample(e12Tone(96000, g, 2), 96000, 48000, { cutoffScale: PLAYBACK_CUTOFF_SCALE }), 48000, g, e12Tone(48000, g, 2));
+    assert.ok(Math.abs(down.levelDb) <= 0.1, '96 k → 48 k at 23 kHz: ' + down.levelDb.toFixed(3) + ' dB');
+    assert.ok(down.imageDb <= -80, 'aliases ' + down.imageDb.toFixed(1));
+  },
+  function theDefaultCutoffIsUntouchedAndIdentityIsACopy() {
+    // The transcription design (0.45 = 90 % of Nyquist) must keep killing the
+    // top band: a 22 kHz tone from 48 k is deep in its stopband.
+    const f = snap(22000, 96000);
+    const m = e12Measure(kaiserResample(e12Tone(48000, f), 48000, 96000), 96000, f, e12Tone(96000, f));
+    assert.ok(m.levelDb <= -40, 'default cutoff still attenuates 22 kHz: ' + m.levelDb.toFixed(1) + ' dB');
+    const x = e12Tone(48000, 1000);
+    const same = kaiserResample(x, 48000, 48000);
+    assert.notEqual(same, x); assert.deepEqual(Array.from(same.slice(0, 8)), Array.from(x.slice(0, 8)));
+    const chans = resampleChannels([x, x], 48000, 96000, { cutoffScale: PLAYBACK_CUTOFF_SCALE });
+    assert.equal(chans.length, 2); assert.equal(chans[0].length, 96000);
+  },
+];
+
+// ---------- machine rate match: slices are built at the context's rate ----------
+
+const rateMatchCases = [
+  function aFortyEightKSliceOnANinetySixKContextHasNoImages() {
+    const ctx = renderStubCtx([], 1, 96000, 96000);
+    const f = snap(19000, 96000);
+    const sample = { sampleRate: 48000, channels: [e12Tone(48000, f)] };
+    const buf = createTrackBuffer(ctx, sample, false);
+    assert.equal(buf.sampleRate, 96000);
+    assert.equal(buf.length, 96000, 'round(n × 2) frames');
+    const m = e12Measure(buf.getChannelData(0), 96000, f, e12Tone(96000, f));
+    assert.ok(m.imageDb <= -80, 'worst image ' + m.imageDb.toFixed(1) + ' dB');
+    assert.ok(Math.abs(m.levelDb) <= 0.05, 'level ' + m.levelDb.toFixed(3) + ' dB');
+    const rev = createTrackBuffer(ctx, sample, true);
+    const fwd = buf.getChannelData(0), back = rev.getChannelData(0);
+    let maxd = 0; for (let i = 0; i < fwd.length; i++) maxd = Math.max(maxd, Math.abs(back[i] - fwd[fwd.length - 1 - i]));
+    assert.equal(maxd, 0, 'reversed is the forward buffer reversed');
+  },
+  function aMatchedRateSliceIsACopy() {
+    const ctx = renderStubCtx([], 1, 96000, 96000);
+    const src = e12Tone(96000, 1000);
+    const buf = createTrackBuffer(ctx, { sampleRate: 96000, channels: [src] }, false);
+    assert.equal(buf.length, src.length);
+    const d = buf.getChannelData(0); let same = true; for (let i = 0; i < src.length; i += 97) if (d[i] !== src[i]) { same = false; break; }
+    assert.ok(same, 'byte-identical channels');
+  },
+  function fittedBuffersFollowTheMatchedForwardBuffer() {
+    const ctx = renderStubCtx([], 1, 96000, 96000);
+    const sample = { sampleRate: 48000, role: 'tone', channels: [e12Tone(48000, 440, 0.5)] };
+    const forward = createTrackBuffer(ctx, sample, false);
+    const fitted = createFittedBuffer(ctx, sample, false, 0.25, 0, 0, forward);
+    assert.equal(fitted.sampleRate, 96000);
+    assert.equal(fitted.length, Math.round(0.25 * 96000), 'fit length at the context rate');
+    const native = createFittedBuffer(ctx, sample, false, 0.25, 0, 0, null);
+    assert.equal(native.sampleRate, 48000, 'without a forward buffer, the sample rate as before');
+  },
+  async function bumpTrackSchedulesOneDeferredPrebake() {
+    const s = await readFile(new URL('../js/machine/sequencer.js', import.meta.url), 'utf8');
+    assert.match(s, /bumpTrack\(i\) \{[\s\S]*?this\._prebakeTimer = setTimeout\(/, 'coalesced, off the caller\'s stack');
+    assert.match(s, /!== Math\.round\(ctx\.sampleRate\)\) this\.trackBuffer\(i, false, 0\);/, 'prebake warms rate-mismatched tracks');
+    assert.match(s, /createFittedBuffer\(ctx, sample, reversed, fitSec, offsetSec, sliceSec, cached\.buffer\)/, 'live fits read the matched forward buffer');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['playback resample', playbackResampleCases],
   ['streamed wav', streamCases],
   ['windowed load', windowCases],
   ['visual pass', visualCases],
@@ -5088,6 +5204,7 @@ const groups = [
   ['factory drums', drumCases],
   ['modal', modalCases],
   ['offline render', renderCases],
+  ['machine rate match', rateMatchCases],
   ['scene sends', sceneSendCases],
   ['restore hydration', hydrateCases],
   ['voice clamp parity', clampParityCases],
