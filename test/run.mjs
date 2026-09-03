@@ -78,6 +78,7 @@ import { soundingSources, transportLabel, transportTitle } from '../js/app/trans
 import { assumedSeconds, DECODE_BUDGET_BYTES, DECODE_HARD_LIMIT_BYTES } from '../js/dsp/native-rate.js';
 import { SourceHandle } from '../js/app/source-handle.js';
 import { PipelineView, deriveStages as deriveStagesForHere } from '../js/app/pipeline-ui.js';
+import { windowRange, windowLabel, parseClock, clock as windowClock } from '../js/dsp/window-load.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -4581,6 +4582,21 @@ function be32b(n) { return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255,
 function le32b(n) { return [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255]; }
 function ascii(s) { return [...s].map((c) => c.charCodeAt(0)); }
 function box(type, ...parts) { const body = parts.flat(); return [...be32b(8 + body.length), ...ascii(type), ...body]; }
+// A run of `count` consistent MPEG1/2 Layer III frames with correct lengths,
+// zero-filled; `firstBody` overrides the first frame's payload (side info +
+// Xing). The probe now requires two agreeing headers, as a real stream has.
+function mp3Stream(opts = {}, count = 3, firstBody = null) {
+  const { mpeg1 = true, bitrateIndex = 9, rateIndex = 0 } = opts;
+  const rates = mpeg1 ? [44100, 48000, 32000] : [22050, 24000, 16000];
+  const table = mpeg1 ? [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320] : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+  const len = Math.floor((mpeg1 ? 144 : 72) * table[bitrateIndex] * 1000 / rates[rateIndex]);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const body = i === 0 && firstBody ? [...firstBody, ...new Array(Math.max(0, len - 4 - firstBody.length)).fill(0)] : new Array(len - 4).fill(0);
+    out.push(...mp3Frame(opts), ...body.slice(0, len - 4));
+  }
+  return { bytes: out, frameLen: len };
+}
 function mp3Frame({ mpeg1 = true, bitrateIndex = 9, rateIndex = 0, mono = false } = {}) {
   // sync(11) version(2) layer(2)=01 L3 protection(1)=1 | bitrate(4) rate(2) pad(1) priv(1) | mode(2) ...
   const b1 = 0xE0 | ((mpeg1 ? 3 : 2) << 3) | (1 << 1) | 1;
@@ -4594,10 +4610,9 @@ const probeCases = [
     // ID3v2 header of 100 bytes, then a 44.1 kHz stereo MPEG1 L3 frame with a
     // Xing tag stating 1000 frames → 1000 × 1152 / 44100 = 26.12 s.
     const id3 = [...ascii('ID3'), 4, 0, 0, 0, 0, 0, 100, ...new Array(100).fill(0)];
-    const frame = mp3Frame();
     const side = new Array(32).fill(0);
     const xing = [...ascii('Xing'), ...be32b(1), ...be32b(1000)];
-    const bytes = new Uint8Array([...id3, ...frame, ...side, ...xing, ...new Array(400).fill(0)]);
+    const bytes = new Uint8Array([...id3, ...mp3Stream({}, 3, [...side, ...xing]).bytes]);
     const p = probeContainer(bytes);
     assert.equal(p.sampleRate, 44100);
     assert.equal(p.channels, 2);
@@ -4605,15 +4620,15 @@ const probeCases = [
   },
   function mp3WithoutXingIsBudgetedAsCbr() {
     // 128 kbps (index 9) mono 48 kHz, 160 000 bytes of frames → 10.0 s.
-    const frame = mp3Frame({ bitrateIndex: 9, rateIndex: 1, mono: true });
-    const bytes = new Uint8Array([...frame, ...new Array(160000 - 4).fill(0)]);
+    const stream = mp3Stream({ bitrateIndex: 9, rateIndex: 1, mono: true }, 3);
+    const bytes = new Uint8Array([...stream.bytes, ...new Array(160000 - stream.bytes.length).fill(0)]);
     const p = probeContainer(bytes);
     assert.equal(p.sampleRate, 48000);
     assert.equal(p.channels, 1);
     assert.ok(Math.abs(p.seconds - 10) < 1e-9, 'size × 8 / bitrate');
   },
   function mp3Mpeg2RatesAndReservedValuesAreHandled() {
-    const p = probeContainer(new Uint8Array([...mp3Frame({ mpeg1: false, bitrateIndex: 8, rateIndex: 0 }), ...new Array(100).fill(0)]));
+    const p = probeContainer(new Uint8Array(mp3Stream({ mpeg1: false, bitrateIndex: 8, rateIndex: 0 }, 3).bytes));
     assert.equal(p.sampleRate, 22050, 'MPEG2 rate table');
     // reserved rate index 3 is not a frame; the scan finds nothing and stays honest
     const bad = probeContainer(new Uint8Array([0xFF, 0xFB, 0x9C, 0x00, ...new Array(100).fill(0)]));
@@ -4661,6 +4676,21 @@ const probeCases = [
     assert.equal(p.sampleRate, 48000, 'Opus decodes at 48 kHz whatever the input rate was');
     assert.equal(p.channels, 1);
     assert.ok(Math.abs(p.seconds - 5) < 1e-9, 'granule minus pre-skip');
+  },
+  function aMidStreamSliceIsRecognisedByTwoAgreeingFrames() {
+    // 320 kbps MPEG1 L3 at 44.1 kHz → 1044-byte frames. Junk, then frames.
+    const junk = new Array(700).fill(0).map((_, i) => (i * 37) & 255);
+    const bytes = new Uint8Array([...junk, ...mp3Stream({ bitrateIndex: 14, rateIndex: 0 }, 3).bytes]);
+    const p = probeContainer(bytes);
+    assert.equal(p.sampleRate, 44100, 'found without any container signature at byte 0');
+    assert.equal(p.channels, 2);
+    assert.ok(Math.abs(p.seconds - (bytes.length - 700) * 8 / 320000) < 1e-6, 'CBR estimate from the frames onward');
+  },
+  function aLoneFalseSyncInRandomDataIsNotAFrame() {
+    // One plausible-looking header with nothing consistent after it.
+    const bytes = new Uint8Array(4096).map((_, i) => (i * 131 + 7) & 255);
+    bytes.set(mp3Frame(), 1000);
+    assert.equal(probeContainer(bytes).sampleRate, null, 'a header that is not followed by another header is noise');
   },
   function unknownContainersBudgetAsLongNotFree() {
     assert.equal(assumedSeconds(0, 0), 0);
@@ -4846,8 +4876,58 @@ const visualCases = [
   },
 ];
 
+// ---------- windowed load: a long capture, a few minutes at a time ----------
+
+const windowCases = [
+  function rangeFollowsAverageBitrate() {
+    // 10 MB over 1000 s = 10 000 B/s; a 5-minute window from 12:00
+    const r = windowRange({ totalBytes: 10_000_000, totalSec: 1000, startSec: 720, spanSec: 300 });
+    assert.equal(r.startSec, 700, '12:00 + 5:00 would overrun, so the window slides back and says where it really starts');
+    assert.equal(r.start, 7_000_000);
+    assert.equal(r.end, 10_000_000 - 1, 'clamped to the file');
+    const mid = windowRange({ totalBytes: 10_000_000, totalSec: 1000, startSec: 300, spanSec: 300 });
+    assert.equal(mid.start, 3_000_000);
+    assert.equal(mid.end, 6_000_000 - 1);
+    assert.equal(r.approx, true, 'a mid-file window is approximate');
+    const head = windowRange({ totalBytes: 10_000_000, totalSec: 1000, startSec: 0, spanSec: 120 });
+    assert.equal(head.start, 0);
+    assert.equal(head.end, 1_200_000 - 1);
+    assert.equal(head.approx, false, 'the head is exact');
+  },
+  function headerBytesAreSkippedAndJunkIsRefused() {
+    const r = windowRange({ totalBytes: 1_000_000, totalSec: 100, startSec: 50, spanSec: 10, headBytes: 10_000 });
+    assert.equal(r.start, 10_000 + 50 * 9900);
+    assert.equal(windowRange({ totalBytes: 0, totalSec: 100 }), null);
+    assert.equal(windowRange({ totalBytes: 100, totalSec: 0 }), null);
+  },
+  function clocksParseAndPrint() {
+    assert.equal(parseClock('12:30'), 750);
+    assert.equal(parseClock('1:02:03'), 3723);
+    assert.equal(parseClock('90'), 90);
+    assert.equal(parseClock('junk'), null);
+    assert.equal(parseClock(''), null);
+    assert.equal(windowClock(3805), '1:03:25');
+    assert.equal(windowClock(300), '5:00');
+    assert.equal(windowLabel('HM01', { startSec: 1200, spanSec: 300, approx: true }), 'HM01 · ≈ 20:00 + 5:00');
+    assert.equal(windowLabel('HM01', { startSec: 0, spanSec: 120, approx: false }), 'HM01 · 0:00 + 2:00');
+  },
+  async function longShelfItemsCarryTheirLengthAndFetchARange() {
+    const longs = FIELD_RECORDINGS.filter((r) => r.long);
+    assert.ok(longs.length >= 3, 'the hour of HM01, the SOS traffic, and the launch commentary');
+    for (const r of longs) {
+      assert.ok(r.long.seconds > 1800 && r.long.bytes > 10 * 1024 * 1024, r.id + ' is genuinely long');
+      assert.ok(r.light && /\.mp3$/i.test(r.light.url), r.id + ' windows an MP3 (frame-resync decode)');
+      assert.equal(r.hi, undefined, r.id + ' has no lossless variant: FLAC cannot be cut mid-stream');
+    }
+    const src = await readFile(new URL('../js/app/source-controller.js', import.meta.url), 'utf8');
+    assert.match(src, /headers: \{ Range: 'bytes=' \+ range\.start \+ '-' \+ range\.end \}/);
+    assert.match(src, /resp\.status !== 206/, 'a host that ignores Range is refused, not decoded whole');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['windowed load', windowCases],
   ['visual pass', visualCases],
   ['memory hygiene', hygieneCases],
   ['source handle', sourceHandleCases],

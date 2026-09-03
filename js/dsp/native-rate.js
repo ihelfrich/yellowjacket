@@ -201,16 +201,45 @@ function mpegFrameAt(bytes, at) {
   return { version, layer: 4 - layerBits, rate, kbps, channels: channelMode === 3 ? 1 : 2, samplesPerFrame };
 }
 
-function mp3Probe(bytes) {
-  const start = id3v2Size(bytes);
+// Bytes in one frame, header included (padding bit at bit 1 of byte 2).
+function mpegFrameLength(bytes, at, frame) {
+  const padding = (bytes[at + 2] >> 1) & 1;
+  const bps = frame.kbps * 1000;
+  if (frame.layer === 1) return (Math.floor(12 * bps / frame.rate) + padding) * 4;
+  const coef = frame.layer === 2 || frame.version === 3 ? 144 : 72;
+  return Math.floor(coef * bps / frame.rate) + padding;
+}
+
+// A sync word is 11 set bits; audio data fakes one every few hundred bytes.
+// A header only counts when the frame it describes is followed by another
+// header that agrees with it, which random data does not manage.
+function mpegScan(bytes, start) {
   const limit = Math.min(bytes.length - 4, start + 65536);
-  let at = start;
-  let frame = null;
-  for (; at <= limit; at++) {
-    frame = mpegFrameAt(bytes, at);
-    if (frame) break;
+  for (let at = start; at <= limit; at++) {
+    const frame = mpegFrameAt(bytes, at);
+    if (!frame) continue;
+    const len = mpegFrameLength(bytes, at, frame);
+    if (len < 24) continue;
+    const next = at + len;
+    if (next + 4 > bytes.length) {
+      // Slice ends before a second header could be checked: accept only a
+      // frame that sits where the file's own start says it should (a real
+      // file always has a first frame right after its ID3 tag).
+      if (at === start) return { at, frame };
+      continue;
+    }
+    const second = mpegFrameAt(bytes, next);
+    if (second && second.version === frame.version && second.layer === frame.layer && second.rate === frame.rate) {
+      return { at, frame };
+    }
   }
-  if (!frame) return EMPTY_PROBE;
+  return null;
+}
+
+function mp3Probe(bytes) {
+  const hit = mpegScan(bytes, id3v2Size(bytes));
+  if (!hit) return EMPTY_PROBE;
+  const { at, frame } = hit;
   // Xing/Info sits after the side information; VBRI sits 32 bytes in.
   const side = frame.version === 3 ? (frame.channels === 1 ? 17 : 32) : (frame.channels === 1 ? 9 : 17);
   const xing = at + 4 + side;
@@ -335,7 +364,9 @@ export function probeContainer(input) {
   if (tagAt(bytes, 0, 'OggS')) return oggProbe(bytes);
   if (tagAt(bytes, 4, 'ftyp')) return mp4Probe(bytes);
   if (tagAt(bytes, 0, 'ID3') || (bytes[0] === 0xFF && (bytes[1] & 0xE0) === 0xE0)) return mp3Probe(bytes);
-  return EMPTY_PROBE;
+  // No container signature: a window cut from the middle of an MPEG stream
+  // starts on arbitrary bytes. The scan needs two agreeing headers.
+  return mp3Probe(bytes);
 }
 
 // A container the probe cannot read still has a length: assume the cheapest

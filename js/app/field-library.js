@@ -1,4 +1,5 @@
 import { MineStore, formatMineMeta } from './mine.js';
+import { windowRange, windowLabel, parseClock, clock, WINDOW_SPANS_SEC, DEFAULT_WINDOW_SEC } from '../dsp/window-load.js';
 
 // The SHELF: public-domain recordings streamed from archive.org on demand.
 // Started as FIELD (nature and city) and grew into five shelves, because a
@@ -123,6 +124,23 @@ export const FIELD_RECORDINGS = Object.freeze([
     license: 'PD', source: IA_ITEM + 'U.S._Armed_Forces_Institute_Basic_Radio_Code_ca1942',
     light: light('U.S._Armed_Forces_Institute_Basic_Radio_Code_ca1942', '01A_Signal_Corps_Code_Aptitude_Test.mp3', 3.7) },
 
+  // ---------- LONG captures: loaded a window at a time ----------
+  // `long` carries the file's total seconds and bytes so the card can offer a
+  // window (2 / 5 / 10 minutes from any point). MP3 only: an MPEG stream
+  // resyncs at any frame, so a byte range decodes wherever it is cut.
+  { id: 'hm01-hour', shelf: 'SIGNAL', kind: 'NUMBERS · HOUR', title: 'HM01, A FULL HOUR', place: 'Cuba, 5855 kHz AM · February 3, 2013, 10:00 UTC', dur: '63:25',
+    license: 'CC BY-NC-SA', source: IA_ITEM + 'NumbersStationhm01-5855khz-1000utc-03february2013',
+    light: light('NumbersStationhm01-5855khz-1000utc-03february2013', 'HM01-NumbersStation-5.855MHz-1000UTC-03Feb2013.mp3', 36.3),
+    long: { seconds: 3805, bytes: 38058848 } },
+  { id: 'marine-electric-sos', shelf: 'SIGNAL', kind: 'DISTRESS · MORSE', title: 'SS MARINE ELECTRIC, SOS ON 500 kHz', place: 'USCG COMMSTA Boston · February 12, 1983', dur: '91:38',
+    license: 'CC0', source: IA_ITEM + 'SsMarineElectricWoohSos',
+    light: light('SsMarineElectricWoohSos', 'Marine_Electric_SOS.mp3', 24.5),
+    long: { seconds: 5498, bytes: 25704448 } },
+  { id: 'voyager-launch', shelf: 'VOICE', kind: 'MISSION', title: 'VOYAGER 1 LAUNCH COMMENTARY', place: 'NASA · September 5, 1977', dur: '87:37',
+    license: 'PD', source: IA_ITEM + 'Voyager1',
+    light: light('Voyager1', 'Voyager-1_Launch_Commentary.mp3', 80.3),
+    long: { seconds: 5257, bytes: 84200000 } },
+
   // ---------- ODD (Voyager) ----------
   // NASA tape 495-AAB is catalogued "Voyager Earth Sounds": the Golden Record
   // montage, abstract sounds framed by music. It was shelved as launch-day
@@ -166,6 +184,7 @@ export const FIELD_RECORDINGS = Object.freeze([
 const LICENSE_URLS = Object.freeze({
   CC0: 'https://creativecommons.org/publicdomain/zero/1.0/',
   PD: 'https://creativecommons.org/publicdomain/mark/1.0/',
+  'CC BY-NC-SA': 'https://creativecommons.org/licenses/by-nc-sa/3.0/',
 });
 
 export function fieldLicenseUrl(tag) {
@@ -350,12 +369,64 @@ export function initFieldLibrary(ctx) {
       head.className = 'yj-field-head-row';
       head.append(kind, badge);
       btn.append(head, title, meta);
+      if (rec.long) {
+        badge.textContent = 'LONG · ' + badgeFor(v);
+        btn.title += ' · loads a window at a time';
+        btn.addEventListener('click', () => openWindowRow(rec, v, btn));
+        grid.appendChild(btn);
+        continue;
+      }
       btn.addEventListener('click', () => {
         if (!ctx.api.loadFromUrl) return;
         ctx.api.loadFromUrl(v.url, rec.title + ' — ' + rec.place + (v.format === 'FLAC' ? '.flac' : '.mp3'));
       });
       grid.appendChild(btn);
     }
+  }
+
+  // A long capture: choose where and how much, then fetch only that range.
+  let windowRow = null;
+  function openWindowRow(rec, v, card) {
+    if (windowRow) windowRow.remove();
+    const row = document.createElement('div');
+    row.className = 'yj-window-row';
+    const lede = document.createElement('span');
+    lede.className = 'yj-field-meta';
+    lede.textContent = clock(rec.long.seconds) + ' TOTAL · LOAD A WINDOW FROM';
+    const from = document.createElement('input');
+    from.type = 'text';
+    from.className = 'yj-window-from';
+    from.value = '0:00';
+    from.setAttribute('aria-label', 'Start (mm:ss)');
+    const span = document.createElement('select');
+    span.className = 'yj-window-span';
+    for (const s of WINDOW_SPANS_SEC) {
+      const o = document.createElement('option');
+      o.value = String(s);
+      o.textContent = clock(s) + ' LONG';
+      if (s === DEFAULT_WINDOW_SEC) o.selected = true;
+      span.appendChild(o);
+    }
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'yj-btn yj-btn-primary yj-btn-compact';
+    go.textContent = 'LOAD WINDOW';
+    const note = document.createElement('span');
+    note.className = 'yj-field-meta';
+    note.textContent = 'POSITION IS ≈ FOR A VARIABLE-BITRATE FILE';
+    go.addEventListener('click', () => {
+      const startSec = parseClock(from.value);
+      if (startSec == null) { ctx.statusFault('WINDOW · START MUST BE mm:ss'); from.focus(); return; }
+      const range = windowRange({ totalBytes: rec.long.bytes, totalSec: rec.long.seconds, startSec, spanSec: Number(span.value) });
+      if (!range || !ctx.api.loadFromUrl) { ctx.statusFault('WINDOW · NOTHING TO LOAD THERE'); return; }
+      ctx.api.loadFromUrl(v.url, windowLabel(rec.title, range) + ' — ' + rec.place + '.mp3', { range });
+    });
+    from.addEventListener('keydown', (e) => { if (e.key === 'Enter') go.click(); });
+    row.append(lede, from, span, go, note);
+    card.insertAdjacentElement('afterend', row);
+    windowRow = row;
+    from.focus();
+    from.select();
   }
 
   function renderMine() {

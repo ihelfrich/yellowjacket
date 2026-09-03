@@ -313,7 +313,10 @@ export function initSourceController(ctx) {
   // displayName overrides the filename derived from the URL path — the FIELD
   // library passes a human name for archive files named things like
   // 2403220817rushhourroar….mp3.
-  async function loadFromUrl(raw, displayName) {
+  // `range` = {start, end} inclusive byte offsets: fetch only that window of
+  // a long capture (archive.org honours Range with CORS). The decoded window
+  // is an ordinary source; its name says where it came from.
+  async function loadFromUrl(raw, displayName, { range = null } = {}) {
     const s = (raw || '').trim();
     if (!s) return;
     let u;
@@ -338,9 +341,14 @@ export function initSourceController(ctx) {
     btn.classList.add('is-working');
     status(COPY.fetching, true);
     try {
-      const resp = await fetch(u.href);
+      const init = range ? { headers: { Range: 'bytes=' + range.start + '-' + range.end } } : undefined;
+      const resp = await fetch(u.href, init);
       if (!resp.ok) {
         statusFault('FETCH FAULT · HTTP ' + resp.status + ' from ' + u.hostname);
+        return;
+      }
+      if (range && resp.status !== 206) {
+        statusFault('WINDOW REFUSED · ' + u.hostname + ' sent the whole file instead of a range');
         return;
       }
       const len = Number(resp.headers.get('Content-Length')) || 0;

@@ -874,6 +874,9 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-field-head-row { display: flex; justify-content: space-between; width: 100%; align-items: baseline; }
 .yj-field-badge { font-size: 8.5px; letter-spacing: 0.08em; color: var(--yj-ink-dim); }
 .yj-field-badge.is-lossless { color: var(--yj-blue); }
+.yj-window-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--yj-line-hi); border-radius: 2px; background: var(--yj-well); }
+.yj-window-from { width: 72px; font-family: var(--f-mono); font-size: 11px; background: var(--yj-bg); color: var(--yj-yellow); border: 1px solid var(--yj-line); border-radius: 2px; padding: 4px 6px; }
+.yj-window-span { font-family: var(--f-mono); font-size: 10px; background: var(--yj-bg); color: var(--yj-ink); border: 1px solid var(--yj-line); border-radius: 2px; padding: 4px 6px; }
 .yj-mine-bar { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .yj-mine-empty { grid-column: 1 / -1; margin: 0; padding: 12px; text-align: center; font-size: 9.5px; letter-spacing: 0.1em; color: var(--yj-ink-dim); border: 1px dashed var(--yj-line); border-radius: 2px; }
 .yj-mine-card { display: flex; flex-direction: column; gap: 3px; min-width: 0; }

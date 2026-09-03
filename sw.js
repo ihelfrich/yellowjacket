@@ -28,6 +28,7 @@ const PRECACHE = [
   'js/dsp/native-rate.js',
   'js/dsp/varispeed.js',
   'js/dsp/preview.js',
+  'js/dsp/window-load.js',
   'js/analysis/soundscape.js',
   'js/midi/smf.js',
   'js/app/fingerprint.js',

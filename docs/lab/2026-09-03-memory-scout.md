@@ -221,3 +221,17 @@ RESUME above the demo button; tab underbar crawls and the SLICE stage reads
 seamed groups with no scrollbar at 800 px; sounding readout BENCH → MACHINE,
 and the bench reaching its end no longer flips STOP to PLAY while the
 machine runs; one focus rule; reduced-motion keeps busy legible.
+
+## Step 5 shipped locally — windowed loads for long captures
+`js/dsp/window-load.js` (pure, tested): byte range for [start, start+span)
+of a long MP3 from its average bitrate (exact for CBR, ≈ for VBR, said so
+in the name), clamped to the file. `loadFromUrl(url, name, {range})` sends a
+`Range` header and refuses a 200 (whole file) where a 206 was asked for.
+Shelf cards with `long: {seconds, bytes}` open a window row (start mm:ss ·
+2/5/10 min · LOAD WINDOW): the hour of HM01, the 91-minute Marine Electric
+SOS traffic, the 87-minute Voyager launch commentary. A mid-stream slice
+has no container signature, so `probeContainer` now scans for TWO agreeing
+MPEG frame headers (random data fakes a sync word every few hundred bytes)
+— the real slice probes as 32 kHz mono. Live: ≈ 20:00 + 2:00 of HM01 loads
+in ~1 s (1.2 MB fetched), 120.0 s at 32 000 Hz, spectrogram at the file's
+rate. Tests: 49 groups / 322 cases.
