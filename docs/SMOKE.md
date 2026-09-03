@@ -214,6 +214,7 @@ LOAD THE DEMO SONG → RACK.
 | cut a word in TRANSCRIPT | readout gains `· CUTS APPLY AT RENDER`; hatching shows the cut on the strip |
 | click the strip at 1:00 | playhead seeks; the window and the blue move to `FROM 1:00` |
 | LIVE PREVIEW off | no blue, no window; readout `PREVIEW OFF · …`; on again brings it back |
+| ZOOM (default on, remembered) | the strip shows the window with a second either side, so an 80 Hz high-pass reads as blue under the yellow; off shows the whole file; RENDERED always shows the whole file |
 | RENDER | readout `RENDERED · BLUE IS THE RENDER ITSELF · …`; the blue now covers the whole file |
 | change the rack after a render | render goes STALE and the windowed preview returns |
 | switch to another tab | no preview work runs while RACK is hidden; returning to RACK redraws once |

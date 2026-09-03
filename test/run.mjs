@@ -72,7 +72,7 @@ import {
   addMine, findMineByHash, formatMineMeta, listMine, mineTotalBytes, nextMineId, normalizeMineIndex, removeMine,
 } from '../js/app/mine.js';
 import {
-  describePreview, previewChain, previewWindow, sliceAudioBuffer, PREVIEW_SPAN_SEC,
+  describePreview, previewChain, previewView, previewWindow, sliceAudioBuffer, PREVIEW_SPAN_SEC,
 } from '../js/dsp/preview.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
@@ -4492,6 +4492,16 @@ const previewCases = [
     const empty = sliceAudioBuffer(src, 50, 3, FakeAudioBuffer);
     assert.equal(empty.length, 1, 'an inverted window yields a one-frame silent buffer, never a throw');
     assert.equal(empty.getChannelData(0)[0], 0);
+  },
+  function zoomFollowsTheWindowWithAMarginAndOffShowsTheFile() {
+    const w = previewWindow({ playheadSec: 60, durationSec: 218 });
+    assert.deepEqual(previewView({ window: w, durationSec: 218, zoom: true }), { start: 59, end: 73 });
+    assert.deepEqual(previewView({ window: w, durationSec: 218, zoom: false }), { start: 0, end: 218 });
+    const head = previewWindow({ playheadSec: 0, durationSec: 218 });
+    assert.equal(previewView({ window: head, durationSec: 218 }).start, 0, 'margin clamps at the file start');
+    const tail = previewWindow({ playheadSec: 218, durationSec: 218 });
+    assert.equal(previewView({ window: tail, durationSec: 218 }).end, 218, 'and at the end');
+    assert.deepEqual(previewView({ window: null, durationSec: 218 }), { start: 0, end: 218 }, 'no window means the whole file');
   },
   function readoutSaysWhatTheBlueIsAndIsNot() {
     const w = previewWindow({ playheadSec: 62, durationSec: 218 });

@@ -52,6 +52,18 @@ export function sliceAudioBuffer(buffer, startSec, endSec, AudioBufferCtor = glo
   return out;
 }
 
+// What the strip shows: the whole file, or the window with a margin either
+// side so the blue difference reads column by column instead of vanishing
+// under the yellow at full-file zoom.
+export const PREVIEW_ZOOM_PAD_SEC = 1;
+export function previewView({ window, durationSec, zoom = true, padSec = PREVIEW_ZOOM_PAD_SEC } = {}) {
+  const duration = finite(durationSec);
+  if (!(duration > 0)) return { start: 0, end: 0 };
+  if (!zoom || !window) return { start: 0, end: duration };
+  const pad = Math.max(0, finite(padSec, PREVIEW_ZOOM_PAD_SEC));
+  return { start: Math.max(0, window.startSec - pad), end: Math.min(duration, window.endSec + pad) };
+}
+
 function clock(sec) {
   const s = Math.max(0, Math.round(sec));
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');

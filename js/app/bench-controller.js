@@ -10,7 +10,7 @@ import { mixdownMono } from '../audio-engine.js';
 import { buildPeakPyramid } from '../render/peaks.js';
 import { ndsi, bandLevelDb } from '../analysis/soundscape.js';
 import { speedFactorsFor, slowedBuffer, speedLabel, slowBand } from '../dsp/varispeed.js';
-import { previewWindow, previewChain, sliceAudioBuffer, describePreview } from '../dsp/preview.js';
+import { previewWindow, previewChain, previewView, sliceAudioBuffer, describePreview } from '../dsp/preview.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -436,6 +436,9 @@ export function initBenchController(ctx) {
   // studio churn the store constantly and none of it touches the rack.
   const PREVIEW_KINDS = new Set(['chain', 'source', 'source-clear', 'transcript-edit', 'words', 'repairs', 'history', 'undo', 'redo']);
   let previewOn = true;
+  const ZOOM_KEY = 'yj-preview-zoom';
+  let previewZoom = true;
+  try { previewZoom = localStorage.getItem(ZOOM_KEY) !== '0'; } catch (e) { /* private mode */ }
   let previewGen = 0;
   let previewTimer = 0;
   let previewMono = null;
@@ -487,6 +490,7 @@ export function initBenchController(ctx) {
     if (!R.buffer) { waveRack.setGhost(null); waveRack.setSelection(null); setPreviewOut('LOAD AUDIO TO PREVIEW THE RACK', true); return; }
     if (!previewOn) { waveRack.setGhost(null); waveRack.setSelection(null); setPreviewOut('PREVIEW OFF · BLUE RETURNS WHEN YOU SWITCH IT ON', true); return; }
     if (R.renderedBuffer && renderFresh && renderedMono) {
+      waveRack.setView(0, R.buffer.duration);
       waveRack.setGhost(renderedMono, renderedPeaks, 0);
       waveRack.setSelection(null);
       setPreviewOut('RENDERED · BLUE IS THE RENDER ITSELF · CHANGE THE RACK TO PREVIEW AGAIN');
@@ -495,6 +499,10 @@ export function initBenchController(ctx) {
     if (!previewVisible()) return;
     const { chain, deferred, flat } = previewChain(P.chain);
     const win = previewWindow({ playheadSec: engine.currentTime, durationSec: R.buffer.duration });
+    if (win) {
+      const v = previewView({ window: win, durationSec: R.buffer.duration, zoom: previewZoom });
+      waveRack.setView(v.start, v.end);
+    }
     if (flat || !win) {
       waveRack.setGhost(null);
       waveRack.setSelection(null);
@@ -525,6 +533,16 @@ export function initBenchController(ctx) {
       previewBtn.addEventListener('click', () => {
         previewOn = !previewOn;
         previewBtn.classList.toggle('is-active', previewOn);
+        runPreview();
+      });
+    }
+    const zoomBtn = $('btnPreviewZoom');
+    if (zoomBtn) {
+      zoomBtn.classList.toggle('is-active', previewZoom);
+      zoomBtn.addEventListener('click', () => {
+        previewZoom = !previewZoom;
+        try { localStorage.setItem(ZOOM_KEY, previewZoom ? '1' : '0'); } catch (e) { /* private mode */ }
+        zoomBtn.classList.toggle('is-active', previewZoom);
         runPreview();
       });
     }
