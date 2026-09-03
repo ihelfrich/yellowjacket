@@ -4987,8 +4987,47 @@ const windowCases = [
   },
 ];
 
+// ---------- streamed WAV: chunks are the same bytes as the one-shot file ----------
+
+const streamCases = [
+  async function chunkedBytesEqualMonolithicForEveryDepthAndDither() {
+    const { wavChunks, encodeWavWithStats } = await import('../js/export.js');
+    const frames = 5000;
+    const mk = () => ({ numberOfChannels: 2, length: frames, sampleRate: 44100, duration: frames / 44100,
+      getChannelData: (c) => new Float32Array(frames).map((_, i) => Math.sin(i / (7 + c)) * (i > 4000 ? 1.2 : 0.8)) });
+    for (const [bits, dither] of [[16, 'tpdf'], [16, 'shaped'], [16, 'none'], [24, undefined], [32, undefined]]) {
+      const one = []; for (const c of wavChunks(mk(), bits, { dither })) one.push(...c);
+      const small = []; const st = {}; for (const c of wavChunks(mk(), bits, { dither, chunkFrames: 333 }, st)) small.push(...c);
+      assert.equal(small.length, one.length, bits + '/' + dither + ' length');
+      let diff = -1; for (let i = 0; i < one.length; i++) if (one[i] !== small[i]) { diff = i; break; }
+      assert.equal(diff, -1, bits + '/' + dither + ' identical across chunk boundaries (dither state carried)');
+      assert.ok(st.clipped > 0, 'overs counted across chunks');
+      const { blob, stats } = encodeWavWithStats(mk(), bits, { dither });
+      assert.equal(blob.size, one.length, 'the Blob path is the same file');
+      assert.equal(stats.clippedSamples, st.clipped);
+    }
+  },
+  async function streamWritesEveryChunkAndClosesOrAborts() {
+    const { exportWavStream } = await import('../js/export.js');
+    const frames = 4000;
+    const buf = { numberOfChannels: 1, length: frames, sampleRate: 48000, duration: frames / 48000, getChannelData: () => new Float32Array(frames).fill(0.25) };
+    const written = []; let closed = false, aborted = false;
+    const handle = { createWritable: async () => ({ write: async (c) => { written.push(c.byteLength); }, close: async () => { closed = true; }, abort: async () => { aborted = true; } }) };
+    const r = await exportWavStream(buf, 24, { chunkFrames: 1000 }, async () => handle);
+    assert.equal(written.length, 1 + 4, 'header + four data chunks');
+    assert.equal(written.reduce((a, b) => a + b, 0), 44 + frames * 3);
+    assert.ok(closed && !aborted);
+    assert.ok(r.stats.peakDb < -11 && r.stats.peakDb > -13, 'stats come back');
+    assert.equal(await exportWavStream(buf, 16, {}, async () => null), null, 'a cancelled picker is null, not a fault');
+    const bad = { createWritable: async () => ({ write: async () => { throw new Error('disk full'); }, close: async () => {}, abort: async () => { aborted = true; } }) };
+    await assert.rejects(() => exportWavStream(buf, 16, {}, async () => bad), /disk full/);
+    assert.ok(aborted, 'a failed write aborts the file');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['streamed wav', streamCases],
   ['windowed load', windowCases],
   ['visual pass', visualCases],
   ['memory hygiene', hygieneCases],

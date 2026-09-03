@@ -255,3 +255,44 @@ Left for their own steps: streaming WAV export (rank 4), fp16/q4f16 whisper
 (5, 8 — need the timestamp fixture, E10), 16 kHz slabs (9), Uint8 mags (11),
 model-aware budget (19), discard-aware auto-restore (18), and the three
 structural items (20–22). Tests: 49 groups / 325 cases.
+
+## Experiment E12 (2026-09-03) — is native-rate playback through the 96 kHz context clean?
+Offline render of a 1 s tone in a buffer at rate A through a context at rate
+B via AudioBufferSourceNode; Hann-windowed 65 536-point FFT of the output;
+"image" = the worst component outside ±6 bins of the tone.
+
+| buffer → context | tone | worst image | where |
+|---|---|---|---|
+| 96 k → 96 k (control) | 19 kHz | −59.8 dB | window leakage |
+| 48 k → 96 k | 1 kHz | −59.4 dB | 47 kHz |
+| 48 k → 96 k | 19 kHz | **−5.8 dB** | 29 kHz (= 48 − 19) |
+| 44.1 k → 96 k | 15 kHz | **−12.4 dB** | 29.1 kHz (= 44.1 − 15) |
+
+**Chromium's AudioBufferSourceNode resampler is linear interpolation.** Low
+content is fine; anything near the source's Nyquist throws a strong image
+above it — inaudible to most ears on a 96 kHz DAC, but a defect on a bench
+whose owner hears well and cares about what sits above 20 kHz, and it can
+intermodulate downstream. Native-rate decode stays right for analysis
+(no invented content) but playback needs one of: (a) open the AudioContext
+at the file's rate and let Chromium's sinc resampler (context → device) do
+the work — the platform ledger's advice #6; (b) a streaming Kaiser polyphase
+upsampler in an AudioWorklet between source and master; (c) resample once
+at load (gives back the memory). Decision pending the survey below.
+Addendum to E12: `createTrackBuffer` (js/machine/sequencer.js:1138) builds
+MACHINE voices at the sample's own rate, so slices cut from a 48 kHz source
+play through the 96 kHz context with the same linear resampler — the defect
+is not confined to the bench transport. A judged design panel is deciding
+between opening the context at the file's rate, a split context, a worklet
+player, and a hybrid decode policy (docs/lab/2026-09-03-playback-rate-decision.md
+when it lands).
+
+## Step 7 shipped locally — the WAV export streams to disk
+`js/export.js`: the encoder is a chunk generator (`wavChunks`: header, then
+8 MB data chunks with the dither generator, error-feedback history, and
+peak/over counters carried across chunks — byte-identical to the one-shot
+file, tested at 16-bit TPDF/shaped/none, 24, and 32f across chunk
+boundaries). `encodeWavWithStats` joins the chunks (Blob path, everywhere);
+`exportWavStream` writes them to a File System Access handle one at a time
+(Chromium): no whole-file ArrayBuffer, no Blob copy — the 167 MB peak of a
+3-minute float export at 48 kHz is gone on that path. A picker refused for
+lack of a real user gesture falls back to the Blob path.

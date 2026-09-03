@@ -4,7 +4,7 @@
 
 import { MODELS } from '../transcribe.js';
 import { REGISTRY, renderChain, spliceCuts } from '../dsp/chain.js';
-import { encodeWavWithStats, toSrt, toVtt, toTxt, download, editedTime } from '../export.js';
+import { encodeWavWithStats, exportWavStream, toSrt, toVtt, toTxt, download, editedTime } from '../export.js';
 import { LOOM_TRANSCRIPT_MAX_WORDS } from '../loom/compile.js';
 import { mixdownMono } from '../audio-engine.js';
 import { buildPeakPyramid } from '../render/peaks.js';
@@ -726,7 +726,25 @@ export function initBenchController(ctx) {
   });
 
   // ---------- audio export ----------
-  function exportWav(bits) {
+  // Chromium with the File System Access API streams the file to disk chunk
+  // by chunk — no whole-file ArrayBuffer, no Blob copy (167 MB saved on a
+  // 3-minute float export at 48 kHz). Everywhere else, the Blob path.
+  function canStreamExport() {
+    return typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
+  }
+  function reportExport(stats, bits, speedNote, rate) {
+    if (stats.clippedSamples > 0 && bits !== 32) {
+      statusFault('EXPORTED ' + speedNote + 'WITH ' + stats.clippedSamples + ' OVERS · peak ' + stats.peakDb.toFixed(2) + ' dBFS — pull the limiter in.');
+    } else if (bits === 32) {
+      // Float keeps overs instead of clamping them, so an over is information
+      // rather than damage: report it without calling it a fault.
+      status('EXPORTED ' + speedNote + '32-BIT FLOAT · ' + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS'
+        + (stats.clippedSamples > 0 ? ' · ' + stats.clippedSamples + ' OVERS KEPT' : ''));
+    } else {
+      status('EXPORTED · ' + speedNote + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS · DITHER ' + stats.dither.toUpperCase());
+    }
+  }
+  async function exportWav(bits) {
     // renderFresh was written in four places and read in none, so a render that
     // the UI had already marked STALE was still what got written to disk: cut a
     // word, export, and the file still has the word. Refusing is the only honest
@@ -754,10 +772,34 @@ export function initBenchController(ctx) {
     }
     const speedNote = speed > 1 ? speedLabel(speed) + ' SPEED · ' : '';
     const name = (P.fileName || 'yellowjacket').replace(/\.[^.]+$/, '') + '.bench' + speedTag + '.' + bits + '.wav';
-    // The whole file is built as one ArrayBuffer. Since the 48 kHz decode cap
-    // was lifted and float was added, that single allocation can reach hundreds
-    // of megabytes, and a RangeError inside a click handler would leave no
-    // status and no file — the button would simply look dead.
+    const rate = Math.round((buf && buf.sampleRate ? buf.sampleRate : 0) / 1000);
+    if (canStreamExport()) {
+      const job = ctx.api.beginJob ? ctx.api.beginJob('EXPORT', 'rack') : null;
+      try {
+        status('WRITING ' + name + '…', true);
+        const done = await exportWavStream(buf, bits, {
+          onProgress: (st) => status('WRITING · ' + Math.round(100 * Math.min(1, (st.written || 0))) + '%', true),
+        }, () => window.showSaveFilePicker({
+          suggestedName: name,
+          types: [{ description: 'WAV audio', accept: { 'audio/wav': ['.wav'] } }],
+        }).catch((e) => { if (e && e.name === 'AbortError') return null; throw e; }));
+        if (!done) { status('EXPORT CANCELLED'); return; }
+        reportExport(done.stats, bits, speedNote, rate);
+        return;
+      } catch (error) {
+        // No transient user activation (a scripted click) or a picker the
+        // embedder blocks: the Blob path below still delivers the file.
+        const name = error && error.name;
+        if (name !== 'SecurityError' && name !== 'NotAllowedError' && name !== 'TypeError') {
+          statusFault('EXPORT FAULT · ' + (error && error.message ? error.message : error));
+          return;
+        }
+      } finally {
+        if (job) job.end();
+      }
+    }
+    // Blob path: the file is built in chunks and joined once. A RangeError
+    // inside a click handler would leave no status and no file, so it is caught.
     let blob;
     let stats;
     try {
@@ -771,17 +813,7 @@ export function initBenchController(ctx) {
       return;
     }
     download(blob, name, 'audio/wav');
-    const rate = Math.round((buf && buf.sampleRate ? buf.sampleRate : 0) / 1000);
-    if (stats.clippedSamples > 0 && bits !== 32) {
-      statusFault('EXPORTED ' + speedNote + 'WITH ' + stats.clippedSamples + ' OVERS · peak ' + stats.peakDb.toFixed(2) + ' dBFS — pull the limiter in.');
-    } else if (bits === 32) {
-      // Float keeps overs instead of clamping them, so an over is information
-      // rather than damage: report it without calling it a fault.
-      status('EXPORTED ' + speedNote + '32-BIT FLOAT · ' + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS'
-        + (stats.clippedSamples > 0 ? ' · ' + stats.clippedSamples + ' OVERS KEPT' : ''));
-    } else {
-      status('EXPORTED · ' + speedNote + rate + ' kHz · PEAK ' + stats.peakDb.toFixed(1) + ' dBFS · DITHER ' + stats.dither.toUpperCase());
-    }
+    reportExport(stats, bits, speedNote, rate);
   }
   $('btnWav16').addEventListener('click', () => exportWav(16));
   $('btnWav24').addEventListener('click', () => exportWav(24));

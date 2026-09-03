@@ -48,27 +48,24 @@ export function encodeWav(buffer, bitDepth = 16) {
 // opts.dither: 'shaped' | 'tpdf' | 'none' (default: shaped at 44.1k/48k, else tpdf).
 // stats.clippedSamples counts PRE-quantization overs (|s| > 1); the encoded
 // stream still clamps them. stats.peakDb is the pre-quantization sample peak.
-export function encodeWavWithStats(buffer, bitDepth = 16, opts = {}) {
-  const bits = bitDepth === 32 ? 32 : bitDepth === 24 ? 24 : 16;
+// The file is produced as a header chunk followed by data chunks of about
+// CHUNK_FRAMES frames each, with the dither generator, error-feedback history,
+// and the peak/over counters carried across chunks, so the bytes are identical
+// whether the chunks are concatenated into one Blob (encodeWavWithStats) or
+// written one by one to a file handle (exportWavStream). The old path built
+// the whole file in one ArrayBuffer — 167 MB for a 3-minute 32-bit float
+// export at 48 kHz — on top of the Blob copy (ledger §3).
+export const CHUNK_FRAMES = 1 << 20;   // 8 MB of stereo float per chunk
+
+export function wavHeader({ channels, frames, sampleRate, bits }) {
   const isFloat = bits === 32;
-  const srcChannels = buffer && buffer.numberOfChannels ? buffer.numberOfChannels : 0;
-  const channels = Math.max(1, srcChannels);
-  const frames = srcChannels ? buffer.length : 0;
-  const sampleRate = Math.max(1, Math.round(buffer && buffer.sampleRate ? buffer.sampleRate : 44100));
   const bytesPer = bits / 8;
   const blockAlign = channels * bytesPer;
   const dataSize = frames * blockAlign;
-  // Float carries no quantization error, so there is nothing for dither to
-  // decorrelate. resolveDither is only consulted for the integer depths.
-  const dither = isFloat ? 'none' : resolveDither(bits, sampleRate, opts.dither);
-
-  // A non-PCM format must declare cbSize, and a 'fact' chunk states the frame
-  // count. 16-byte-fmt float files are common and mostly readable, but the
-  // spec-correct header costs 14 bytes and removes the doubt entirely.
   const fmtSize = isFloat ? 18 : 16;
   const factSize = isFloat ? 12 : 0;
   const headerSize = 20 + fmtSize + factSize + 8;
-  const ab = new ArrayBuffer(headerSize + dataSize);
+  const ab = new ArrayBuffer(headerSize);
   const dv = new DataView(ab);
   writeAscii(dv, 0, 'RIFF');
   dv.setUint32(4, headerSize - 8 + dataSize, true);
@@ -92,81 +89,138 @@ export function encodeWavWithStats(buffer, bitDepth = 16, opts = {}) {
   }
   writeAscii(dv, at, 'data');
   dv.setUint32(at + 4, dataSize, true);
+  return new Uint8Array(ab);
+}
+
+// Yields the header, then data chunks. `state` (returned by the generator's
+// final value and readable after iteration via the object passed in) carries
+// peak, clipped, dither.
+export function* wavChunks(buffer, bitDepth = 16, opts = {}, state = {}) {
+  const bits = bitDepth === 32 ? 32 : bitDepth === 24 ? 24 : 16;
+  const isFloat = bits === 32;
+  const srcChannels = buffer && buffer.numberOfChannels ? buffer.numberOfChannels : 0;
+  const channels = Math.max(1, srcChannels);
+  const frames = srcChannels ? buffer.length : 0;
+  const sampleRate = Math.max(1, Math.round(buffer && buffer.sampleRate ? buffer.sampleRate : 44100));
+  const bytesPer = bits / 8;
+  const blockAlign = channels * bytesPer;
+  const dither = isFloat ? 'none' : resolveDither(bits, sampleRate, opts.dither);
+  state.peak = 0; state.clipped = 0; state.dither = dither;
+  state.sampleRate = sampleRate; state.frames = frames; state.channels = channels; state.bits = bits;
+  yield wavHeader({ channels, frames, sampleRate, bits });
 
   const chans = [];
   for (let c = 0; c < srcChannels; c++) chans.push(buffer.getChannelData(c));
+  const chunkFrames = Math.max(1, opts.chunkFrames || CHUNK_FRAMES);
+  const rand = mulberry32(DITHER_SEED);
+  const tpdf = dither !== 'none';
+  const shaped = dither === 'shaped';
+  const hist = shaped ? chans.map(() => new Float64Array(9)) : null;
   let peak = 0;
   let clipped = 0;
-  let off = headerSize;
-  if (isFloat) {
-    // No clamp: preserving overs is the entire reason to export float, so a
-    // hot bounce can still be pulled back down in the next tool. Overs are
-    // still counted, because the meter should say so.
-    for (let f = 0; f < frames; f++) {
-      for (let c = 0; c < srcChannels; c++) {
-        const s = chans[c][f];
-        const a = s < 0 ? -s : s;
-        if (a > peak) peak = a;
-        if (a > 1) clipped++;
-        dv.setFloat32(off, s, true);
-        off += 4;
-      }
-    }
-  } else if (bits === 16) {
-    const rand = mulberry32(DITHER_SEED);
-    const tpdf = dither !== 'none';
-    const shaped = dither === 'shaped';
-    const hist = shaped ? chans.map(() => new Float64Array(9)) : null;
-    for (let f = 0; f < frames; f++) {
-      for (let c = 0; c < srcChannels; c++) {
-        let s = chans[c][f];
-        const a = s < 0 ? -s : s;
-        if (a > peak) peak = a;
-        if (a > 1) { clipped++; s = s < 0 ? -1 : 1; }
-        let v = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        let e;
-        if (shaped) {
-          // error feedback w = x - sum(c_k * e[n-k]): noise transfer 1 - C(z)
-          e = hist[c];
-          let fb = 0;
-          for (let k = 0; k < 9; k++) fb += F_WEIGHTED_9[k] * e[k];
-          v -= fb;
+  for (let f0 = 0; f0 < frames; f0 += chunkFrames) {
+    const f1 = Math.min(frames, f0 + chunkFrames);
+    const ab = new ArrayBuffer((f1 - f0) * blockAlign);
+    const dv = new DataView(ab);
+    let off = 0;
+    if (isFloat) {
+      // No clamp: preserving overs is the entire reason to export float, so a
+      // hot bounce can still be pulled back down in the next tool. Overs are
+      // still counted, because the meter should say so.
+      for (let f = f0; f < f1; f++) {
+        for (let c = 0; c < srcChannels; c++) {
+          const s = chans[c][f];
+          const a = s < 0 ? -s : s;
+          if (a > peak) peak = a;
+          if (a > 1) clipped++;
+          dv.setFloat32(off, s, true);
+          off += 4;
         }
-        // TPDF at +/-1 LSB: sum of two independent uniforms, dither inside
-        // the loop (Lipshitz/Wannamaker/Vanderkooy, JAES 1992)
-        const q = Math.round(tpdf ? v + rand() + rand() - 1 : v);
-        if (shaped) {
-          for (let k = 8; k > 0; k--) e[k] = e[k - 1];
-          e[0] = q - v; // pre-clamp error: bounded feedback, stable at full scale
+      }
+    } else if (bits === 16) {
+      for (let f = f0; f < f1; f++) {
+        for (let c = 0; c < srcChannels; c++) {
+          let s = chans[c][f];
+          const a = s < 0 ? -s : s;
+          if (a > peak) peak = a;
+          if (a > 1) { clipped++; s = s < 0 ? -1 : 1; }
+          let v = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          let e;
+          if (shaped) {
+            // error feedback w = x - sum(c_k * e[n-k]): noise transfer 1 - C(z)
+            e = hist[c];
+            let fb = 0;
+            for (let k = 0; k < 9; k++) fb += F_WEIGHTED_9[k] * e[k];
+            v -= fb;
+          }
+          // TPDF at +/-1 LSB: sum of two independent uniforms, dither inside
+          // the loop (Lipshitz/Wannamaker/Vanderkooy, JAES 1992)
+          const q = Math.round(tpdf ? v + rand() + rand() - 1 : v);
+          if (shaped) {
+            for (let k = 8; k > 0; k--) e[k] = e[k - 1];
+            e[0] = q - v; // pre-clamp error: bounded feedback, stable at full scale
+          }
+          dv.setInt16(off, q < -0x8000 ? -0x8000 : q > 0x7FFF ? 0x7FFF : q, true);
+          off += 2;
         }
-        dv.setInt16(off, q < -0x8000 ? -0x8000 : q > 0x7FFF ? 0x7FFF : q, true);
-        off += 2;
+      }
+    } else {
+      for (let f = f0; f < f1; f++) {
+        for (let c = 0; c < srcChannels; c++) {
+          let s = chans[c][f];
+          const a = s < 0 ? -s : s;
+          if (a > peak) peak = a;
+          if (a > 1) { clipped++; s = s < 0 ? -1 : 1; }
+          // two's complement 24-bit little-endian
+          const v = Math.round(s < 0 ? s * 0x800000 : s * 0x7FFFFF) & 0xFFFFFF;
+          dv.setUint8(off, v & 0xFF);
+          dv.setUint8(off + 1, (v >>> 8) & 0xFF);
+          dv.setUint8(off + 2, (v >>> 16) & 0xFF);
+          off += 3;
+        }
       }
     }
-  } else {
-    for (let f = 0; f < frames; f++) {
-      for (let c = 0; c < srcChannels; c++) {
-        let s = chans[c][f];
-        const a = s < 0 ? -s : s;
-        if (a > peak) peak = a;
-        if (a > 1) { clipped++; s = s < 0 ? -1 : 1; }
-        // two's complement 24-bit little-endian
-        const v = Math.round(s < 0 ? s * 0x800000 : s * 0x7FFFFF) & 0xFFFFFF;
-        dv.setUint8(off, v & 0xFF);
-        dv.setUint8(off + 1, (v >>> 8) & 0xFF);
-        dv.setUint8(off + 2, (v >>> 16) & 0xFF);
-        off += 3;
-      }
-    }
+    state.peak = peak; state.clipped = clipped; state.written = frames ? f1 / frames : 1;
+    yield new Uint8Array(ab);
   }
+  state.peak = peak; state.clipped = clipped; state.written = 1;
+}
+
+function statsOf(state) {
   return {
-    blob: new Blob([ab], { type: 'audio/wav' }),
-    stats: {
-      peakDb: peak > 0 ? 20 * Math.log10(peak) : -Infinity,
-      clippedSamples: clipped,
-      dither,
-    },
+    peakDb: state.peak > 0 ? 20 * Math.log10(state.peak) : -Infinity,
+    clippedSamples: state.clipped,
+    dither: state.dither,
   };
+}
+
+export function encodeWavWithStats(buffer, bitDepth = 16, opts = {}) {
+  const state = {};
+  const parts = [];
+  for (const chunk of wavChunks(buffer, bitDepth, opts, state)) parts.push(chunk);
+  return { blob: new Blob(parts, { type: 'audio/wav' }), stats: statsOf(state) };
+}
+
+// Stream to a file handle (File System Access API) chunk by chunk: no whole
+// file in memory and no Blob copy. `pickSave` is the picker (injected so the
+// caller decides on the user gesture); resolves {stats} or null if the user
+// cancelled. Throws on write faults.
+export async function exportWavStream(buffer, bitDepth, opts, pickSave) {
+  const handle = await pickSave();
+  if (!handle) return null;
+  const writable = await handle.createWritable();
+  const state = {};
+  try {
+    for (const chunk of wavChunks(buffer, bitDepth, opts, state)) {
+      await writable.write(chunk);
+      if (opts && typeof opts.onProgress === 'function') opts.onProgress(state);
+    }
+    await writable.close();
+  } catch (error) {
+    try { await writable.abort(); } catch (e) { /* already closed */ }
+    throw error;
+  }
+  return { stats: statsOf(state) };
 }
 
 // ---------- timeline mapping ----------
