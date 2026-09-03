@@ -15,6 +15,9 @@ export function soundingSources(state) {
   return SOURCE_ORDER.filter((k) => !!s[k]);
 }
 
+// On-screen names for the sounding readout beside PLAY.
+export const SHORT = Object.freeze({ bench: 'BENCH', machine: 'MACHINE', loom: 'LOOM', studio: 'STUDIO', audition: 'CLIP' });
+
 export function transportLabel(sources) {
   return sources && sources.length ? 'STOP' : 'PLAY';
 }

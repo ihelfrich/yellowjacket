@@ -111,6 +111,7 @@
   <div class="yj-transport">
     <button id="btnRtz" class="yj-btn" title="Return to zero (Home)">&#9198;</button>
     <button id="btnPlay" class="yj-btn yj-btn-play" title="Play / pause (Space)">PLAY</button>
+    <span class="yj-led-row yj-sounding" id="roSounding" title="What is sounding right now"><span class="yj-led"></span><span class="yj-led-text" id="soundingText"></span></span>
     <div class="yj-well yj-time" id="roTime">--:--.---</div>
     <div class="yj-well yj-time yj-time-dim" id="roDur">--:--.---</div>
     <button id="btnSpeed" class="yj-btn yj-btn-compact" title="Play and print the source at ½ or ¼ speed — same samples, slower clock, pitched down. Bit-exact." disabled>1×</button>
@@ -120,12 +121,18 @@
       <button id="btnUndo" class="yj-btn yj-btn-compact" title="Undo (Command or Control Z)" disabled>UNDO</button>
       <button id="btnRedo" class="yj-btn yj-btn-compact" title="Redo (Command or Control Shift Z)" disabled>REDO</button>
     </div>
-    <button id="btnOpen" class="yj-btn" title="Open an audio source">AUDIO IN</button>
-    <button id="btnField" class="yj-btn" title="The shelf — public-domain places, voices, radio signals, scores, records, and stranger things from archive.org, plus MINE: your own kept recordings">SHELF</button>
-    <button id="btnKeep" class="yj-btn" title="Keep the loaded recording on MY SHELF — stored in this browser only, never uploaded" disabled>KEEP</button>
-    <button id="btnOpenUrl" class="yj-btn" title="Open an audio URL">URL IN</button>
-    <button id="btnProjectOpen" class="yj-btn" title="Open a portable Yellowjacket project">PROJECT IN</button>
-    <button id="btnProjectSave" class="yj-btn" title="Save a portable Yellowjacket project" disabled>PROJECT OUT</button>
+    <div class="yj-io-group" role="group" aria-label="Source in">
+      <button id="btnOpen" class="yj-btn" title="Open an audio source">AUDIO IN</button>
+      <button id="btnField" class="yj-btn" title="The shelf — public-domain places, voices, radio signals, scores, records, and stranger things from archive.org, plus MINE: your own kept recordings — plus a URL box and .YJKT project open">SHELF</button>
+    </div>
+    <div class="yj-io-group" role="group" aria-label="Keep and save">
+      <button id="btnKeep" class="yj-btn" title="Keep the loaded recording on MY SHELF — stored in this browser only, never uploaded" disabled>KEEP</button>
+      <button id="btnProjectSave" class="yj-btn" title="Save a portable Yellowjacket project" disabled>PROJECT OUT</button>
+    </div>
+    <!-- URL and .YJKT open live in the overlay and the command deck; the
+         buttons stay for the deck's and first-run's .click() routes. -->
+    <button id="btnOpenUrl" class="yj-btn" title="Open an audio URL" hidden>URL IN</button>
+    <button id="btnProjectOpen" class="yj-btn" title="Open a portable Yellowjacket project" hidden>PROJECT IN</button>
     <button id="btnCommand" class="yj-btn yj-btn-command" title="Open the command deck (Command or Control K)">COMMAND <span aria-hidden="true">⌘K</span></button>
   </div>
 </header>

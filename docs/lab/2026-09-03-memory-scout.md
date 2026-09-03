@@ -210,3 +210,14 @@ From docs/lab/ledger/*.md (subsystem readers), all low risk, pinned in tests:
    previous repaired pair is collectable (−126 MB peak at 48 kHz).
 Live (fresh origin): render → A/B → re-render OK; HARVEST twice OK (24 slices
 both times); `dispose()` idle → MODEL RELEASED. Tests: 47 groups / 310 cases.
+
+## Visual pass shipped (steps 1–15 of docs/lab/2026-09-03-visual-plan.md; step 11 left for Ian)
+Everything in the plan except the credit-row decision (11, owner's call).
+Live checks on fresh origins: off modules 46 px with ordinals; LED busy →
+on → stale (solid amber); bar labels B1 B9 B17 …; pipeline seams, legible
+notes, YOU ARE HERE on TRANSCRIPT/SLICE/PATTERN; status 11 px live region;
+RESUME above the demo button; tab underbar crawls and the SLICE stage reads
+`MAPPING BEATS · 50%` then `HARVESTING` then `24 CLIPS`; header in two
+seamed groups with no scrollbar at 800 px; sounding readout BENCH → MACHINE,
+and the bench reaching its end no longer flips STOP to PLAY while the
+machine runs; one focus rule; reduced-motion keeps busy legible.

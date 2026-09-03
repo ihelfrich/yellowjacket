@@ -97,6 +97,56 @@ function pulseStatus(el) {
   void el.offsetWidth;
   el.classList.add('is-new');
 }
+// One registry for every long job. The tab that owns a running job crawls
+// its underbar (visible from any other tab), and a pipeline stage that is
+// waiting on the job shows its name (and percent, where one is reported).
+// DESIGN §Signature 1: stripes = the machine is doing something.
+const jobs = new Map();          // tab → Set(name)
+const tabTitles = new Map();     // tab → the tooltip before any job suffix
+const working = new Map();       // stageKey → {name, pct}
+function paintJobs(tab) {
+  const btn = $('tabBtn-' + tab);
+  if (!btn) return;
+  if (!tabTitles.has(tab)) tabTitles.set(tab, btn.title || '');
+  const names = [...(jobs.get(tab) || [])];
+  btn.classList.toggle('is-working', names.length > 0);
+  btn.title = tabTitles.get(tab) + (names.length ? ' · WORKING: ' + names.join(', ') : '');
+}
+function beginJob(name, tab = null, stageKey = null) {
+  if (tab) {
+    const set = jobs.get(tab) || new Set();
+    set.add(name);
+    jobs.set(tab, set);
+    paintJobs(tab);
+  }
+  if (stageKey) {
+    working.set(stageKey, { name, pct: null });
+    if (views.pipeline) views.pipeline.setWorking(stageKey, working.get(stageKey));
+  }
+  let done = false;
+  return {
+    note(pct) {
+      if (done || !stageKey) return;
+      const w = working.get(stageKey);
+      if (!w) return;
+      w.pct = Number.isFinite(pct) ? pct : null;
+      if (views.pipeline) views.pipeline.setWorking(stageKey, w);
+    },
+    end() {
+      if (done) return;
+      done = true;
+      if (tab) {
+        const set = jobs.get(tab);
+        if (set) { set.delete(name); paintJobs(tab); }
+      }
+      if (stageKey) {
+        working.delete(stageKey);
+        if (views.pipeline) views.pipeline.setWorking(stageKey, null);
+      }
+    },
+  };
+}
+
 function status(left, hot = false) {
   const el = $('stLeft');
   el.textContent = left;
@@ -181,6 +231,7 @@ const ctx = {
   $, COPY, status, statusFault, fmtTime, fmtDb, setLed,
   api: {},
 };
+ctx.api.beginJob = beginJob;
 
 // Controllers are independent surfaces, so one throwing must not take the
 // others with it. Before this, a single failure in any init left the app

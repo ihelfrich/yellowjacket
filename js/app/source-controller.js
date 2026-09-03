@@ -157,12 +157,14 @@ export function initSourceController(ctx) {
 
     $('specNote').textContent = COPY.computingSpec;
     const gen = R.generation;
+    const specJob = ctx.api.beginJob ? ctx.api.beginJob('SPECTROGRAM', 'signal', 'slice') : null;
     spec.compute(R.mono, R.sampleRate).then(() => {
       $('specNote').textContent = COPY.specReady;
       spec.render();
     }).catch(() => {
       $('specNote').textContent = 'Spectrogram fault — see console.';
     }).finally(() => {
+      if (specJob) specJob.end();
       // Analysis waits for the spectrogram: both are CPU-heavy, sequential is kinder.
       if (gen === R.generation) runAnalysis(anchors);
     });
@@ -222,6 +224,8 @@ export function initSourceController(ctx) {
     return { bpm: a && a.bpm != null ? a.bpm : null, barOneTime: a && a.barOneTime != null ? a.barOneTime : null };
   }
 
+  let analysisJob = null;   // the registry handle for the running beatmap
+  function endAnalysisJob() { if (analysisJob) { analysisJob.end(); analysisJob = null; } }
   function runAnalysis(anchors = null, withMono = true) {
     if (!R.mono) return;
     const job = ++analysisSeq;
@@ -238,8 +242,10 @@ export function initSourceController(ctx) {
         if (run.gen !== R.generation) return;
         if (msg.type === 'progress') {
           if (analysisBusy) status(COPY.mapping + ' · ' + Math.round(msg.pct) + '%', true);
+          if (analysisJob) analysisJob.note(msg.pct);
         } else if (msg.type === 'done') {
           analysisBusy = false;
+          endAnalysisJob();
           // Through the store so autosave sees it: anchors live in the snapshot.
           store.update('analysis', (p, r) => {
             r.analysis = { ...msg.analysis, anchors: run.anchors };
@@ -250,15 +256,19 @@ export function initSourceController(ctx) {
           // Cache miss on an anchors-only rerun: resend with audio. Anything else is a fault.
           if (!run.withMono) { runAnalysis(run.anchors, true); return; }
           analysisBusy = false;
+          endAnalysisJob();
           ctx.api.analysisFault(msg.message || 'unknown');
         }
       };
       analysisWorker.onerror = () => {
         analysisBusy = false;
+        endAnalysisJob();
         ctx.api.analysisFault('worker error');
       };
     }
     analysisBusy = true;
+    endAnalysisJob();
+    analysisJob = ctx.api.beginJob ? ctx.api.beginJob('MAPPING BEATS', 'machine', 'slice') : null;
     ctx.api.analysisStarted();
     const payload = { type: 'analyze', job, sampleRate: R.sampleRate, anchors: run.anchors, generation: run.gen };
     if (withMono) {

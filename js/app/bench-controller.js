@@ -11,7 +11,7 @@ import { buildPeakPyramid } from '../render/peaks.js';
 import { ndsi, bandLevelDb } from '../analysis/soundscape.js';
 import { speedFactorsFor, slowedBuffer, speedLabel, slowBand } from '../dsp/varispeed.js';
 import { previewWindow, previewChain, previewView, sliceAudioBuffer, describePreview } from '../dsp/preview.js';
-import { soundingSources, transportLabel, transportTitle } from './transport.js';
+import { soundingSources, transportLabel, transportTitle, SHORT } from './transport.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -137,6 +137,12 @@ export function initBenchController(ctx) {
     btn.textContent = transportLabel(now);
     btn.title = transportTitle(now, !!R.buffer);
     btn.classList.toggle('is-sounding', now.length > 0);
+    // Yellow is always what you are hearing: name it beside the button.
+    const ro = $('roSounding');
+    if (ro) {
+      ro.firstElementChild.classList.toggle('is-sounding', now.length > 0);
+      $('soundingText').textContent = now.map((k) => SHORT[k] || k).join(' + ');
+    }
   }
   engine.addEventListener('state', refreshTransport);
   sequencer.addEventListener('state', refreshTransport);
@@ -144,9 +150,8 @@ export function initBenchController(ctx) {
   if (studioEngine) studioEngine.addEventListener('state', refreshTransport);
   ctx.api.stopAll = stopAll;
   ctx.api.sounding = sounding;
-  engine.addEventListener('ended', () => {
-    $('btnPlay').textContent = 'PLAY';
-  });
+  // The bench reaching its end is not silence if the machine still runs.
+  engine.addEventListener('ended', refreshTransport);
   engine.addEventListener('time', (e) => {
     let t = e.detail.t;
     if (abState === 'b') t = originalFromEdited(t);
@@ -207,6 +212,7 @@ export function initBenchController(ctx) {
     const btn = $('btnTranscribe');
     btn.disabled = true;
     btn.classList.add('is-working');
+    const job = ctx.api.beginJob ? ctx.api.beginJob('TRANSCRIBE', 'transcript') : null;
     try {
       const gen = R.generation;
       const modelId = selModel.value;
@@ -250,6 +256,7 @@ export function initBenchController(ctx) {
       // the browser cache in seconds. Holding 206–586 MB between jobs was
       // the ledger's largest single allocation.
       releaseTranscriber('job done');
+      if (job) job.end();
       btn.disabled = false;
       btn.classList.remove('is-working');
       $('progTrans').hidden = true;
@@ -620,6 +627,7 @@ export function initBenchController(ctx) {
     const btn = $('btnRender');
     btn.disabled = true;
     btn.classList.add('is-working');
+    const job = ctx.api.beginJob ? ctx.api.beginJob('RENDER', 'rack') : null;
     const prog = $('progRender');
     prog.hidden = false;
     const t0 = performance.now();
@@ -669,6 +677,7 @@ export function initBenchController(ctx) {
       statusFault('Render fault — ' + (e.message || e));
     } finally {
       btn.disabled = false;
+      if (job) job.end();
       btn.classList.remove('is-working');
       prog.hidden = true;
     }

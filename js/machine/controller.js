@@ -965,6 +965,7 @@ export function initMachineController(ctx) {
     btn.disabled = true;
     btn.classList.add('is-working');
     status('HARVESTING…', true);
+    const job = ctx.api.beginJob ? ctx.api.beginJob('HARVESTING', 'machine', 'slice') : null;
     if (!harvestWorker) {
       harvestWorker = new Worker(new URL('../../workers/harvest-worker.js', import.meta.url), { type: 'module' });
     }
@@ -972,6 +973,7 @@ export function initMachineController(ctx) {
     // HARVEST is rare and the worker caches nothing worth keeping; its isolate
     // and scratch go with it after each job.
     const retire = () => {
+      if (job) job.end();
       if (!harvestWorker) return;
       try { harvestWorker.terminate(); } catch (e) { /* already gone */ }
       harvestWorker = null;

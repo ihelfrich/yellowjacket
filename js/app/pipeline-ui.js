@@ -46,6 +46,12 @@ const STYLE = `
   content: ""; position: absolute; left: 0; top: 6px; bottom: 6px;
   width: 2px; background: var(--yj-hazard-dim);
 }
+.yj-pipe-stage.is-working::before {
+  content: ""; position: absolute; left: 0; top: 6px; bottom: 6px;
+  width: 2px; background: var(--yj-hazard); animation: yj-crawl 0.7s linear infinite;
+}
+.yj-pipe-stage.is-working .yj-pipe-note { color: var(--yj-yellow); }
+@media (prefers-reduced-motion: reduce) { .yj-pipe-stage.is-working::before { animation: none; } }
 `;
 
 let styled = false;
@@ -129,6 +135,7 @@ export class PipelineView extends EventTarget {
     this.host = host;
     this._stages = [];
     this._here = null;   // {tab, mstate}: the stage the user stands on
+    this._working = new Map();   // stageKey → {name, pct}: a job the stage waits on
     if (host) {
       host.className = 'yj-pipe';
       host.addEventListener('click', (e) => {
@@ -153,6 +160,24 @@ export class PipelineView extends EventTarget {
     this._render();
   }
 
+  // A running job, patched in place so progress ticks never rebuild the DOM;
+  // _render consults the map, so a store change mid-job keeps the readout.
+  setWorking(key, w) {
+    if (w) this._working.set(key, { name: w.name, pct: w.pct == null ? null : w.pct });
+    else this._working.delete(key);
+    const btn = this.host && this.host.querySelector('[data-key="' + key + '"]');
+    if (!btn) return;
+    const stage = this._stages.find((s) => s.key === key);
+    btn.classList.toggle('is-working', !!w);
+    const note = btn.querySelector('.yj-pipe-note');
+    if (note) note.textContent = PipelineView.noteFor(stage, this._working.get(key));
+  }
+
+  static noteFor(stage, w) {
+    if (w) return w.name + (w.pct != null ? ' · ' + Math.round(w.pct) + '%' : '');
+    return (stage && stage.note) || '—';
+  }
+
   static isHere(stage, here) {
     if (!here || !stage || !Array.isArray(stage.here)) return false;
     return stage.here.some((h) => h.tab === here.tab && (!h.mstate || h.mstate === here.mstate));
@@ -169,10 +194,12 @@ export class PipelineView extends EventTarget {
       const btn = document.createElement('button');
       btn.type = 'button';
       const here = PipelineView.isHere(stage, this._here);
+      const w = this._working.get(stage.key) || null;
       btn.className = 'yj-pipe-stage'
         + (stage.done ? ' is-done' : '')
         + (i === nextIndex ? ' is-next' : '')
-        + (here ? ' is-here' : '');
+        + (here ? ' is-here' : '')
+        + (w ? ' is-working' : '');
       btn.dataset.key = stage.key;
       btn.title = (stage.hint || stage.label) + (here ? ' · you are here' : '');
       if (here) btn.setAttribute('aria-current', 'location');
@@ -183,7 +210,7 @@ export class PipelineView extends EventTarget {
 
       const note = document.createElement('span');
       note.className = 'yj-pipe-note';
-      note.textContent = stage.note || '—';
+      note.textContent = PipelineView.noteFor(stage, w);
 
       btn.append(name, note);
       host.appendChild(btn);

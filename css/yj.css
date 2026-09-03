@@ -100,7 +100,9 @@ canvas { display: block; }
   margin: 0 auto;
 }
 
-.yj-io { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.yj-io { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.yj-io-group { display: flex; gap: 6px; padding-right: 8px; margin-right: 2px; border-right: 1px solid var(--yj-line); }
+@media (min-width: 1100px) { .yj-btn-command { margin-left: auto; } }
 .yj-history { display: flex; gap: 2px; padding-right: 6px; margin-right: 2px; border-right: 1px solid var(--yj-line); }
 .yj-btn-compact { padding-left: 8px; padding-right: 8px; font-size: 10px; }
 .yj-btn-command { border-color: var(--yj-amber-dim); }
@@ -130,7 +132,10 @@ canvas { display: block; }
   color: #0B0A07;
 }
 .yj-btn-primary:hover:not(:disabled) { background: var(--yj-yellow-hi); border-color: var(--yj-yellow-hi); color: #000; }
-.yj-btn-primary:disabled { background: var(--yj-amber-dim); border-color: var(--yj-amber-dim); color: #2A2716; }
+.yj-btn-primary:disabled { background: var(--yj-amber-dim); border-color: var(--yj-amber-dim); color: #0B0A07; }
+/* One focus rule for every control the per-class rules missed (zero
+   specificity, so those still win): 1px yellow, offset 2, no glow. */
+:where(button, select, a, input, [tabindex]):focus-visible { outline: 1px solid var(--yj-yellow); outline-offset: 2px; }
 
 .yj-btn-play { min-width: 74px; }
 .yj-btn.is-active { background: var(--yj-yellow); border-color: var(--yj-yellow); color: #0B0A07; }
@@ -178,6 +183,15 @@ canvas { display: block; }
   padding: 11px 18px 9px;
   border-bottom: 5px solid transparent;
 }
+.yj-tab-btn { position: relative; }
+/* A running job crawls the underbar of the tab that owns it — dim from other
+   tabs, full hazard on the active one. The 5 px sits on the border the tab
+   already reserves; border-image cannot animate, hence the pseudo. */
+.yj-tab-btn.is-working::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -5px; height: 5px;
+  background: var(--yj-hazard-dim); animation: yj-crawl 0.7s linear infinite;
+}
+.yj-tab-btn.is-active.is-working::after { background: var(--yj-hazard); }
 .yj-tab-btn:hover { color: var(--yj-ink); }
 .yj-tab-btn.is-active { color: var(--yj-yellow); border-image: var(--yj-hazard) 1; border-bottom: 5px solid; }
 .yj-tab-btn:focus-visible { outline: 1px solid var(--yj-yellow); outline-offset: -3px; }
@@ -353,6 +367,9 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-canvas-preview { height: 110px; }
 .yj-preview { flex: 0 0 auto; }
 #btnPlay.is-sounding { border-color: var(--yj-yellow); color: var(--yj-yellow); }
+.yj-sounding { min-width: 96px; }
+.yj-sounding .yj-led.is-sounding { background: var(--yj-yellow); }
+.yj-sounding .yj-led-text { color: var(--yj-yellow); }
 .yj-preview-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
 .yj-preview-out { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--yj-blue); }
 .yj-preview-out.is-dim { color: var(--yj-ink-dim); }
@@ -778,7 +795,7 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   .yj-top { flex-wrap: wrap; gap: 8px 12px; padding: 8px 10px; }
   .yj-mark { min-width: 150px; }
   .yj-transport { margin-left: auto; margin-right: 0; }
-  .yj-io { width: 100%; overflow-x: auto; padding-bottom: 2px; }
+  .yj-io { width: 100%; }
   .yj-tabs, .yj-pipe { padding-left: 10px; padding-right: 10px; }
   .yj-cols { flex-direction: column; overflow-y: visible; flex: none; }
   .yj-cols > * { flex-shrink: 0; }
@@ -795,6 +812,7 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 
 @media (max-width: 560px) {
   .yj-mark-sub, .yj-time-dim { display: none; }
+  .yj-sounding { min-width: 0; } .yj-sounding .yj-led-text { display: none; }
   .yj-time { min-width: 104px; font-size: 12px; }
   .yj-transport { gap: 4px; }
   .yj-top .yj-btn { padding-left: 8px; padding-right: 8px; }
@@ -802,7 +820,12 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .yj-btn.is-working, .yj-progress-fill, .yj-led.is-busy { animation: none; }
+  .yj-btn.is-working, .yj-progress-fill, .yj-led.is-busy, .yj-wire-chip.is-armed,
+  .yj-tab-btn.is-working::after { animation: none; }
+  /* busy stays distinguishable from on and from sounding: hollow, not filled */
+  .yj-led.is-busy { background: transparent; border: 2px solid var(--yj-yellow); }
+  /* the change cue stays lit until the next message instead of fading */
+  .yj-status .is-new { animation: none; box-shadow: inset 3px 0 0 var(--yj-yellow); }
   * { scroll-behavior: auto !important; }
 }
 

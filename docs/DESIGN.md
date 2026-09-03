@@ -94,3 +94,21 @@ zero exclamation marks, zero emoji, zero "please". The machine states facts:
 - Errors name the actual thing: "Decode failed — this file isn't audio this browser
   can read." not "Something went wrong".
 No marketing anywhere in the app. The README does the persuading.
+
+## Amendments (2026-09-03 visual pass)
+- §Type: buttons are 11px (the app has been 11px; the doc drifted).
+- §Signature 1, enumerated hazard sites gain: the underbar of any tab whose
+  bench has a job running (dim when it is not the active tab); the 2px left
+  rule of a pipeline stage whose job is running.
+- §Signature 9: solid amber = stale / rough — a state, not activity; never
+  blinks. Under reduced motion, busy = a hollow yellow square.
+- §Layout, under the tabs: the pipeline strip SOURCE · SLICE · KIT · PATTERN
+  · SONG · OUT as seamed cells; done = yellow left rule + amber note; next =
+  dim hazard rule + ink note; here = selection fill; working = crawling
+  hazard rule + yellow note (job name, percent where reported).
+- §Layout RACK: off modules collapse to their head row; the silkscreen
+  carries the chain ordinal 01–09.
+- §Layout header, I/O right: SOURCE IN (AUDIO IN, SHELF) | KEEP AND SAVE
+  (KEEP, PROJECT OUT) | COMMAND. URL and .YJKT open live in the overlay and
+  the deck. Beside PLAY, a sounding readout names what is heard (BENCH,
+  MACHINE, LOOM, STUDIO, CLIP), yellow, never blinking.

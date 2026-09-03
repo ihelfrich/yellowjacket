@@ -4797,6 +4797,42 @@ const visualCases = [
     assert.match(s, /\(n - 1\) % labelStep === 0 \|\| anchored/);
     assert.doesNotMatch(s, /lastLabel/, 'the greedy skip is gone');
   },
+  async function jobsCrawlTheOwningTabAndTheWaitingStage() {
+    const m = await readFile(new URL('../js/main.js', import.meta.url), 'utf8');
+    assert.match(m, /function beginJob\(name, tab = null, stageKey = null\)/);
+    assert.match(m, /ctx\.api\.beginJob = beginJob;/);
+    const css = await readFile(new URL('../css/yj.css', import.meta.url), 'utf8');
+    assert.match(css, /\.yj-tab-btn\.is-working::after \{[^}]*yj-crawl/, 'the underbar crawls');
+    assert.match(css, /\.yj-tab-btn\.is-active\.is-working::after \{ background: var\(--yj-hazard\); \}/);
+    for (const [file, name] of [['../js/app/bench-controller.js', "'TRANSCRIBE', 'transcript'"], ['../js/app/bench-controller.js', "'RENDER', 'rack'"], ['../js/app/source-controller.js', "'SPECTROGRAM', 'signal', 'slice'"], ['../js/app/source-controller.js', "'MAPPING BEATS', 'machine', 'slice'"], ['../js/machine/controller.js', "'HARVESTING', 'machine', 'slice'"]]) {
+      const src = await readFile(new URL(file, import.meta.url), 'utf8');
+      assert.ok(src.includes('beginJob(' + name + ')'), name + ' is registered');
+    }
+    const sc = await readFile(new URL('../js/app/source-controller.js', import.meta.url), 'utf8');
+    assert.equal((sc.match(/endAnalysisJob\(\)/g) || []).length >= 4, true, 'beatmap ends on done, error, worker error, and restart');
+    const pv = new PipelineView(null);
+    assert.equal(PipelineView.noteFor({ note: 'CARVE OR HARVEST' }, null), 'CARVE OR HARVEST');
+    assert.equal(PipelineView.noteFor({ note: 'x' }, { name: 'MAPPING BEATS', pct: 61.6 }), 'MAPPING BEATS · 62%');
+    assert.equal(PipelineView.noteFor({ note: 'x' }, { name: 'HARVESTING', pct: null }), 'HARVESTING');
+    void pv;
+  },
+  async function headerGroupsFocusRuleTransportReadoutReducedMotion() {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    assert.equal((html.match(/class="yj-io-group"/g) || []).length, 2, 'two seamed groups');
+    assert.match(html, /id="btnOpenUrl"[^>]*hidden/, 'URL IN demoted to overlay + deck');
+    assert.match(html, /id="btnProjectOpen"[^>]*hidden/, 'PROJECT IN demoted');
+    assert.match(html, /id="roSounding"/, 'the sounding readout exists beside PLAY');
+    const css = await readFile(new URL('../css/yj.css', import.meta.url), 'utf8');
+    assert.match(css, /:where\(button, select, a, input, \[tabindex\]\):focus-visible \{ outline: 1px solid var\(--yj-yellow\); outline-offset: 2px; \}/);
+    assert.match(css, /\.yj-btn-primary:disabled \{[^}]*color: #0B0A07; \}/, 'disabled primary is legible');
+    assert.match(css, /prefers-reduced-motion: reduce\) \{[\s\S]*\.yj-led\.is-busy \{ background: transparent; border: 2px solid var\(--yj-yellow\); \}/, 'busy is hollow, not invisible, under reduced motion');
+    assert.doesNotMatch(css, /\.yj-io \{ width: 100%; overflow-x: auto;/, 'the header wraps instead of scrolling');
+    const b = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');
+    assert.match(b, /engine\.addEventListener\('ended', refreshTransport\);/, 'bench end does not lie about the machine');
+    assert.match(b, /\$\('soundingText'\)\.textContent = now\.map\(\(k\) => SHORT\[k\] \|\| k\)\.join\(' \+ '\)/);
+    const t = await readFile(new URL('../js/app/transport.js', import.meta.url), 'utf8');
+    assert.match(t, /export const SHORT = Object\.freeze\(\{ bench: 'BENCH', machine: 'MACHINE', loom: 'LOOM', studio: 'STUDIO', audition: 'CLIP' \}\);/);
+  },
   async function statusIsALiveRegionAndResumeComesFirst() {
     const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     assert.match(html, /<footer class="yj-status" role="status" aria-live="polite">/);
