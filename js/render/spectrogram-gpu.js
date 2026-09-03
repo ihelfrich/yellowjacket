@@ -60,8 +60,9 @@ fn specColor(uv: vec2<f32>) -> vec4<f32> {
     mix(loadDb(c1, b0), loadDb(c1, b1), fb),
     fc
   );
-  let t = clamp((db - u.minDb) * u.dbSpanInv, 0.0, 1.0);
-  return textureLoad(lutTex, vec2<i32>(clamp(i32(t * 255.0), 0, 255), 0), 0);
+  // db is already normalised 0..1 (r8unorm of the quantised byte)
+  let t = clamp(db, 0.0, 1.0);
+  return textureLoad(lutTex, vec2<i32>(clamp(i32(t * 255.0 + 0.5), 0, 255), 0), 0);
 }
 
 @fragment
@@ -262,9 +263,11 @@ export class GpuSpectrogram {
     const layout = chunkLayout(cols, bins, this._maxDim, this._maxLayers);
     if (!layout || mags.length < cols * bins) return false;
     try {
+      // r8unorm: the matrix arrives as bytes (LUT indices); the shader reads
+      // them back as 0..1 and indexes the LUT directly.
       const tex = this._device.createTexture({
         size: [bins, layout.layerRows, layout.layers],
-        format: 'r32float',
+        format: 'r8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
       for (let l = 0; l < layout.layers; l++) {
@@ -273,7 +276,7 @@ export class GpuSpectrogram {
         this._device.queue.writeTexture(
           { texture: tex, origin: { x: 0, y: 0, z: l } },
           mags,
-          { offset: row0 * bins * 4, bytesPerRow: bins * 4, rowsPerImage: rows },
+          { offset: row0 * bins, bytesPerRow: bins, rowsPerImage: rows },
           { width: bins, height: rows, depthOrArrayLayers: 1 }
         );
       }

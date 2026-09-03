@@ -79,6 +79,7 @@ import { assumedSeconds, DECODE_BUDGET_BYTES, DECODE_HARD_LIMIT_BYTES } from '..
 import { SourceHandle } from '../js/app/source-handle.js';
 import { PipelineView, deriveStages as deriveStagesForHere } from '../js/app/pipeline-ui.js';
 import { windowRange, windowLabel, parseClock, clock as windowClock } from '../js/dsp/window-load.js';
+import { dbToByte, MAG_LEVELS } from '../js/render/spectrogram-quant.js';
 import { denoiseChannel, overlapWeights } from '../workers/denoise-worker.js';
 import { FFT as DnFFT, hann as dnHann } from '../js/fft.js';
 import { sha256HexSync } from '../js/loom/identity.js';
@@ -4848,6 +4849,24 @@ const hygieneCases = [
     const parsed2 = parseProjectEntries(new Map([['project.json', new TextEncoder().encode('{}')], ['source.bin', shared]]));
     assert.notEqual(parsed2.source, shared.buffer, 'a shared view is still sliced');
     assert.equal(parsed2.source.byteLength, 4);
+  },
+  async function spectrogramMatrixIsOneByteACell() {
+    assert.equal(MAG_LEVELS, 256);
+    assert.equal(dbToByte(-90, -90, 0), 0);
+    assert.equal(dbToByte(0, -90, 0), 255);
+    assert.equal(dbToByte(-45, -90, 0), 127, 'the painter\'s old ((db - min) * 255 / span) | 0');
+    assert.equal(dbToByte(-200, -90, 0), 0, 'clamped below');
+    assert.equal(dbToByte(12, -90, 0), 255, 'clamped above');
+    assert.equal(dbToByte(-45, 0, 0), 0, 'a zero span does not divide by zero');
+    const w = await readFile(new URL('../workers/spectrogram-worker.js', import.meta.url), 'utf8');
+    assert.match(w, /const mags = new Uint8Array\(cols \* bins\)/);
+    assert.match(w, /mags\[base \+ b\] = dbToByte\(db, MIN_DB, MAX_DB\);/);
+    const g = await readFile(new URL('../js/render/spectrogram-gpu.js', import.meta.url), 'utf8');
+    assert.match(g, /format: 'r8unorm'/);
+    assert.match(g, /offset: row0 \* bins, bytesPerRow: bins, rowsPerImage: rows/);
+    assert.match(g, /let t = clamp\(db, 0\.0, 1\.0\);/, 'the shader indexes the LUT from the normalised byte');
+    const sp = await readFile(new URL('../js/spectrogram.js', import.meta.url), 'utf8');
+    assert.match(sp, /let idx = \(d0 \+ \(mags\[base \+ b1\] - d0\) \* frac\) \| 0;/, 'the painter uses bytes as LUT indices');
   },
   async function repairRebuildReleasesThePreviousPairFirst() {
     const r = await readFile(new URL('../js/app/repair-controller.js', import.meta.url), 'utf8');

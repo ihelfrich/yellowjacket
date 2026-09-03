@@ -418,10 +418,7 @@ export class SpectrogramView extends EventTarget {
     const lut = this._buildLut(c);
     const id = this._imgCtx.createImageData(cols, bins);
     const px = new Uint32Array(id.data.buffer);
-    const mags = this._mags;
-    const minDb = this._minDb;
-    const span = (this._maxDb - this._minDb) || 1;
-    const scale = (LUT_SIZE - 1) / span;
+    const mags = this._mags;   // bytes: LUT indices, quantised in the worker
     const { fMax, logRatio } = this._freqScale();
     const binHz = this._sampleRate / (bins * 2);
 
@@ -438,8 +435,7 @@ export class SpectrogramView extends EventTarget {
       for (let col = 0; col < cols; col++) {
         const base = col * bins;
         const d0 = mags[base + b0];
-        const db = d0 + (mags[base + b1] - d0) * frac;
-        let idx = ((db - minDb) * scale) | 0;
+        let idx = (d0 + (mags[base + b1] - d0) * frac) | 0;
         if (idx < 0) idx = 0;
         else if (idx > LUT_SIZE - 1) idx = LUT_SIZE - 1;
         px[o + col] = lut[idx];

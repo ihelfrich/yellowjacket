@@ -314,3 +314,13 @@ their 300 × 150 defaults. On a full-width display the visible set scales
 with area, but it never exceeds a few tens of MB — the matrix is the only
 spectrogram allocation worth quantising (ledger rank 11: Uint8 halves it to
 7.8 MB on the CPU side and r8unorm on the GPU side).
+
+## Step 9 shipped locally — the spectrogram matrix is one byte a cell
+Ledger rank 11. The worker quantises dB to a LUT index (`dbToByte`, the
+painter's old `((db − min) · 255 / span) | 0`) and posts a Uint8Array; the
+2D painter uses the bytes as indices; the GPU texture is r8unorm and the
+shader reads the normalised byte straight into the LUT. Bin interpolation
+now happens on bytes, so a pixel can differ from the float path by one LUT
+step (0.35 dB) at most. Live (GPU path, demo): matrix 8000 × 1024 →
+**7.8 MB** (was 31.3), bytes span 0–228, no WebGPU validation errors, the
+spectrogram renders as before. Tests: 50 groups / 328 cases.

@@ -2,6 +2,7 @@
 // returns column-major magnitudes in dB clamped [-90, 0]. Frames stride evenly
 // when the clip would exceed maxCols columns.
 
+import { dbToByte } from '../js/render/spectrogram-quant.js';
 import { FFT, hann } from '../js/fft.js';
 
 const FFT_SIZE_DEFAULT = 2048;
@@ -24,7 +25,7 @@ self.onmessage = (e) => {
   const n = mono.length;
 
   if (!n) {
-    self.postMessage({ type: 'done', mags: new Float32Array(0), cols: 0, bins, minDb: MIN_DB, maxDb: MAX_DB });
+    self.postMessage({ type: 'done', mags: new Uint8Array(0), cols: 0, bins, minDb: MIN_DB, maxDb: MAX_DB });
     return;
   }
 
@@ -35,7 +36,7 @@ self.onmessage = (e) => {
   const win = hann(fftSize);
   const re = new Float32Array(fftSize);
   const im = new Float32Array(fftSize);
-  const mags = new Float32Array(cols * bins);
+  const mags = new Uint8Array(cols * bins);   // one LUT index per cell (spectrogram-quant.js)
 
   // 0 dBFS reference: peak bin of a full-scale sine = sum(window) / 2
   let winSum = 0;
@@ -55,10 +56,8 @@ self.onmessage = (e) => {
     const base = c * bins;
     for (let b = 0; b < bins; b++) {
       const m = Math.sqrt(re[b] * re[b] + im[b] * im[b]) * norm;
-      let db = m > 0 ? DB_PER_LN * Math.log(m) : MIN_DB;
-      if (db < MIN_DB) db = MIN_DB;
-      else if (db > MAX_DB) db = MAX_DB;
-      mags[base + b] = db;
+      const db = m > 0 ? DB_PER_LN * Math.log(m) : MIN_DB;
+      mags[base + b] = dbToByte(db, MIN_DB, MAX_DB);
     }
 
     const pct = ((c + 1) / cols) * 100;

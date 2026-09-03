@@ -253,3 +253,33 @@ LOAD THE DEMO SONG → TRANSCRIPT → **PLAY IT · QUICK TAKE** (the machine run
 
 Before: the header knew only the bench. With the machine running it read PLAY,
 and pressing it stopped the machine *and started the song* — "I can't stop it".
+
+## 14. A long capture loads a window at a time
+
+SHELF → SIGNAL → **HM01, A FULL HOUR** (badge `LONG · MP3`).
+
+| checkpoint | expected |
+|---|---|
+| click the card | a window row appears under it: `1:03:25 TOTAL · LOAD A WINDOW FROM [0:00] [5:00 LONG ▾] LOAD WINDOW · POSITION IS ≈ FOR A VARIABLE-BITRATE FILE` |
+| `20:00`, `2:00 LONG`, LOAD WINDOW | ~1 s later: source `HM01, A FULL HOUR · ≈ 20:00 + 2:00 — …`, 120.0 s at the file's own rate (32 kHz for this capture), spectrogram at that rate |
+| a host that ignores Range | `WINDOW REFUSED · <host> sent the whole file instead of a range` |
+
+## 15. Export streams to disk
+
+RACK → WAV 24 (Chromium with the File System Access API).
+
+| checkpoint | expected |
+|---|---|
+| a real click | the save picker opens with `<name>.bench.24.wav`; the RACK tab crawls (`EXPORT`) while chunks write; status `EXPORTED · 44 kHz · PEAK … · DITHER …` |
+| cancel the picker | `EXPORT CANCELLED`, nothing written |
+| no picker (Safari, Firefox) or a scripted click | the Blob path delivers the same bytes (tested byte-identical) |
+
+## 16. A discarded tab comes back on its own
+
+Chromium: `chrome://discards` → Urgent discard on the bench tab → return.
+
+| checkpoint | expected |
+|---|---|
+| source ≤ 100 MB encoded | status `THE BROWSER DISCARDED THIS TAB · RESTORING…`, then `RESTORED · <name> · AFTER A TAB DISCARD`, same SHA, no click |
+| larger source | the RESUME panel with a 4 px hazard rule: `THE BROWSER DISCARDED THIS TAB · SAVED N MIN AGO · …`, RESUME focused |
+| a restore fault | the panel stays; no second attempt |
