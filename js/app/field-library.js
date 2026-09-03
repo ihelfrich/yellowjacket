@@ -16,7 +16,7 @@ import { MineStore, formatMineMeta } from './mine.js';
 // content — Cicada Orni is 96 kHz on the label and ordinary bandwidth inside,
 // so the spectrogram, not the badge, is the authority on what a file holds.
 
-export const SHELVES = Object.freeze(['FIELD', 'VOICE', 'SCORE', 'MUSIC', 'ODD']);
+export const SHELVES = Object.freeze(['FIELD', 'VOICE', 'SIGNAL', 'SCORE', 'MUSIC', 'ODD']);
 // The sixth drawer is not in the manifest: MINE is whatever this visitor kept,
 // held in the browser's private storage (js/app/mine.js), never published.
 export const MINE_SHELF = 'MINE';
@@ -76,6 +76,52 @@ export const FIELD_RECORDINGS = Object.freeze([
   { id: 'hiawatha', shelf: 'VOICE', kind: 'POEM', title: "HIAWATHA'S CHILDHOOD", place: 'Longfellow, read aloud', dur: '4:52',
     license: 'PD', source: IA_ITEM + 'poems_every_child_should_know_librivox',
     light: light('poems_every_child_should_know_librivox', 'poems_every_child_21_burt.mp3', 4.5) },
+
+  // ---------- VOICE (speech that is a work of the US government, so public domain) ----------
+  { id: 'fdr-1933', shelf: 'VOICE', kind: 'ADDRESS', title: 'THE FIRST FIRESIDE CHAT', place: 'Franklin D. Roosevelt · March 12, 1933', dur: '13:09',
+    license: 'PD', source: IA_ITEM + 'FdrFiresideChat_740',
+    light: light('FdrFiresideChat_740', 'FDR_First_Fireside_Chat_3-12-33-1.mp3', 9.0) },
+  { id: 'voa-2019', shelf: 'VOICE', kind: 'NEWSCAST', title: 'VOA NEWS, 00:00 UTC', place: 'Voice of America · July 11, 2019', dur: '4:58',
+    license: 'PD', source: IA_ITEM + 'voanewscasts2019-07-11',
+    light: light('voanewscasts2019-07-11', 'VOA-newscast-2019-07-11-0000Z.mp3', 2.3) },
+
+  // ---------- SIGNAL ----------
+  // Radio as it arrives: time stations, a distress-frequency sign-off, a
+  // wartime code test, and the espionage stations anyone with a shortwave
+  // set can hear. The transmissions are open broadcasts; the recordings are
+  // by hobbyists and agencies who released them CC0 or as US government
+  // work. Nothing here is decrypted — one-time pads cannot be — but the
+  // cadence, the tones, and the symbol timing are all material.
+  { id: 'wwv-1991', shelf: 'SIGNAL', kind: 'TIME STATION', title: 'WWV, FORT COLLINS', place: 'NIST · December 8, 1991, 02:18 UTC', dur: '13:10',
+    license: 'PD', source: IA_ITEM + 'radio-station-wwv-1991-12-08-0218-utc',
+    light: light('radio-station-wwv-1991-12-08-0218-utc', 'Radio%20Station%20WWV%20-%201991-12-08%20%280218%20UTC%29.mp3', 10.2),
+    hi: hi('radio-station-wwv-1991-12-08-0218-utc', 'Radio%20Station%20WWV%20-%201991-12-08%20%280218%20UTC%29.flac', 79.2, 48000, 24) },
+  { id: 'jjy-2001', shelf: 'SIGNAL', kind: 'TIME STATION', title: 'JJY SIGNS OFF, 8 MHz', place: 'Japan · March 31, 2001, 03:00 UTC', dur: '1:28',
+    license: 'CC0', source: IA_ITEM + 'JapanTimeSignalRadioStationJjy8MhzCloses',
+    light: light('JapanTimeSignalRadioStationJjy8MhzCloses', 'jjymono.mp3', 0.7) },
+  { id: 'kossuth-540', shelf: 'SIGNAL', kind: 'MEDIUMWAVE', title: 'KOSSUTH RADIO, 540 kHz', place: 'Hungary · time signal and identification, 2015', dur: '0:32',
+    license: 'CC0', source: IA_ITEM + 'MR1KossuthRadio540KHzHungary',
+    light: light('MR1KossuthRadio540KHzHungary', 'MR1%20Kossuth%20Radio%20-%20540%20KHz%20-%20Hungary.mp3', 0.4) },
+  { id: 'uvb76-2010', shelf: 'SIGNAL', kind: 'THE BUZZER', title: 'UVB-76 WITH A VOICE MESSAGE', place: 'Russia, 4625 kHz · December 5, 2010, 12:22 UTC', dur: '2:40',
+    license: 'CC0', source: IA_ITEM + 'UVB76activity',
+    light: light('UVB76activity', 'UVB-76-05-12-2010-1222UTC.mp3', 0.6),
+    hi: hi('UVB76activity', 'UVB-76-05-12-2010-1222UTC.flac', 1.6, 8000, 16) },
+  { id: 'hm01-2019', shelf: 'SIGNAL', kind: 'NUMBERS', title: 'HM01 AND A FAX BURST', place: 'Cuba, 9240 kHz · July 24, 2019, 09:03 UTC', dur: '2:54',
+    license: 'PD', source: IA_ITEM + 'cuban-numbers-station-and-sw-fax.-2019-07-24-t-09-03-00-z-9240.0k-hz',
+    light: light('cuban-numbers-station-and-sw-fax.-2019-07-24-t-09-03-00-z-9240.0k-hz', 'Cuban%20numbers%20station%20and%20SW%20fax.%202019-07-24T09_03_00Z_9240.0kHz.mp3', 0.6),
+    hi: hi('cuban-numbers-station-and-sw-fax.-2019-07-24-t-09-03-00-z-9240.0k-hz', 'Cuban%20numbers%20station%20and%20SW%20fax.%202019-07-24T09_03_00Z_9240.0kHz.flac', 2.3, 8000, 16) },
+  { id: 'm08-2009', shelf: 'SIGNAL', kind: 'NUMBERS · MORSE', title: 'M08, CUBAN NUMBERS IN MORSE', place: 'Cuba, 11435 kHz CW · December 23, 2009, 17:59 UTC', dur: '1:25',
+    license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
+    light: light('ShortwaveEspionageBroadcasts', 'Cuba%20DGI%20-%20M08%2011435%20CW%201759z-1800z%2012-23-09.mp3', 1.3) },
+  { id: 'sk01-2009', shelf: 'SIGNAL', kind: 'NUMBERS · DIGITAL', title: 'SK01, DATA BURSTS', place: 'Cuba, 11435 kHz AM · December 23, 2009, 17:44 UTC', dur: '0:45',
+    license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
+    light: light('ShortwaveEspionageBroadcasts', 'Cuba%20DGI%20-%20SK01%2011435%20AM%201744z%2012-23-09.mp3', 0.7) },
+  { id: 'g11-2010', shelf: 'SIGNAL', kind: 'NUMBERS', title: 'G11, A WOMAN COUNTING IN GERMAN', place: 'Austria, 8091 kHz USB · March 29, 2010, 09:35 UTC', dur: '3:17',
+    license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
+    light: light('ShortwaveEspionageBroadcasts', 'Austria%20HNA%20-%20G11%208091%20USB%200935z-0938z%2003-29-10.mp3', 3.0) },
+  { id: 'code-1942', shelf: 'SIGNAL', kind: 'MORSE', title: 'SIGNAL CORPS CODE APTITUDE TEST', place: 'US War Department training record · c. 1942', dur: '4:05',
+    license: 'PD', source: IA_ITEM + 'U.S._Armed_Forces_Institute_Basic_Radio_Code_ca1942',
+    light: light('U.S._Armed_Forces_Institute_Basic_Radio_Code_ca1942', '01A_Signal_Corps_Code_Aptitude_Test.mp3', 3.7) },
 
   // ---------- ODD (Voyager) ----------
   // NASA tape 495-AAB is catalogued "Voyager Earth Sounds": the Golden Record

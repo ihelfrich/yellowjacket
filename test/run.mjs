@@ -990,7 +990,9 @@ const lifecycleCases = [
           rec.id + ' variant lives under its source item');
         assert.ok(Number.isFinite(v.mb) && v.mb > 0, rec.id + ' states its size');
         if (v.format === 'FLAC') {
-          assert.ok([44100, 48000, 88200, 96000, 192000].includes(v.rate), rec.id + ' plausible rate ' + v.rate);
+          // 8000 is real: SDR captures of a 3 kHz-wide shortwave channel are
+          // archived at 8 kHz mono, and the badge must say so, not round up.
+          assert.ok([8000, 44100, 48000, 88200, 96000, 192000].includes(v.rate), rec.id + ' plausible rate ' + v.rate);
           assert.ok([16, 24].includes(v.bits), rec.id + ' plausible depth ' + v.bits);
           assert.match(v.url, /\.flac$/i, rec.id + ' lossless variant is a .flac');
         }

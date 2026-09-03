@@ -50,7 +50,16 @@ the lava caves of Pico Island, surf at Cox's Bazar, a Somerset thunderstorm, a
 brook, spring peepers, night insects in Los Gatos, a cicada in one Catalan tree,
 a Sevilla street under church bells. **VOICE** holds words, because a bench that
 transcribes speech had no speech to try: Longfellow's *Hiawatha's Childhood*
-read aloud. **SCORE** holds Bach's Goldberg Variations from Musopen, in 24-bit.
+read aloud, Roosevelt's first fireside chat, and a Voice of America newscast
+(both works of the US government, so public domain). **SIGNAL** holds radio as
+it arrives: WWV from Fort Collins in 1991 (NIST, 48 kHz/24-bit), JJY signing off
+its 8 MHz service in 2001, a Hungarian mediumwave time signal, the Russian
+Buzzer UVB-76 carrying a voice message, three Cuban espionage stations (HM01
+with a fax burst, M08 in Morse, SK01 in data bursts), an Austrian numbers
+station, and a 1942 Signal Corps code aptitude test. The transmissions are open
+broadcasts; the recordings were released CC0 by the hobbyists and agencies
+who made them. Nothing is decrypted — one-time pads cannot be — but cadence,
+tones, and symbol timing are all material for HARVEST and QUICK TAKE. **SCORE** holds Bach's Goldberg Variations from Musopen, in 24-bit.
 **MUSIC** holds two 78s from 1921 and 1922 — Kid Ory's Sunshine Orchestra, the
 first jazz record by a Black New Orleans band, and Ethel Waters singing —
 transferred at 96 kHz/24-bit. **ODD** holds Stephen McGreevy's recordings of
