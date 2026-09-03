@@ -76,6 +76,7 @@ import {
 } from '../js/dsp/preview.js';
 import { soundingSources, transportLabel, transportTitle } from '../js/app/transport.js';
 import { assumedSeconds, DECODE_BUDGET_BYTES, DECODE_HARD_LIMIT_BYTES } from '../js/dsp/native-rate.js';
+import { SourceHandle } from '../js/app/source-handle.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -4670,8 +4671,56 @@ const probeCases = [
   },
 ];
 
+// ---------- source handle: the encoded bytes leave memory once they are on disk ----------
+
+const sourceHandleCases = [
+  function residentUntilSpilledThenReadBack() {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]).buffer;
+    const h = new SourceHandle(bytes, { hash: 'sha256:abc', generation: 7 });
+    assert.equal(h.size, 5);
+    assert.equal(h.byteLength, 5, 'legacy readers ask for byteLength');
+    assert.equal(h.hash, 'sha256:abc');
+    assert.equal(h.resident, true);
+    assert.equal(h.spilled, false);
+    let reads = 0;
+    assert.equal(h.spill(() => { reads++; return Promise.resolve(new Uint8Array([1, 2, 3, 4, 5]).buffer); }), true);
+    assert.equal(h.resident, false);
+    assert.equal(h.spilled, true);
+    assert.equal(h.byteLength, 5, 'size survives the spill');
+    return h.bytes().then((b) => { assert.equal(b.byteLength, 5); assert.equal(reads, 1, 'read from the durable copy'); });
+  },
+  async function bytesBeforeSpillNeedNoReader() {
+    const h = new SourceHandle(new Uint8Array(3).buffer);
+    const b = await h.bytes();
+    assert.equal(b.byteLength, 3);
+  },
+  async function mismatchedOrMissingCopiesAreRefused() {
+    const h = new SourceHandle(new Uint8Array(5).buffer);
+    h.spill(() => Promise.resolve(new Uint8Array(4).buffer));
+    await assert.rejects(() => h.bytes(), /does not match/);
+    const gone = new SourceHandle(new Uint8Array(5).buffer);
+    gone._bytes = null;                     // simulate a spill whose reader was never set
+    await assert.rejects(() => gone.bytes(), /no longer available/);
+    assert.equal(gone.spill(null), false, 'a spill without a reader is refused');
+    assert.throws(() => new SourceHandle('not bytes'), TypeError);
+  },
+  async function autosaveSpillsOnlyAfterTheWriteAndOnlyForTheSameGeneration() {
+    const src = await readFile(new URL('../js/app/persist-controller.js', import.meta.url), 'utf8');
+    const flush = src.slice(src.indexOf('async function saveNow()'), src.indexOf('async function exportProject()'));
+    assert.match(flush, /await opfs\.writeBytes\('source\.bin', await handle\.bytes\(\)\)/, 'the write reads through the handle');
+    const writeAt = flush.indexOf("writeBytes('source.bin'");
+    const spillAt = flush.indexOf('handle.spill(');
+    assert.ok(spillAt > writeAt, 'spill happens after the write');
+    assert.match(flush, /R\.sourceBytes === handle && R\.generation === gen/, 'and only if this is still the loaded source');
+    const keep = await readFile(new URL('../js/app/field-library.js', import.meta.url), 'utf8');
+    assert.match(keep, /bytes: await R\.sourceBytes\.bytes\(\)/, 'KEEP reads the bytes back');
+    assert.match(src, /await R\.sourceBytes\.bytes\(\)/, 'PROJECT OUT reads the bytes back');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['source handle', sourceHandleCases],
   ['container probes', probeCases],
   ['transport', transportCases],
   ['live preview', previewCases],

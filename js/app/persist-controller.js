@@ -175,11 +175,17 @@ export function initPersistController(ctx) {
       // is in flight and the next save skips the write entirely, leaving the
       // first file's audio on disk under the second file's project state.
       const gen = R.generation;
-      const bytes = R.sourceBytes;
-      if (bytes && bytesGeneration !== gen) {
-        await opfs.writeBytes('source.bin', bytes);
+      const handle = R.sourceBytes;
+      if (handle && bytesGeneration !== gen) {
+        await opfs.writeBytes('source.bin', await handle.bytes());
         bytesGeneration = gen;
         samplesWritten.clear();
+        // The durable copy exists: release the memory copy, unless another
+        // file arrived while the write was in flight (then this handle is
+        // already history and source.bin will be rewritten for the new one).
+        if (R.sourceBytes === handle && R.generation === gen && typeof handle.spill === 'function') {
+          handle.spill(() => opfs.readBytes('source.bin'));
+        }
       }
       for (const file of sampleFiles) {
         if (samplesWritten.has(file.id)) continue;
@@ -208,7 +214,8 @@ export function initPersistController(ctx) {
     status('PACKING PROJECT…', true);
     try {
       const serialized = serializeProject(P, R);
-      const archive = buildBundle(projectEntries(serialized, R.sourceBytes));
+      const sourceBytes = R.sourceBytes ? await R.sourceBytes.bytes() : null;
+      const archive = buildBundle(projectEntries(serialized, sourceBytes));
       download(archive, safeProjectName(P.fileName), 'application/vnd.yellowjacket.project+zip');
       const mb = archive.byteLength / 1048576;
       status('PROJECT SAVED · ' + mb.toFixed(mb >= 10 ? 0 : 1) + ' MB · '

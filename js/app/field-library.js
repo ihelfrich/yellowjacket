@@ -223,7 +223,7 @@ export function initFieldLibrary(ctx) {
     const report = ctx.engine && ctx.engine.decodeReport;
     try {
       const res = await mine.put({
-        name, bytes: R.sourceBytes, hash: R.sourceHash, seconds: R.buffer.duration,
+        name, bytes: await R.sourceBytes.bytes(), hash: R.sourceHash, seconds: R.buffer.duration,
         rate: (report && report.nativeRate) || 0, channels: R.buffer.numberOfChannels,
       });
       await refreshMine();

@@ -2,6 +2,7 @@
 // pipeline, generation tokens. Moved from main.js in the STRUCTURE refactor.
 
 import { buildPeakPyramid } from '../render/peaks.js';
+import { SourceHandle } from './source-handle.js';
 import { fingerprintId, sha256Hex } from './fingerprint.js';
 
 export const DEMO_TRACK = Object.freeze({
@@ -119,7 +120,7 @@ export function initSourceController(ctx) {
       r.sampleRate = engine.sampleRate;
       r.renderedBuffer = null;
       r.analysis = null;
-      r.sourceBytes = sourceBytes;
+      r.sourceBytes = new SourceHandle(sourceBytes, { hash: sourceHash, generation: r.generation });
       r.sourceHash = sourceHash;
       // One pyramid, shared by every view that draws this source.
       r.peaks = buildPeakPyramid(r.mono);

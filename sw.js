@@ -23,6 +23,7 @@ const PRECACHE = [
   'js/app/source-controller.js',
   'js/app/field-library.js',
   'js/app/transport.js',
+  'js/app/source-handle.js',
   'js/app/mine.js',
   'js/dsp/native-rate.js',
   'js/dsp/varispeed.js',

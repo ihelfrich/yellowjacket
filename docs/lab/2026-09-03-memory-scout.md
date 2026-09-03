@@ -176,3 +176,14 @@ two (Codex bug 4). A failed offline decode now carries a reason (bug 5).
 Live check (fresh origin, 96 kHz output): Traum decodes at 48 000 Hz,
 planned footprint 161 MB (was ~320), plays at 1×, preview/HARVEST/QUICK TAKE
 unaffected. Tests: 45 groups / 300 cases.
+
+## Step 3 shipped locally — the encoded source leaves memory once it is on disk
+`js/app/source-handle.js`: `R.sourceBytes` is now a `SourceHandle` — `size`,
+`hash`, `byteLength` (for the identity readers in LOOM and MACHINE) — whose
+bytes are released the moment autosave has written `source.bin` to OPFS for
+the same generation (`handle.spill(reader)` in persist-controller's flush).
+KEEP and PROJECT OUT read the bytes back through `await handle.bytes()`,
+which checks the size on the way in. Live: Traum resident 41.9 MB at load →
+spilled 500 ms later → read back in 20 ms → KEEP works → reload → RESUME
+restores from `source.bin` (same SHA, 48 kHz) → spills again. Without OPFS
+writes (Safari) the bytes simply stay resident. Tests: 46 groups / 304 cases.
