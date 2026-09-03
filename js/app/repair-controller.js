@@ -90,6 +90,11 @@ export function initRepairController(ctx) {
         R.buffer = R.original.buffer;
         R.mono = R.original.mono;
       } else {
+        // Point the runtime at the original before allocating, so the previous
+        // repaired pair is collectable during the rebuild instead of adding a
+        // third full buffer to the peak.
+        R.buffer = R.original.buffer;
+        R.mono = R.original.mono;
         const out = new AudioBuffer({
           length: src.length,
           numberOfChannels: src.numberOfChannels,

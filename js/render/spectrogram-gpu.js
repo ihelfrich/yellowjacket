@@ -256,6 +256,7 @@ export class GpuSpectrogram {
     if (!mags || !(cols > 0) || !(bins > 0)) {
       this._hasData = false;
       this._dirty = true;
+      if (this._dataTex) { this._dataTex.destroy(); this._dataTex = null; }
       return true;
     }
     const layout = chunkLayout(cols, bins, this._maxDim, this._maxLayers);

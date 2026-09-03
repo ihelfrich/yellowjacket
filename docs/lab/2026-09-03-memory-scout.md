@@ -187,3 +187,26 @@ which checks the size on the way in. Live: Traum resident 41.9 MB at load →
 spilled 500 ms later → read back in 20 ms → KEEP works → reload → RESUME
 restores from `source.bin` (same SHA, 48 kHz) → spills again. Without OPFS
 writes (Safari) the bytes simply stay resident. Tests: 46 groups / 304 cases.
+
+## Step 4 shipped locally — seven hygiene fixes from the ledger
+From docs/lab/ledger/*.md (subsystem readers), all low risk, pinned in tests:
+1. **Transcriber released after every job and on source change**
+   (`Transcriber.dispose()`): the resident model was the ledger's largest single
+   allocation — 206 MB for BASE on WebGPU, 586 MB for SMALL — and it lived until
+   the tab died. The next TRANSCRIBE reloads from the Cache API in seconds.
+2. **Model labels tell the truth**: the old "~250 MB" was the WASM figure; on
+   WebGPU (the path Chrome takes here) SMALL downloads 586 MB. Labels now show
+   both.
+3. **Re-render drops the previous take first** (buffer, mono, peaks) instead
+   of holding it through the new pipeline: −127 MB peak at 48 kHz, −254 at 96.
+4. **Source loudness measured once per generation**, not per render (one
+   full-buffer copy and a worker measurement saved per RENDER).
+5. **Sequencer keeps one fitted take per track** — every tempo visited used
+   to leave an AudioBuffer in a map with no eviction.
+6. **HARVEST worker retired after each job** (spawns again in ~100 ms).
+7. **Spectrogram frees the stale 2D image and the GPU texture** when data is
+   cleared (32.8 MB during every STFT, indefinitely after a clear); **repair
+   rebuild** points the runtime at the original before allocating, so the
+   previous repaired pair is collectable (−126 MB peak at 48 kHz).
+Live (fresh origin): render → A/B → re-render OK; HARVEST twice OK (24 slices
+both times); `dispose()` idle → MODEL RELEASED. Tests: 47 groups / 310 cases.

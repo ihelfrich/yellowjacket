@@ -47,6 +47,7 @@ import { initLoomController } from './loom/controller.js';
 
 const COPY = {
   idle: 'IDLE',
+  modelIdle: 'MODEL RELEASED · RELOADS FROM CACHE ON THE NEXT TRANSCRIBE',
   noFile: 'NO FILE',
   decoding: 'DECODING…',
   decodeFail: "Decode failed. This file isn't audio this browser can read.",

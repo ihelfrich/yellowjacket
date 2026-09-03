@@ -969,9 +969,23 @@ export function initMachineController(ctx) {
       harvestWorker = new Worker(new URL('../../workers/harvest-worker.js', import.meta.url), { type: 'module' });
     }
     const gen = R.generation;
+    // HARVEST is rare and the worker caches nothing worth keeping; its isolate
+    // and scratch go with it after each job.
+    const retire = () => {
+      if (!harvestWorker) return;
+      try { harvestWorker.terminate(); } catch (e) { /* already gone */ }
+      harvestWorker = null;
+    };
+    harvestWorker.onerror = () => {
+      btn.disabled = false;
+      btn.classList.remove('is-working');
+      retire();
+      statusFault('HARVEST FAILED · the worker died');
+    };
     harvestWorker.onmessage = (e) => {
       btn.disabled = false;
       btn.classList.remove('is-working');
+      retire();
       const msg = e.data || {};
       if (gen !== R.generation) return;
       if (msg.type === 'error') {

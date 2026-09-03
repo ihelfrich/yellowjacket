@@ -166,6 +166,9 @@ export class SpectrogramView extends EventTarget {
     this._cols = 0;
     this._bins = 0;
     this._imgSig = '';
+    // The previous full-resolution image (cols × bins × 4) would otherwise
+    // stay allocated for the whole STFT of the next file.
+    if (this._img && (this._img.width > 1 || this._img.height > 1)) { this._img.width = 1; this._img.height = 1; }
     this._sampleRate = sampleRate || 0;
     const prevDuration = this.duration;
     this.duration = mono && mono.length && sampleRate ? mono.length / sampleRate : 0;

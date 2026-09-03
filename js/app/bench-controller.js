@@ -20,6 +20,20 @@ export function initBenchController(ctx) {
   const R = store.runtime;
 
   let abState = 'a';           // 'a' original, 'b' rendered
+  let beforeCache = null;      // {key, integrated}: source loudness per generation
+  function releaseTranscriber(why) {
+    if (!transcriber || typeof transcriber.dispose !== 'function') return;
+    if (transcriber.dispose()) {
+      currentModel = null;
+      setLed('ledModel', 'off');
+      $('modelState').textContent = COPY.modelIdle || 'MODEL RELEASED · RELOADS FROM CACHE ON THE NEXT TRANSCRIBE';
+    }
+    void why;
+  }
+  store.addEventListener('change', (e) => {
+    const kind = e.detail && e.detail.kind;
+    if (kind === 'source' || kind === 'source-clear') releaseTranscriber(kind);
+  });
   let renderFresh = false;
   // Peaks for the rendered take, built once per render and reused by both A/B
   // sides so the blue ghost costs nothing on toggle. Null until a render exists.
@@ -229,6 +243,10 @@ export function initBenchController(ctx) {
       $('modelState').textContent = COPY.transcribeFail;
       statusFault(COPY.transcribeFail + ' — ' + (e.message || e));
     } finally {
+      // The model leaves memory with the job; the next press reloads it from
+      // the browser cache in seconds. Holding 206–586 MB between jobs was
+      // the ledger's largest single allocation.
+      releaseTranscriber('job done');
       btn.disabled = false;
       btn.classList.remove('is-working');
       $('progTrans').hidden = true;
@@ -601,7 +619,22 @@ export function initBenchController(ctx) {
     status(COPY.rendering, true);
     try {
       const gen = R.generation;
-      const before = (await measureViaWorker(R.buffer)).integrated;
+      // Drop the previous take before the new pipeline allocates: a re-render
+      // used to hold the old buffer, mono, and peaks through the whole run.
+      if (R.renderedBuffer) {
+        if (abState === 'b') setAb('a');
+        R.renderedBuffer = null;
+        renderedMono = null;
+        renderedPeaks = null;
+        waveMain.setGhost(null);
+      }
+      // The source does not change between renders, so its loudness is
+      // measured once per generation (repairs re-key it), not per render.
+      const beforeKey = gen + ':' + ((R.repairs && R.repairs.length) || 0);
+      if (!beforeCache || beforeCache.key !== beforeKey) {
+        beforeCache = { key: beforeKey, integrated: (await measureViaWorker(R.buffer)).integrated };
+      }
+      const before = beforeCache.integrated;
       const rendered = await renderChain(R.buffer, cuts, P.chain, (pct) => {
         prog.querySelector('.yj-progress-fill').style.width = pct + '%';
         prog.querySelector('.yj-progress-note').textContent = Math.round(pct) + '%';

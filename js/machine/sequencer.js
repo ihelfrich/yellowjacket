@@ -136,6 +136,9 @@ export class Sequencer extends EventTarget {
     if (fitSec > 0) {
       const key = fitKey(reversed, fitSec, offsetSec, sliceSec);
       if (!cached.fitted.has(key)) {
+        // One fitted take per track: every tempo the user passed through used
+        // to leave its own AudioBuffer in this map with no eviction.
+        cached.fitted.clear();
         let baked = null;
         try {
           baked = createFittedBuffer(ctx, sample, reversed, fitSec, offsetSec, sliceSec);

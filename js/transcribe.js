@@ -2,11 +2,15 @@
 // progress mapping, and word assembly. Times are seconds on the ORIGINAL buffer.
 
 export const MODELS = [
-  { id: 'onnx-community/whisper-tiny.en_timestamped',  label: 'WHISPER TINY EN · ~41 MB · fastest',  lang: 'en' },
-  { id: 'onnx-community/whisper-base.en_timestamped',  label: 'WHISPER BASE EN · ~77 MB · default',  lang: 'en' },
-  { id: 'onnx-community/whisper-small.en_timestamped', label: 'WHISPER SMALL EN · ~250 MB · best en', lang: 'en' },
-  { id: 'onnx-community/whisper-base_timestamped',     label: 'WHISPER BASE · ~77 MB · 99 languages', lang: null },
-  { id: 'onnx-community/whisper-small_timestamped',    label: 'WHISPER SMALL · ~250 MB · 99 languages', lang: null },
+  // Sizes are what the browser actually downloads and holds: on WebGPU the
+  // encoder is fp32 and the decoder q4 (the larger figure); on WASM both are
+  // q8 (the smaller). The old labels quoted only the WASM figure, so SMALL
+  // read as 250 MB on a machine that would fetch 586.
+  { id: 'onnx-community/whisper-tiny.en_timestamped',  label: 'WHISPER TINY EN · 120 MB GPU / 41 MB WASM · fastest',  lang: 'en' },
+  { id: 'onnx-community/whisper-base.en_timestamped',  label: 'WHISPER BASE EN · 206 MB GPU / 77 MB WASM · default',  lang: 'en' },
+  { id: 'onnx-community/whisper-small.en_timestamped', label: 'WHISPER SMALL EN · 586 MB GPU / 249 MB WASM · best en', lang: 'en' },
+  { id: 'onnx-community/whisper-base_timestamped',     label: 'WHISPER BASE · 206 MB GPU / 77 MB WASM · 99 languages', lang: null },
+  { id: 'onnx-community/whisper-small_timestamped',    label: 'WHISPER SMALL · 586 MB GPU / 249 MB WASM · 99 languages', lang: null },
 ];
 
 export const FILLERS = /^(um+|uh+|erm+|hmm+|mhm+|like|y'know|you know|i mean|sort of|kind of|basically|actually|literally|right)$/i;
@@ -97,6 +101,23 @@ export class Transcriber extends EventTarget {
     const entry = MODELS.find((m) => m.id === this._modelId);
     if (entry) return entry.lang;
     return /\.en/.test(this._modelId || '') ? 'en' : null;
+  }
+
+  // Release the worker and with it the resident model (206 MB for the default
+  // on WebGPU, 586 MB for SMALL — the ledger's single largest allocation).
+  // The next transcribe reloads from the Cache API in a few seconds; the
+  // bench already reloads when modelLoaded is false. Safe only when idle.
+  dispose() {
+    if (this._load || this._job) return false;
+    if (this._worker) {
+      try { this._worker.terminate(); } catch (e) { /* already gone */ }
+    }
+    this._worker = null;
+    this._device = null;
+    this._modelLoaded = false;
+    this._modelId = null;
+    this.dispatchEvent(new CustomEvent('disposed'));
+    return true;
   }
 
   _ensureWorker() {

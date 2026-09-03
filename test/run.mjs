@@ -4718,8 +4718,54 @@ const sourceHandleCases = [
   },
 ];
 
+// ---------- memory hygiene: what a session releases, pinned in source ----------
+
+const hygieneCases = [
+  async function transcriberIsReleasedAfterTheJobAndOnSourceChange() {
+    const t = await readFile(new URL('../js/transcribe.js', import.meta.url), 'utf8');
+    assert.match(t, /dispose\(\) \{[\s\S]*?this\._worker\.terminate\(\)/, 'dispose terminates the worker');
+    assert.match(t, /if \(this\._load \|\| this\._job\) return false;/, 'never mid-job');
+    assert.match(t, /586 MB GPU \/ 249 MB WASM/, 'SMALL says what it really downloads');
+    const b = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');
+    const finallyAt = b.indexOf("releaseTranscriber('job done')");
+    assert.ok(finallyAt > 0 && b.slice(finallyAt - 400, finallyAt).includes('finally {'), 'released in finally, success or failure');
+    assert.match(b, /kind === 'source' \|\| kind === 'source-clear'\) releaseTranscriber/, 'and when the source changes');
+  },
+  async function reRenderDropsTheOldTakeAndReusesTheSourceLoudness() {
+    const b = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');
+    const click = b.slice(b.indexOf("$('btnRender').addEventListener"), b.indexOf("R.renderedBuffer = rendered;"));
+    assert.match(click, /R\.renderedBuffer = null;[\s\S]*renderedMono = null;[\s\S]*renderedPeaks = null;/, 'old take dropped before the pipeline runs');
+    assert.ok(click.indexOf('R.renderedBuffer = null') < click.indexOf('renderChain('), 'and before renderChain');
+    assert.match(click, /beforeCache\.key !== beforeKey/, 'source loudness measured once per generation');
+  },
+  async function sequencerKeepsOneFittedTakePerTrack() {
+    const s = await readFile(new URL('../js/machine/sequencer.js', import.meta.url), 'utf8');
+    assert.match(s, /cached\.fitted\.clear\(\);\s*let baked = null;/, 'the map never grows past one entry');
+  },
+  async function harvestWorkerRetiresAfterEachJob() {
+    const m = await readFile(new URL('../js/machine/controller.js', import.meta.url), 'utf8');
+    const run = m.slice(m.indexOf('function runHarvest()'), m.indexOf('function runHarvest()') + 2500);
+    assert.match(run, /harvestWorker\.terminate\(\)/, 'terminated');
+    assert.match(run, /harvestWorker\.onmessage = \(e\) => \{[\s\S]*?retire\(\);/, 'after the result arrives');
+    assert.match(run, /harvestWorker\.onerror = \(\) => \{[\s\S]*?retire\(\);/, 'and on failure');
+  },
+  async function spectrogramFreesStaleImageAndTexture() {
+    const sp = await readFile(new URL('../js/spectrogram.js', import.meta.url), 'utf8');
+    assert.match(sp, /this\._mags = null;[\s\S]{0,400}this\._img\.width = 1; this\._img\.height = 1;/, '2D image shrunk when data is cleared');
+    const g = await readFile(new URL('../js/render/spectrogram-gpu.js', import.meta.url), 'utf8');
+    const nullBranch = g.slice(g.indexOf('if (!mags || !(cols > 0) || !(bins > 0)) {'), g.indexOf('if (!mags || !(cols > 0) || !(bins > 0)) {') + 300);
+    assert.match(nullBranch, /this\._dataTex\.destroy\(\); this\._dataTex = null;/, 'GPU texture destroyed on clear');
+  },
+  async function repairRebuildReleasesThePreviousPairFirst() {
+    const r = await readFile(new URL('../js/app/repair-controller.js', import.meta.url), 'utf8');
+    const rebuild = r.slice(r.indexOf('} else {\n        // Point the runtime at the original'), r.indexOf('const out = new AudioBuffer({'));
+    assert.match(rebuild, /R\.buffer = R\.original\.buffer;\s*R\.mono = R\.original\.mono;/, 'previous pair unreachable before allocating the next');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['memory hygiene', hygieneCases],
   ['source handle', sourceHandleCases],
   ['container probes', probeCases],
   ['transport', transportCases],
