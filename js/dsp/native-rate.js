@@ -24,7 +24,12 @@ const MAX_RATE = 768000;
 // buffer once RENDER runs, and whatever CRATE has loaded. Spending the whole
 // practical budget on the source and then dying at the first render is a worse
 // outcome than decoding ten minutes of 96 kHz at 48 kHz and saying so.
-const DECODE_BUDGET_BYTES = 768 * 1024 * 1024;
+export const DECODE_BUDGET_BYTES = 768 * 1024 * 1024;
+// Past this the decode is refused outright: a single AudioBuffer this size
+// fails to allocate in Chromium long before the tab is discarded, and no
+// smaller decode keeps the file's bandwidth. The windowed loader is the door
+// for files this long.
+export const DECODE_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
 
 // The peak pyramid holds a min and a max Float32 per block, at three block
 // sizes, over the mono samples: 2 x 4 bytes x (1/64 + 1/512 + 1/4096) per frame.
@@ -343,10 +348,14 @@ export function assumedSeconds(encodedBytes, seconds) {
   return bytes * 8 / (UNKNOWN_KBPS_FLOOR * 1000);
 }
 
-function budgetReason(rate, bytes) {
-  return 'this length at ' + Math.round(rate / 1000) + ' kHz needs about '
-    + Math.round(bytes / (1024 * 1024 * 1024) * 10) / 10
-    + ' GB of memory, which is more than the bench budgets for one source';
+function gb(bytes) { return Math.round(bytes / (1024 * 1024 * 1024) * 10) / 10; }
+function refuseReason(rate, bytes) {
+  return 'this length at ' + Math.round(rate / 1000) + ' kHz needs about ' + gb(bytes)
+    + ' GB of memory, past the ' + gb(DECODE_HARD_LIMIT_BYTES) + ' GB a browser tab can hold for one source';
+}
+function heavyReason(bytes) {
+  return 'this source holds about ' + gb(bytes) + ' GB resident, more than the '
+    + gb(DECODE_BUDGET_BYTES) + ' GB the bench budgets; a busy machine may discard the tab';
 }
 
 /**
@@ -362,41 +371,39 @@ export function planDecodeRate({
   // the probe missed used to budget as its encoded size alone).
   seconds = assumedSeconds(encodedBytes, seconds);
   channels = Number.isFinite(channels) && channels > 0 ? channels : 2;
-
-  // decodeAudioData ALWAYS yields the context's rate; only an offline decode at
-  // the file's own rate can beat it. So when the file sits at or below the
-  // context, the decode produces the CONTEXT rate — upsampling a 48 kHz file on
-  // a 96 kHz system rather than leaving it alone. Reporting the file's rate here
-  // was wrong twice over: it told the UI a resolution the buffer did not have,
-  // and it returned before the memory budget, leaving that (now doubled) decode
-  // completely unguarded.
-  if (!native || native <= contextRate) {
-    const bytes = decodedFootprintBytes({
-      rate: contextRate, seconds, channels, encodedBytes,
-    });
-    const over = bytes > DECODE_BUDGET_BYTES;
-    return {
-      rate: contextRate,
-      downgraded: false,
-      upsampled: !!native && native < contextRate,
-      overBudget: over,
-      reason: over ? budgetReason(contextRate, bytes) : null,
-    };
-  }
-
-  const bytes = decodedFootprintBytes({
-    rate: native, seconds, channels, encodedBytes,
+  const footprint = (rate) => decodedFootprintBytes({ rate, seconds, channels, encodedBytes });
+  const result = (rate, extra) => ({
+    rate, downgraded: false, upsampled: false, overBudget: false, refused: false, reason: null,
+    bytes: footprint(rate), ...extra,
   });
-  if (bytes > DECODE_BUDGET_BYTES) {
-    return {
-      rate: contextRate,
-      downgraded: true,
-      upsampled: false,
-      overBudget: true,
-      reason: 'a ' + Math.round(native / 1000) + ' kHz decode of this length needs '
-        + Math.round(bytes / (1024 * 1024 * 1024) * 10) / 10
-        + ' GB of memory, so it was decoded at ' + Math.round(contextRate / 1000) + ' kHz',
-    };
+
+  // Rate unknown: only the context can decode it, so that is the cost.
+  if (!native) {
+    const bytes = footprint(contextRate);
+    if (bytes > DECODE_HARD_LIMIT_BYTES) return result(contextRate, { overBudget: true, refused: true, reason: refuseReason(contextRate, bytes) });
+    return result(contextRate, { overBudget: bytes > DECODE_BUDGET_BYTES, reason: bytes > DECODE_BUDGET_BYTES ? heavyReason(bytes) : null });
   }
-  return { rate: native, downgraded: false, upsampled: false, overBudget: false, reason: null };
+
+  const nativeBytes = footprint(native);
+  // At or below the context rate there is nothing cheaper to decode to that
+  // keeps the file's bandwidth, so the file is decoded at its own rate — never
+  // upsampled — and refused only past the hard limit.
+  if (native <= contextRate) {
+    if (nativeBytes > DECODE_HARD_LIMIT_BYTES) return result(native, { overBudget: true, refused: true, reason: refuseReason(native, nativeBytes) });
+    return result(native, { overBudget: nativeBytes > DECODE_BUDGET_BYTES, reason: nativeBytes > DECODE_BUDGET_BYTES ? heavyReason(nativeBytes) : null });
+  }
+
+  // Above the context rate: keep the file's rate while it fits the budget;
+  // past it, the context rate is the honest fallback (said so in `reason`),
+  // and past the hard limit even that is refused.
+  if (nativeBytes <= DECODE_BUDGET_BYTES) return result(native);
+  const contextBytes = footprint(contextRate);
+  if (contextBytes > DECODE_HARD_LIMIT_BYTES) return result(contextRate, { downgraded: true, overBudget: true, refused: true, reason: refuseReason(contextRate, contextBytes) });
+  return result(contextRate, {
+    downgraded: true,
+    overBudget: true,
+    reason: 'a ' + Math.round(native / 1000) + ' kHz decode of this length needs '
+      + Math.round(nativeBytes / (1024 * 1024 * 1024) * 10) / 10
+      + ' GB of memory, so it was decoded at ' + Math.round(contextRate / 1000) + ' kHz',
+  });
 }

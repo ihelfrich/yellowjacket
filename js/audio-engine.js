@@ -40,7 +40,15 @@ export class Engine extends EventTarget {
   // OfflineAudioContext built at the file's own rate instead and keep every
   // sample; playback resamples on the way out, which costs nothing here.
   // `decodeReport` records what happened so the caller can say so out loud.
-  async load(arrayBuffer) {
+  // Decode at the file's own rate whenever the container states one (an
+  // OfflineAudioContext at that rate; AudioBufferSourceNode resamples on
+  // playback), so a 48 kHz file on a 96 kHz output is not doubled in memory.
+  // The plan is enforced: a refused plan throws with code 'over-budget' and
+  // the reason, and nothing is decoded. decodeAudioData detaches its input
+  // even when it rejects, so the caller may pass `fallback`, a function that
+  // returns a fresh copy of the bytes, for the one case where the offline
+  // decode fails and the context has to try instead.
+  async load(arrayBuffer, { fallback = null } = {}) {
     const ctx = this._ensureCtx();
     const probe = probeContainer(arrayBuffer);
     const plan = planDecodeRate({
@@ -52,31 +60,44 @@ export class Engine extends EventTarget {
       // part of what the load costs even though decoding cannot shrink them.
       encodedBytes: arrayBuffer && arrayBuffer.byteLength ? arrayBuffer.byteLength : 0,
     });
+    this.lastPlan = plan;
+    if (plan.refused) {
+      const error = new Error(plan.reason);
+      error.code = 'over-budget';
+      error.plan = plan;
+      throw error;
+    }
     let buffer = null;
-    if (plan.rate > ctx.sampleRate && probe.seconds > 0) {
+    let offlineFailed = false;
+    if (plan.rate !== ctx.sampleRate) {
       try {
-        const frames = Math.max(1, Math.ceil(plan.rate * probe.seconds));
-        const offline = new OfflineAudioContext(
-          Math.max(1, probe.channels || 2), frames, plan.rate,
-        );
-        // On a COPY, deliberately. decodeAudioData detaches its input even when
-        // it rejects, so decoding the caller's buffer here would leave the
-        // fallback below with zero bytes and turn a recoverable native-rate
-        // failure into a file that will not load at all.
-        buffer = await offline.decodeAudioData(arrayBuffer.slice(0));
+        // Length is irrelevant to decodeAudioData; it only sizes a render.
+        const offline = new OfflineAudioContext(Math.max(1, probe.channels || 2), 128, plan.rate);
+        buffer = await offline.decodeAudioData(arrayBuffer);
       } catch (error) {
-        buffer = null;   // fall through to the context decode below
+        buffer = null;
+        offlineFailed = true;
       }
     }
-    if (!buffer) buffer = await ctx.decodeAudioData(arrayBuffer);
+    if (!buffer) {
+      const bytes = offlineFailed ? (fallback ? fallback() : null) : arrayBuffer;
+      if (!bytes) {
+        const error = new Error('this browser could not decode the file at its own rate, and no copy was kept to retry');
+        error.code = 'decode-failed';
+        throw error;
+      }
+      buffer = await ctx.decodeAudioData(bytes);
+    }
     this.decodeReport = {
       nativeRate: probe.sampleRate,
       decodedRate: buffer.sampleRate,
       downgraded: !!(probe.sampleRate && buffer.sampleRate < probe.sampleRate),
-      // The context upsampled a file that was already below its rate. The buffer
-      // reads high but carries no more detail than the file had.
+      // Only a failed native-rate decode can still upsample now; say so.
       upsampled: !!(probe.sampleRate && buffer.sampleRate > probe.sampleRate),
-      reason: plan.reason,
+      overBudget: !!plan.overBudget,
+      bytes: plan.bytes,
+      reason: plan.reason || (offlineFailed
+        ? 'this browser could not decode the file at its own rate, so it was decoded at the output rate' : null),
     };
     this._haltPlayback();
     this._buffer = buffer;

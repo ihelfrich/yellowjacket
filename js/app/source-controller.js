@@ -92,8 +92,12 @@ export function initSourceController(ctx) {
       return;
     }
     try {
-      await engine.load(ab);
+      await engine.load(ab, { fallback: () => sourceBytes.slice(0) });
     } catch (e) {
+      if (e && e.code === 'over-budget') {
+        statusFault("WON'T LOAD · " + String(e.message || '').toUpperCase() + ' · TRY A SHORTER FILE OR A LOWER RATE');
+        return;
+      }
       statusFault(COPY.decodeFail);
       return;
     }
@@ -134,19 +138,19 @@ export function initSourceController(ctx) {
     if (ctx.api.repairReset) ctx.api.repairReset();
 
     const report = engine.decodeReport;
-    const kHz = (hz) => Math.round(hz / 1000) + ' kHz';
+    const kHz = (hz) => (hz % 1000 === 0 ? hz / 1000 : (hz / 1000).toFixed(1)) + ' kHz';
+    const heavy = report && report.overBudget && !report.downgraded && report.reason
+      ? ' · ' + report.reason.toUpperCase() : '';
     if (report && report.downgraded && report.reason) {
-      status('LOADED AT ' + kHz(report.decodedRate) + ' · ' + report.reason.toUpperCase());
+      status('LOADED AT ' + kHz(report.decodedRate) + ' · ' + report.reason.toUpperCase(), !!heavy);
     } else if (report && report.upsampled) {
-      // Say what the file actually is. The output device is running faster than
-      // the recording, so the buffer reads high without carrying more detail.
-      status('LOADED · ' + kHz(report.nativeRate) + ' SOURCE, UPSAMPLED TO '
-        + kHz(report.decodedRate) + ' TO MATCH THE OUTPUT');
-    } else if (report && report.nativeRate && report.decodedRate === report.nativeRate
-      && report.decodedRate > 48000) {
-      status('LOADED AT ' + kHz(report.decodedRate) + ' · FULL RESOLUTION KEPT');
+      // Only a failed native-rate decode reaches here now; say what happened.
+      status('LOADED · ' + kHz(report.nativeRate) + ' SOURCE, DECODED AT '
+        + kHz(report.decodedRate) + ' · ' + String(report.reason || '').toUpperCase());
+    } else if (report && report.nativeRate && report.decodedRate === report.nativeRate) {
+      status('LOADED AT ' + kHz(report.decodedRate) + ' · ITS OWN RATE, NOT THE OUTPUT\'S' + heavy, !!heavy);
     } else {
-      status(COPY.loaded);
+      status(COPY.loaded + heavy, !!heavy);
     }
     ctx.api.statusRight();
 

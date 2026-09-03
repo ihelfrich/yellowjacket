@@ -161,3 +161,18 @@ Real-file check (node, byte heads from archive.org unless noted):
 | Traum .wav (local) | 48 000 Hz · 2 ch · 218.05 s | 218.047 s |
 
 Tests: +8 cases (container probes group).
+
+## Step 2 shipped locally — decode at the file's own rate; soft budget warns, hard limit refuses
+`planDecodeRate` redesigned (js/dsp/native-rate.js): a file at or below the
+context rate is decoded at its own rate through an OfflineAudioContext (never
+upsampled); above the soft budget (768 MiB) it still loads and the status
+warns; above the hard limit (2 GiB) the load is refused with the reason, and
+`engine.load` enforces the plan (throws `over-budget`) instead of ignoring the
+flag. High-rate files still downgrade to the context rate when native is over
+the soft budget, and refuse only when even that is over the hard limit. The
+engine no longer copies the input: the caller supplies `fallback()` for the one
+case where the offline decode fails, so peak encoded copies drop from three to
+two (Codex bug 4). A failed offline decode now carries a reason (bug 5).
+Live check (fresh origin, 96 kHz output): Traum decodes at 48 000 Hz,
+planned footprint 161 MB (was ~320), plays at 1×, preview/HARVEST/QUICK TAKE
+unaffected. Tests: 45 groups / 300 cases.

@@ -75,7 +75,7 @@ import {
   describePreview, previewChain, previewView, previewWindow, sliceAudioBuffer, PREVIEW_SPAN_SEC,
 } from '../js/dsp/preview.js';
 import { soundingSources, transportLabel, transportTitle } from '../js/app/transport.js';
-import { assumedSeconds } from '../js/dsp/native-rate.js';
+import { assumedSeconds, DECODE_BUDGET_BYTES, DECODE_HARD_LIMIT_BYTES } from '../js/dsp/native-rate.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -3499,16 +3499,21 @@ const nativeRateCases = [
   },
   async function nativeDecodeAttemptLeavesTheFallbackSomethingToDecode() {
     // decodeAudioData detaches its input even when it REJECTS — verified in
-    // Chrome: byteLength is 0 after an EncodingError. So attempting the
-    // native-rate decode on the caller's ArrayBuffer destroys it, and the
-    // `if (!buffer) buffer = await ctx.decodeAudioData(arrayBuffer)` fallback
-    // is handed zero bytes and throws. A file that decodes fine at 48 kHz
-    // would fail to load at all. The attempt must run on a copy.
+    // Chrome: byteLength is 0 after an EncodingError. The native-rate decode
+    // therefore consumes the caller's buffer, and the fallback must decode a
+    // FRESH copy supplied by the caller (`fallback()`), never the detached
+    // input. Copying inside the engine cost a third encoded copy at peak
+    // (Codex review, 2026-09-03); the caller already holds one.
     const engine = await readFile(new URL('../js/audio-engine.js', import.meta.url), 'utf8');
-    const offlineDecode = engine.match(/offline\.decodeAudioData\(([^)]*)\)/);
-    assert.ok(offlineDecode, 'the native-rate decode exists');
-    assert.match(offlineDecode[1], /\.slice\(/,
-      'native-rate decode must run on a copy, or the fallback gets detached bytes');
+    const load = engine.slice(engine.indexOf('async load('), engine.indexOf('this.decodeReport = {'));
+    assert.match(load, /offline\.decodeAudioData\(arrayBuffer\)/, 'the native-rate decode runs on the input itself');
+    assert.doesNotMatch(load, /arrayBuffer\.slice\(/, 'and the engine makes no copy of its own');
+    assert.match(load, /fallback\s*\?\s*fallback\(\)/, 'the fallback decodes the copy the caller provides');
+    assert.match(load, /ctx\.decodeAudioData\(bytes\)/, 'never the detached input');
+    assert.match(load, /error\.code = 'over-budget'/, 'a refused plan throws instead of decoding');
+    const source = await readFile(new URL('../js/app/source-controller.js', import.meta.url), 'utf8');
+    assert.match(source, /engine\.load\(ab, \{ fallback: \(\) => sourceBytes\.slice\(0\) \}\)/, 'the caller supplies its copy lazily');
+    assert.match(source, /code === 'over-budget'/, 'and shows the refusal as a fault');
   },
   function footprintCountsEverythingALoadRetains() {
     // A load keeps FOUR allocations alive, not one: the decoded buffer, the mono
@@ -3549,11 +3554,12 @@ const nativeRateCases = [
     assert.equal(plan.downgraded, false, 'two minutes at 192 kHz still fits');
     assert.equal(plan.rate, 192000);
   },
-  function decodePlanFallsBackWhenNativeRateWouldExhaustMemory() {
-    // A 3-hour 192 kHz stereo file is ~8 GB decoded. Native rate must yield.
+  function decodePlanRefusesWhenEvenTheFallbackWouldExhaustMemory() {
+    // A 3-hour 192 kHz stereo file is ~8 GB decoded; at 48 kHz it is still
+    // ~6 GB. Neither fits a tab, and saying so beats a silent crash.
     const big = planDecodeRate({ nativeRate: 192000, seconds: 10800, channels: 2, contextRate: 48000 });
     assert.equal(big.downgraded, true);
-    assert.equal(big.rate, 48000, 'falls back to the context rate');
+    assert.equal(big.refused, true, 'nothing decodable keeps this file');
     assert.ok(big.reason, 'says why, so the UI can tell the user');
   },
   function probesWavChannelsAndDuration() {
@@ -3586,15 +3592,37 @@ const nativeRateCases = [
     assert.equal(probe.sampleRate, null);
     assert.equal(probe.seconds, 0, 'unknown length, so the budget cannot be computed');
   },
-  function reportsUpsamplingRatherThanClaimingFullResolution() {
-    // With the system output at 96 kHz the AudioContext runs at 96 kHz, so
-    // decodeAudioData upsamples a 48 kHz file to match. The decoded buffer then
-    // reads 96 kHz while carrying 48 kHz of real content — calling that "full
-    // resolution kept" is a lie the readout must not tell.
+  function aFileBelowTheContextRateIsDecodedAtItsOwnRate() {
+    // With the system output at 96 kHz the live context would upsample a 48 kHz
+    // file to match, doubling its memory for no detail. The plan now decodes at
+    // the file's own rate; the source node resamples on playback.
     const plan = planDecodeRate({ nativeRate: 48000, seconds: 30, channels: 2, contextRate: 96000 });
-    assert.equal(plan.rate, 96000, 'the decode really will produce 96 kHz');
-    assert.equal(plan.upsampled, true, 'and it is padding, not detail');
-    assert.equal(plan.downgraded, false, 'nothing was lost either');
+    assert.equal(plan.rate, 48000, 'never upsampled');
+    assert.equal(plan.upsampled, false);
+    assert.equal(plan.downgraded, false);
+    assert.equal(plan.refused, false);
+    assert.ok(plan.bytes < 30 * 96000 * 12.2, 'budgeted at 48 kHz, not the doubled context footprint');
+  },
+  function softBudgetWarnsHardLimitRefuses() {
+    // 30 minutes of 44.1 kHz stereo: ~0.96 GB resident — heavy, but loadable.
+    const heavy = planDecodeRate({ nativeRate: 44100, seconds: 1800, channels: 2, contextRate: 96000 });
+    assert.equal(heavy.rate, 44100);
+    assert.equal(heavy.overBudget, true, 'over the soft budget');
+    assert.equal(heavy.refused, false, 'but not refused: the file loads and the user is warned');
+    assert.match(heavy.reason, /resident/);
+    assert.ok(heavy.bytes > DECODE_BUDGET_BYTES && heavy.bytes < DECODE_HARD_LIMIT_BYTES);
+    // Two hours of 48 kHz stereo is past what a tab can hold for one source.
+    const huge = planDecodeRate({ nativeRate: 48000, seconds: 7200, channels: 2, contextRate: 96000 });
+    assert.equal(huge.refused, true);
+    assert.match(huge.reason, /GB/);
+  },
+  function highRateFilesDowngradeBeforeTheyRefuse() {
+    // 20 minutes at 192 kHz: native ~2.8 GB (over), 48 kHz fallback ~0.7 GB (fits).
+    const mid = planDecodeRate({ nativeRate: 192000, seconds: 1200, channels: 2, contextRate: 48000 });
+    assert.equal(mid.rate, 48000);
+    assert.equal(mid.downgraded, true);
+    assert.equal(mid.refused, false);
+    assert.match(mid.reason, /decoded at 48 kHz/);
   },
   function matchedRatesAreNeitherUpsampledNorDowngraded() {
     const plan = planDecodeRate({ nativeRate: 96000, seconds: 30, channels: 2, contextRate: 96000 });
@@ -3612,6 +3640,7 @@ const nativeRateCases = [
       encodedBytes: 7200 * 48000 * 2 * 2,
     });
     assert.equal(plan.overBudget, true, 'the real cost is measured, not the file rate');
+    assert.equal(plan.refused, true, 'and enforced, not merely flagged');
     assert.ok(plan.reason, 'and the user is told');
   },
   function decodePlanUsesContextRateWhenNativeRateIsUnknown() {
