@@ -388,6 +388,18 @@ spectral-gating recipe from the noisereduce literature rather than something
 improvised. Every one of these claims is locked by a test you can run yourself:
 node test/run.mjs.
 
+Playback runs at the recording's own rate. A file is decoded at the rate its own header
+states, and the bench plays it on a transport AudioContext opened at that same rate, so
+the source node runs at unity ratio — a copy, verified bit-exact — instead of through
+Chromium's `AudioBufferSourceNode` resampler, which is linear and puts an image 5.8 dB
+under a 19 kHz tone when a 48 kHz file plays on a 96 kHz output. SLOW retunes that
+transport to a quarter or half the clock so the ratio stays exactly 1 rather than folding
+images into the audible band. Machine slices and the live semantic lane are rate-matched
+once through a Kaiser polyphase sinc that is flat to 23 kHz with images below -80 dB.
+What remains is Chromium's own sinc conversion from the transport to the device, the same
+stage every web page passes through; it cannot be measured from inside the page, so that
+claim rests on Chromium's source rather than on a measurement here.
+
 Factory drum PCM is fixed at 96 kHz and synthesized through a 4× nonlinear core before
 band-limited decimation. Live monitoring still follows the actual AudioContext/device
 rate—reported in the kit strip—while Machine FREEZE and SONG automatically choose the
