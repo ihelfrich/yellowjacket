@@ -50,13 +50,16 @@ the lava caves of Pico Island, surf at Cox's Bazar, a Somerset thunderstorm, a
 brook, spring peepers, night insects in Los Gatos, a cicada in one Catalan tree,
 a Sevilla street under church bells. **VOICE** holds words, because a bench that
 transcribes speech had no speech to try: Longfellow's *Hiawatha's Childhood*
-read aloud, and eight minutes of the NASA control room on the day Voyager 1
-left. **SCORE** holds Bach's Goldberg Variations from Musopen, in 24-bit.
+read aloud. **SCORE** holds Bach's Goldberg Variations from Musopen, in 24-bit.
 **MUSIC** holds two 78s from 1921 and 1922 — Kid Ory's Sunshine Orchestra, the
 first jazz record by a Black New Orleans band, and Ethel Waters singing —
 transferred at 96 kHz/24-bit. **ODD** holds Stephen McGreevy's recordings of
 the Earth's magnetosphere: a dawn chorus that is not birds, and lightning heard
-as a descending whistler.
+as a descending whistler. Two Voyager tapes live here too: NASA tape 495-AAB, catalogued
+"Voyager Earth Sounds" — the Golden Record montage, abstract sounds framed by
+music, which this shelf once mislabelled as launch-day control-room audio until
+Ian heard otherwise — and forty-four seconds of the plasma wave instrument as
+Voyager 1 crossed Jupiter's bow shock in 1979, played back as sound.
 
 **MINE** is the sixth drawer and the only one not in the manifest: whatever you
 kept. Load any file, press **KEEP**, and the bytes are held in this browser's

@@ -76,10 +76,19 @@ export const FIELD_RECORDINGS = Object.freeze([
   { id: 'hiawatha', shelf: 'VOICE', kind: 'POEM', title: "HIAWATHA'S CHILDHOOD", place: 'Longfellow, read aloud', dur: '4:52',
     license: 'PD', source: IA_ITEM + 'poems_every_child_should_know_librivox',
     light: light('poems_every_child_should_know_librivox', 'poems_every_child_21_burt.mp3', 4.5) },
-  { id: 'voyager-1', shelf: 'VOICE', kind: 'MISSION', title: 'VOYAGER 1, LAUNCH DAY', place: 'NASA control room, 1977', dur: '8:12',
+
+  // ---------- ODD (Voyager) ----------
+  // NASA tape 495-AAB is catalogued "Voyager Earth Sounds": the Golden Record
+  // montage, abstract sounds framed by music. It was shelved as launch-day
+  // control-room audio until Ian heard otherwise. The bow shock is the raw
+  // thing: the plasma wave instrument, played back as audio.
+  { id: 'voyager-earth', shelf: 'ODD', kind: 'GOLDEN RECORD', title: 'SOUNDS OF EARTH', place: 'Voyager Golden Record montage · NASA tape 495-AAB, 1977', dur: '8:12',
     license: 'PD', source: IA_ITEM + 'Voyager1',
     light: light('Voyager1', '495-AAB_8min10sec.mp3', 8.6),
     hi: hi('Voyager1', '495-AAB_8min10sec.flac', 43.7, 44100, 16) },
+  { id: 'voyager-bowshock', shelf: 'ODD', kind: 'PLASMA WAVE', title: "VOYAGER 1 AT JUPITER'S BOW SHOCK", place: 'Plasma wave instrument, played as sound · 1979', dur: '0:44',
+    license: 'PD', source: IA_ITEM + 'V1JupBowshock',
+    light: light('V1JupBowshock', 'v1-jup-bowshock.mp3', 0.4) },
 
   // ---------- SCORE ----------
   { id: 'goldberg-22', shelf: 'SCORE', kind: 'PIANO', title: 'GOLDBERG VARIATION 22', place: 'J. S. Bach · Shelley Katz', dur: '2:17',
