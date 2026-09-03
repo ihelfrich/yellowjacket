@@ -4925,6 +4925,12 @@ const visualCases = [
     const t = await readFile(new URL('../js/app/transport.js', import.meta.url), 'utf8');
     assert.match(t, /export const SHORT = Object\.freeze\(\{ bench: 'BENCH', machine: 'MACHINE', loom: 'LOOM', studio: 'STUDIO', audition: 'CLIP' \}\);/);
   },
+  async function aDiscardedTabRestoresItselfWithinLimits() {
+    const pc = await readFile(new URL('../js/app/persist-controller.js', import.meta.url), 'utf8');
+    assert.match(pc, /AUTO_RESTORE_MAX_SOURCE_BYTES = 100 \* 1024 \* 1024/);
+    assert.match(pc, /if \(discarded && sourceSize <= AUTO_RESTORE_MAX_SOURCE_BYTES && !R\.buffer\)/, 'only after a discard, only for a modest source, only with nothing loaded');
+    assert.match(pc, /if \(!R\.buffer && !restoreFailed\) restore\(\);/, 'one attempt; a failed restore leaves the panel');
+  },
   async function statusIsALiveRegionAndResumeComesFirst() {
     const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     assert.match(html, /<footer class="yj-status" role="status" aria-live="polite">/);

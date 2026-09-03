@@ -120,6 +120,10 @@ export function initPersistController(ctx) {
     return Math.round(d / 86400e3) + ' D AGO';
   }
 
+  // Auto-restore after a discard only up to this encoded size: ~100 MB of
+  // source decodes to a few hundred MB, which a just-discarded tab can hold.
+  const AUTO_RESTORE_MAX_SOURCE_BYTES = 100 * 1024 * 1024;
+
   async function boot() {
     opfs = await OpfsStore.open();
     if (!opfs) return; // no OPFS here: the bench works exactly as before
@@ -152,6 +156,15 @@ export function initPersistController(ctx) {
           $('resumeInfo').textContent = bits.join(' · ');
           $('resumePanel').hidden = false;
           if (!R.buffer && $('btnResume')) $('btnResume').focus();
+          // The browser took the tab away, not the user: bring the session
+          // back without a click. Guarded to sessions whose source is modest
+          // (a discard loop on a huge file would be worse than the panel) and
+          // to one attempt — a failed restore leaves the panel for the user.
+          const sourceSize = json.sourceBytes && Number(json.sourceBytes.size) || 0;
+          if (discarded && sourceSize <= AUTO_RESTORE_MAX_SOURCE_BYTES && !R.buffer) {
+            status('THE BROWSER DISCARDED THIS TAB · RESTORING…', true);
+            setTimeout(() => { if (!R.buffer && !restoreFailed) restore(); }, 0);
+          }
         }
       }
     } catch (e) { /* unreadable save: leave the panel hidden */ }

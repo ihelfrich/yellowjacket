@@ -296,3 +296,12 @@ boundaries). `encodeWavWithStats` joins the chunks (Blob path, everywhere);
 (Chromium): no whole-file ArrayBuffer, no Blob copy — the 167 MB peak of a
 3-minute float export at 48 kHz is gone on that path. A picker refused for
 lack of a real user gesture falls back to the Blob path.
+
+## Step 8 shipped locally — a discarded tab restores itself
+On boot, when `document.wasDiscarded === true` and the saved session's source
+is ≤ 100 MB encoded and nothing is loaded, the existing validated RESUME runs
+without a click (status: THE BROWSER DISCARDED THIS TAB · RESTORING…). One
+attempt: a failed restore leaves the panel. Above the size guard, the panel
+is shown with the hazard rule instead — a discard loop on a huge file would
+be worse than a click. Not reproducible in the in-app browser (no way to
+force a discard); pinned in source and covered by the RESUME live checks.
