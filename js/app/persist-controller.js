@@ -137,7 +137,11 @@ export function initPersistController(ctx) {
           const takes = json.loom && json.loom.plans && typeof json.loom.plans === 'object'
             ? Object.keys(json.loom.plans).length : 0;
           const sessionName = sessionLabel(json);
-          const bits = ['LAST SESSION · ' + String(sessionName).toUpperCase()];
+          const discarded = document.wasDiscarded === true;
+          const bits = [discarded
+            ? 'THE BROWSER DISCARDED THIS TAB · SAVED ' + timeAgo(json.savedAt || Date.now()).toUpperCase()
+            : 'LAST SESSION · ' + String(sessionName).toUpperCase()];
+          $('resumePanel').classList.toggle('is-discarded', discarded);
           if (json.words && json.words.length) bits.push(n(json.words.length, 'WORD'));
           if (json.repairs && json.repairs.length) bits.push(n(json.repairs.length, 'REPAIR'));
           const instruments = json.assets ? Object.keys(json.assets).length : 0;
@@ -147,6 +151,7 @@ export function initPersistController(ctx) {
           bits.push(timeAgo(json.savedAt || Date.now()));
           $('resumeInfo').textContent = bits.join(' · ');
           $('resumePanel').hidden = false;
+          if (!R.buffer && $('btnResume')) $('btnResume').focus();
         }
       }
     } catch (e) { /* unreadable save: leave the panel hidden */ }
@@ -480,6 +485,7 @@ export function initPersistController(ctx) {
         if (crateTab) crateTab.click();
       }
       const parts = ['RESTORED · ' + sessionLabel(json).toUpperCase()];
+      if (document.wasDiscarded === true) parts[0] += ' · AFTER A TAB DISCARD';
       if (R.repairs.length) parts.push(n(R.repairs.length, 'REPAIR'));
       status(parts.join(' · '));
       restoreFailed = false;

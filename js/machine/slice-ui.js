@@ -460,21 +460,28 @@ export class SliceView extends EventTarget {
       g.textAlign = 'left';
       g.textBaseline = 'alphabetic';
       let lastThin = -Infinity;
-      let lastLabel = -Infinity;
+      // Labels on a chosen cadence (1, 2, 4, 8… bars) so adjacent labels are
+      // at least 48 px apart, the same discipline as the time ruler — never a
+      // greedy skip that yields B1 B3 B6 B8. Heavy lines follow the labels.
+      const barPx = (down + bpb < beats.length && beats[down + bpb] > beats[down])
+        ? toX(beats[down + bpb]) - toX(beats[down]) : Infinity;
+      const MIN_LABEL_PX = 48 * dpr;
+      let labelStep = 1;
+      while (barPx * labelStep < MIN_LABEL_PX) labelStep *= 2;
       for (let i = Math.max(0, lowerBound(beats, v.start) - 1); i < beats.length; i++) {
         const t = beats[i];
         if (t > v.end) break;
         if (t < v.start) continue;
         const x = Math.round(toX(t));
         if (((i - down) % bpb + bpb) % bpb === 0) {
-          g.fillStyle = c.barLine;
-          g.fillRect(x, 0, barW, h);
           const n = (i - down) / bpb + 1;
-          if (n >= 1 && x - lastLabel >= 30 * dpr) {
-            const anchored = i === down && this._anchors.barOneTime != null;
+          const anchored = i === down && this._anchors.barOneTime != null;
+          const labelled = n >= 1 && ((n - 1) % labelStep === 0 || anchored);
+          g.fillStyle = c.barLine;
+          g.fillRect(x, 0, labelled ? barW : 1, h);
+          if (labelled) {
             g.fillStyle = anchored ? c.yellow : c.inkDim;
             g.fillText('B' + n, x + 3 * dpr, 17 * dpr);
-            lastLabel = x;
           }
         } else {
           if (x - lastThin < 3 * dpr) continue;

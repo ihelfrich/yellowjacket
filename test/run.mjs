@@ -77,6 +77,7 @@ import {
 import { soundingSources, transportLabel, transportTitle } from '../js/app/transport.js';
 import { assumedSeconds, DECODE_BUDGET_BYTES, DECODE_HARD_LIMIT_BYTES } from '../js/dsp/native-rate.js';
 import { SourceHandle } from '../js/app/source-handle.js';
+import { PipelineView, deriveStages as deriveStagesForHere } from '../js/app/pipeline-ui.js';
 import { sha256HexSync } from '../js/loom/identity.js';
 import { loomHeadroomGain } from '../js/loom/engine.js';
 import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
@@ -4763,8 +4764,55 @@ const hygieneCases = [
   },
 ];
 
+// ---------- visual pass: the marks the plan added, pinned ----------
+
+const visualCases = [
+  function pipelineHereIsExplicitPerStage() {
+    const P = { machine: { tracks: [], bpm: 120, song: { chain: [] } }, clips: [], fileName: 'x.wav' };
+    const stages = deriveStagesForHere(P, { buffer: null });
+    const here = (loc) => stages.filter((s) => PipelineView.isHere(s, loc)).map((s) => s.key);
+    assert.deepEqual(here({ tab: 'transcript' }), ['source']);
+    assert.deepEqual(here({ tab: 'rack' }), ['source']);
+    assert.deepEqual(here({ tab: 'machine', mstate: 'slice' }), ['slice']);
+    assert.deepEqual(here({ tab: 'machine', mstate: 'pattern' }), ['pattern'], 'KIT does not light with PATTERN');
+    assert.deepEqual(here({ tab: 'machine', mstate: 'song' }), ['song'], 'OUT does not light with SONG');
+    assert.deepEqual(here({ tab: 'studio' }), [], 'STUDIO is off the map');
+    assert.deepEqual(here(null), []);
+  },
+  async function rackOffModulesCollapseAndCarryTheirOrdinal() {
+    const css = await readFile(new URL('../css/yj.css', import.meta.url), 'utf8');
+    assert.match(css, /\.yj-mod\.is-off \.yj-mod-params \{ display: none; \}/);
+    assert.match(css, /\.yj-led\.is-stale \{ background: var\(--yj-amber\); \}/, 'stale is solid amber');
+    const b = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');
+    assert.match(b, /mod\.dataset\.label = String\(i \+ 1\)\.padStart\(2, '0'\)/, 'silkscreen = chain ordinal');
+    assert.match(b, /power\.setAttribute\('aria-pressed'/, 'power is a toggle button');
+    assert.doesNotMatch(b, /setRenderState\(COPY\.renderStale, 'busy'\)/, 'STALE never blinks');
+    assert.match(b, /setRenderState\(COPY\.rendering, 'busy'\)/, 'the LED blinks while rendering');
+    const m = await readFile(new URL('../js/main.js', import.meta.url), 'utf8');
+    assert.match(m, /mode === 'stale' \? ' is-stale'/);
+  },
+  async function barLabelsFollowACadenceNotAGreedySkip() {
+    const s = await readFile(new URL('../js/machine/slice-ui.js', import.meta.url), 'utf8');
+    assert.match(s, /while \(barPx \* labelStep < MIN_LABEL_PX\) labelStep \*= 2;/);
+    assert.match(s, /\(n - 1\) % labelStep === 0 \|\| anchored/);
+    assert.doesNotMatch(s, /lastLabel/, 'the greedy skip is gone');
+  },
+  async function statusIsALiveRegionAndResumeComesFirst() {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    assert.match(html, /<footer class="yj-status" role="status" aria-live="polite">/);
+    const drop = html.indexOf('class="yj-drop-word"'); const resume = html.indexOf('id="resumePanel"'); const demo = html.indexOf('id="btnLoadDemo"');
+    assert.ok(drop < resume && resume < demo, 'RESUME sits directly under DROP A FILE, above the demo button');
+    const pc = await readFile(new URL('../js/app/persist-controller.js', import.meta.url), 'utf8');
+    assert.match(pc, /document\.wasDiscarded === true/, 'a survived discard is named');
+    assert.match(pc, /THE BROWSER DISCARDED THIS TAB/);
+    const m = await readFile(new URL('../js/main.js', import.meta.url), 'utf8');
+    assert.match(m, /setAttribute\('aria-live', 'assertive'\)/, 'faults are announced');
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['visual pass', visualCases],
   ['memory hygiene', hygieneCases],
   ['source handle', sourceHandleCases],
   ['container probes', probeCases],

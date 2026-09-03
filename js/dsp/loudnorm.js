@@ -22,8 +22,10 @@ function configValue(cfg, key) {
   return cfg?.[key] ?? cfg?.params?.[key] ?? defaults[key];
 }
 
-async function applyGain(audioBuffer, gain, onProgress, progressStart, progressSpan) {
-  const gained = new AudioBuffer({
+// `inPlace` writes back into the input: safe only for a buffer this stage
+// owns (the limiter's fresh output), never for the caller's source.
+async function applyGain(audioBuffer, gain, onProgress, progressStart, progressSpan, inPlace = false) {
+  const gained = inPlace ? audioBuffer : new AudioBuffer({
     length: audioBuffer.length,
     numberOfChannels: audioBuffer.numberOfChannels,
     sampleRate: audioBuffer.sampleRate
@@ -66,17 +68,23 @@ export async function processLoudnorm(audioBuffer, cfg = {}, onProgress = null) 
   // apply one corrective pass; without it the delivered LUFS silently misses the
   // promise whenever the limiter works hard (TRUTH 1, audit item 4).
   const gain = 10 ** ((target - measurement.integrated) / 20);
-  const gained = await applyGain(audioBuffer, gain, onProgress, 30, 15);
+  let gained = await applyGain(audioBuffer, gain, onProgress, 30, 15);
   let limited = await processLimiter(
     gained,
     { ceiling: -1 },
     onProgress ? (pct) => onProgress(45 + pct * 0.25) : null
   );
+  gained = null;   // the limiter has its own output; this copy is dead now
 
   const after = measureLoudness(limited, null);
   const missLu = target - after.integrated;
   if (Math.abs(missLu) > 0.05 && after.integrated !== -Infinity) {
-    const corrected = await applyGain(limited, 10 ** (missLu / 20), onProgress, 70, 10);
+    // The corrective gain is applied in place on the limiter's output (this
+    // stage owns it) instead of allocating a fourth full buffer; the second
+    // limiter pass then replaces it. Peak above the input drops from four
+    // full copies to two (ledger: rack-render-export-loom §7.3).
+    const corrected = await applyGain(limited, 10 ** (missLu / 20), onProgress, 70, 10, true);
+    limited = null;
     limited = await processLimiter(
       corrected,
       { ceiling: -1 },

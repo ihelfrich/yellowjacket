@@ -207,11 +207,14 @@ export function initBenchController(ctx) {
     const btn = $('btnTranscribe');
     btn.disabled = true;
     btn.classList.add('is-working');
-    setLed('ledModel', 'busy');
     try {
       const gen = R.generation;
       const modelId = selModel.value;
       if (currentModel !== modelId || !transcriber.modelLoaded) {
+        // The model LED reports the model, not the job: it blinks while the
+        // model loads and holds green while the transcription runs (the
+        // button stripes and the tab underbar show the job).
+        setLed('ledModel', 'busy');
         $('modelState').textContent = COPY.modelLoading;
         await transcriber.loadModel(modelId);
         currentModel = modelId;
@@ -276,7 +279,7 @@ export function initBenchController(ctx) {
     refreshWeaveWordsButton();
     if (R.renderedBuffer) {
       renderFresh = false;
-      setRenderState(COPY.renderStale, 'busy');
+      setRenderState(COPY.renderStale, 'stale');
     }
   }
 
@@ -403,17 +406,20 @@ export function initBenchController(ctx) {
   function buildRack() {
     const host = $('rackHost');
     host.innerHTML = '';
-    for (const desc of REGISTRY) {
+    REGISTRY.forEach((desc, i) => {
       const cfg = P.chain.find((c) => c.id === desc.id);
       const mod = document.createElement('div');
       mod.className = 'yj-panel yj-mod' + (cfg.on ? '' : ' is-off');
-      mod.dataset.label = 'MODULE';
+      // The silkscreen prints the one fact only the rack knows: the position
+      // in the signal path (order is part of the sound — chain.js).
+      mod.dataset.label = String(i + 1).padStart(2, '0');
 
       const head = document.createElement('div');
       head.className = 'yj-mod-head';
       const power = document.createElement('button');
       power.className = 'yj-mod-power' + (cfg.on ? ' is-on' : '');
       power.title = 'Power';
+      power.setAttribute('aria-pressed', String(!!cfg.on));
       const title = document.createElement('span');
       title.className = 'yj-mod-title';
       title.textContent = desc.title;
@@ -453,17 +459,18 @@ export function initBenchController(ctx) {
       power.addEventListener('click', () => {
         store.update('chain', () => { cfg.on = !cfg.on; });
         power.classList.toggle('is-on', cfg.on);
+        power.setAttribute('aria-pressed', String(!!cfg.on));
         mod.classList.toggle('is-off', !cfg.on);
         markStale();
       });
       host.appendChild(mod);
-    }
+    });
   }
 
   function markStale() {
     if (R.renderedBuffer) {
       renderFresh = false;
-      setRenderState(COPY.renderStale, 'busy');
+      setRenderState(COPY.renderStale, 'stale');
     }
   }
 
@@ -617,6 +624,7 @@ export function initBenchController(ctx) {
     prog.hidden = false;
     const t0 = performance.now();
     status(COPY.rendering, true);
+    setRenderState(COPY.rendering, 'busy');
     try {
       const gen = R.generation;
       // Drop the previous take before the new pipeline allocates: a re-render

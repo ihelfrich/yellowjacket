@@ -102,18 +102,25 @@ function status(left, hot = false) {
   el.textContent = left;
   el.classList.toggle('is-hot', hot);
   el.classList.remove('is-fault');
+  el.removeAttribute('title');
+  if (el.parentElement) el.parentElement.setAttribute('aria-live', 'polite');
   pulseStatus(el);
 }
 function statusFault(msg) {
   const el = $('stLeft');
   el.textContent = msg;
   el.classList.add('is-fault');
+  el.title = msg;
+  if (el.parentElement) el.parentElement.setAttribute('aria-live', 'assertive');
   pulseStatus(el);
   el.classList.remove('is-hot');
 }
 function setLed(id, mode) {
   const led = $(id);
-  led.className = 'yj-led' + (mode === 'on' ? ' is-on' : mode === 'busy' ? ' is-busy' : mode === 'fault' ? ' is-fault' : '');
+  // on = nominal, busy = blinking (activity only), stale = solid amber (a
+  // state, never activity), fault = red.
+  led.className = 'yj-led' + (mode === 'on' ? ' is-on' : mode === 'busy' ? ' is-busy'
+    : mode === 'stale' ? ' is-stale' : mode === 'fault' ? ' is-fault' : '');
 }
 
 // ---------- construction ----------
@@ -222,6 +229,7 @@ if (failed.length && typeof Proxy === 'function') {
 }
 
 // ---------- tabs ----------
+let currentMstate = 'slice';
 function showTab(name) {
   for (const b of document.querySelectorAll('.yj-tab-btn')) {
     const active = b.dataset.tab === name;
@@ -251,6 +259,7 @@ function showTab(name) {
   for (const name of ['waveMini', 'waveMain', 'spec', 'sliceView', 'constellation']) {
     if (views[name]) views[name].render();
   }
+  if (views.pipeline) views.pipeline.setHere({ tab: name, mstate: currentMstate });
 }
 ctx.api.showTab = showTab;
 
@@ -465,6 +474,19 @@ function openStartRoute(path) {
   }
   if (path === 'drums' && ctx.api.loadDrumStarter) ctx.api.loadDrumStarter();
 }
+// Substate chips (SLICE / PATTERN / SONG …) are the second half of "where am
+// I"; both jump() and the strip's own handler end in a click on one of them.
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.yj-substate-btn');
+  if (!b || !b.dataset.mstate) return;
+  currentMstate = b.dataset.mstate;
+  if (views.pipeline) views.pipeline.setHere({ tab: 'machine', mstate: currentMstate });
+});
+{
+  const active = document.querySelector('.yj-tab-btn.is-active');
+  if (views.pipeline) views.pipeline.setHere({ tab: active ? active.dataset.tab : 'transcript', mstate: currentMstate });
+}
+
 // The empty TRANSCRIPT bench is where a fresh load lands. For anything that is
 // not speech, the rest of the tool is one click away instead of a search.
 {

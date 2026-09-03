@@ -363,7 +363,7 @@ export function initMachineController(ctx) {
     } else if (conf >= 0.6) {
       setBeatmapLed('on', COPY.mapped + ' · ' + analysis.tempo.toFixed(1) + ' BPM');
     } else if (conf >= 0.3) {
-      setBeatmapLed('busy', analysis.tempo.toFixed(1) + ' BPM · ROUGH');
+      setBeatmapLed('stale', analysis.tempo.toFixed(1) + ' BPM · ROUGH');
     } else {
       setBeatmapLed('fault', COPY.lowConfidence);
     }

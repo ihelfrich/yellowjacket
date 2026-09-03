@@ -17,27 +17,25 @@ const STYLE = `
   display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
   padding: 6px 14px 6px 12px; position: relative;
   border: none; background: none; cursor: pointer; white-space: nowrap;
-  min-width: 96px;
+  min-width: 96px; max-width: 200px; overflow: hidden;
+  border-right: 1px solid var(--yj-line);
 }
-.yj-pipe-stage::after {
-  content: ""; position: absolute; right: 0; top: 50%;
-  width: 6px; height: 6px; margin-top: -3px;
-  border-top: 1px solid var(--yj-line-hi); border-right: 1px solid var(--yj-line-hi);
-  transform: rotate(45deg);
-}
-.yj-pipe-stage:last-child::after { display: none; }
+.yj-pipe-note { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.yj-pipe-stage:last-child { border-right: none; }
+.yj-pipe-stage:hover { border-right-color: var(--yj-line-hi); }
+.yj-pipe-stage.is-here { background: var(--yj-select); }
 .yj-pipe-name {
   font-family: var(--f-ui); font-size: 10px; font-weight: 700;
   letter-spacing: 0.1em; color: var(--yj-ink-dim);
 }
 .yj-pipe-note {
   font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.03em;
-  color: var(--yj-line-hi);
+  color: var(--yj-ink-dim);
 }
 .yj-pipe-stage.is-done .yj-pipe-name { color: var(--yj-yellow); }
 .yj-pipe-stage.is-done .yj-pipe-note { color: var(--yj-amber); }
 .yj-pipe-stage.is-next .yj-pipe-name { color: var(--yj-ink); }
-.yj-pipe-stage.is-next .yj-pipe-note { color: var(--yj-ink-dim); }
+.yj-pipe-stage.is-next .yj-pipe-note { color: var(--yj-ink); }
 .yj-pipe-stage:hover .yj-pipe-name { color: var(--yj-yellow-hi); }
 .yj-pipe-stage:focus-visible { outline: 1px solid var(--yj-yellow); outline-offset: -2px; }
 .yj-pipe-stage.is-done::before {
@@ -83,36 +81,42 @@ export function deriveStages(project, runtime) {
       key: 'source', label: 'SOURCE', done: loaded,
       note: loaded ? (P.fileName || 'LOADED').replace(/\.[^.]+$/, '').slice(0, 18).toUpperCase() : 'DROP A FILE',
       target: { tab: 'signal' },
+      here: [{ tab: 'transcript' }, { tab: 'signal' }, { tab: 'rack' }],
       hint: loaded ? mmss(secs) + ' loaded' : 'Load audio to begin',
     },
     {
       key: 'slice', label: 'SLICE', done: clips > 0,
       note: clips ? clips + (clips === 1 ? ' CLIP' : ' CLIPS') : 'CARVE OR HARVEST',
       target: { tab: 'machine', mstate: 'slice' },
+      here: [{ tab: 'machine', mstate: 'slice' }],
       hint: 'Carve clips by dragging, or HARVEST the whole track',
     },
     {
       key: 'kit', label: 'KIT', done: kit > 0,
       note: kit ? kit + ' OF ' + tracks.length + ' TRACKS' : 'ASSIGN SLICES',
       target: { tab: 'machine', mstate: 'pattern' },
+      here: [],
       hint: 'Assign slices to machine tracks',
     },
     {
       key: 'pattern', label: 'PATTERN', done: steps > 0,
       note: steps ? steps + (steps === 1 ? ' STEP · ' : ' STEPS · ') + Math.round(m.bpm) + ' BPM' : 'PROGRAM STEPS',
       target: { tab: 'machine', mstate: 'pattern' },
+      here: [{ tab: 'machine', mstate: 'pattern' }],
       hint: 'Program the step grid',
     },
     {
       key: 'song', label: 'SONG', done: chain > 0,
       note: chain ? chain + (chain === 1 ? ' SECTION' : ' SECTIONS') : 'CHAIN SCENES',
       target: { tab: 'machine', mstate: 'song' },
+      here: [{ tab: 'machine', mstate: 'song' }],
       hint: 'Chain scenes into an arrangement',
     },
     {
       key: 'out', label: 'OUT', done: false,
       note: chain ? 'RENDER SONG' : (steps ? 'FREEZE OR PRINT' : 'NOTHING YET'),
       target: { tab: 'machine', mstate: chain ? 'song' : 'pattern' },
+      here: [],
       hint: 'Print a WAV, or a drum kit for the OP-Z',
     },
   ];
@@ -124,6 +128,7 @@ export class PipelineView extends EventTarget {
     injectStyle();
     this.host = host;
     this._stages = [];
+    this._here = null;   // {tab, mstate}: the stage the user stands on
     if (host) {
       host.className = 'yj-pipe';
       host.addEventListener('click', (e) => {
@@ -140,6 +145,19 @@ export class PipelineView extends EventTarget {
     this._render();
   }
 
+  // YOU ARE HERE: stored, so the mark survives the rebuild every store
+  // change triggers. Matched against each stage's explicit `here` list — no
+  // last-match guesswork between KIT and PATTERN, or SONG and OUT.
+  setHere(loc) {
+    this._here = loc && loc.tab ? { tab: loc.tab, mstate: loc.mstate || null } : null;
+    this._render();
+  }
+
+  static isHere(stage, here) {
+    if (!here || !stage || !Array.isArray(stage.here)) return false;
+    return stage.here.some((h) => h.tab === here.tab && (!h.mstate || h.mstate === here.mstate));
+  }
+
   _render() {
     const host = this.host;
     if (!host) return;
@@ -150,11 +168,14 @@ export class PipelineView extends EventTarget {
     this._stages.forEach((stage, i) => {
       const btn = document.createElement('button');
       btn.type = 'button';
+      const here = PipelineView.isHere(stage, this._here);
       btn.className = 'yj-pipe-stage'
         + (stage.done ? ' is-done' : '')
-        + (i === nextIndex ? ' is-next' : '');
+        + (i === nextIndex ? ' is-next' : '')
+        + (here ? ' is-here' : '');
       btn.dataset.key = stage.key;
-      btn.title = stage.hint || stage.label;
+      btn.title = (stage.hint || stage.label) + (here ? ' · you are here' : '');
+      if (here) btn.setAttribute('aria-current', 'location');
 
       const name = document.createElement('span');
       name.className = 'yj-pipe-name';

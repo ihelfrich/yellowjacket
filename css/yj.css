@@ -295,6 +295,7 @@ canvas { display: block; }
 }
 .yj-led.is-on { background: var(--yj-nominal); }
 .yj-led.is-busy { background: var(--yj-yellow); animation: yj-blink 1s step-end infinite; }
+.yj-led.is-stale { background: var(--yj-amber); }
 .yj-led.is-fault { background: var(--yj-fault); }
 @keyframes yj-blink { 50% { opacity: 0.25; } }
 
@@ -377,14 +378,18 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 
 /* resume panel in the drop zone */
 .yj-resume {
-  border-top: 1px solid var(--yj-line);
-  padding-top: 14px;
+  border-bottom: 1px solid var(--yj-line);
+  padding-bottom: 14px;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
   align-items: center;
   width: 100%;
 }
+/* A tab discard removed the working set: the chevrons say "removed". */
+.yj-resume.is-discarded { padding-left: 12px; }
+.yj-resume.is-discarded::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--yj-hazard); }
 .yj-resume-info {
   font-family: var(--f-mono);
   font-size: 11px;
@@ -597,7 +602,11 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-mod.is-off .yj-mod-title { color: var(--yj-ink-dim); }
 .yj-mod-tag { font-family: var(--f-mono); font-size: 10px; color: var(--yj-ink-dim); margin-left: auto; text-align: right; }
 .yj-mod-params { display: flex; flex-direction: column; gap: 5px; padding-top: 4px; }
-.yj-mod.is-off .yj-mod-params { opacity: 0.35; pointer-events: none; }
+/* An off module is its head row: LED, name, purpose. Bypassed sliders are not
+   a required mark (DESIGN §Layout RACK), and nine full panels scrolled under
+   the pipeline strip. No transition: a hardware bypass snaps. */
+.yj-mod.is-off .yj-mod-params { display: none; }
+.yj-mod.is-off { padding-bottom: 8px; }
 
 /* ---------- A/B ---------- */
 .yj-ab { display: flex; gap: 0; }
@@ -743,11 +752,12 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   border-top: 1px solid var(--yj-line);
   background: var(--yj-panel);
   font-family: var(--f-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--yj-ink-dim);
 }
 .yj-status > * { min-width: 0; }
+.yj-status > :first-child.is-fault { white-space: normal; }
 .yj-status > :first-child { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .yj-status > :last-child { flex-shrink: 0; white-space: nowrap; margin-left: 12px; }
 .yj-status .is-hot { color: var(--yj-yellow); }

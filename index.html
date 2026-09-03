@@ -431,6 +431,13 @@
 <div class="yj-drop" id="dropZone">
   <div class="yj-drop-inner">
     <div class="yj-drop-word">DROP A FILE</div>
+    <div class="yj-resume" id="resumePanel" hidden>
+      <p class="yj-resume-info" id="resumeInfo" role="status">LAST SESSION</p>
+      <div class="yj-toolrow">
+        <button id="btnResume" class="yj-btn yj-btn-primary">RESUME</button>
+        <button id="btnDiscard" class="yj-btn" title="Forget the saved session">DISCARD</button>
+      </div>
+    </div>
     <p>WAV, MP3, M4A, OGG, FLAC — kept at their own sample rate, up to 192 kHz.<br>
     A <strong>.MID</strong> file loads into STUDIO's six parts.<br>
     It never leaves this machine. There's no server to send it to.</p>
@@ -454,13 +461,6 @@
       <input type="url" id="urlInput" class="yj-urlinput" placeholder="or paste a URL · direct audio link, podcast enclosure, archive.org" spellcheck="false">
       <button id="btnLoadUrl" class="yj-btn">LOAD URL</button>
     </div>
-    <div class="yj-resume" id="resumePanel" hidden>
-      <p class="yj-resume-info" id="resumeInfo">LAST SESSION</p>
-      <div class="yj-toolrow">
-        <button id="btnResume" class="yj-btn yj-btn-primary">RESUME</button>
-        <button id="btnDiscard" class="yj-btn" title="Forget the saved session">DISCARD</button>
-      </div>
-    </div>
     <div class="yj-riphelp" id="ripHelp" hidden>
       <p id="ripHelpMsg">That host won't hand audio to a web page. Rip it on your machine, then drop the file here:</p>
       <div class="yj-urlrow">
@@ -483,7 +483,7 @@
   <button id="btnUpdateLater" class="yj-btn yj-btn-compact">NOT NOW</button>
 </div>
 
-<footer class="yj-status">
+<footer class="yj-status" role="status" aria-live="polite">
   <div id="stLeft">IDLE</div>
   <div id="stRight">NO FILE</div>
 </footer>
