@@ -84,6 +84,7 @@ import { resample as kaiserResample, resampleChannels, PLAYBACK_CUTOFF_SCALE } f
 import { createTrackBuffer } from '../js/machine/sequencer.js';
 import { cutExcerpt, excerptKey, ExcerptCache, EXCERPT_PAD_SEC, excerptRateFor, MAX_BUFFER_RATE } from '../js/loom/excerpt.js';
 import { semanticRate } from '../js/loom/schedule.js';
+import { analyseCyclic, envelopeMatrix, modulationSpectrum, binFloors, alphaProfile, findPeriodicities, fftSizeFor, DEFAULT_THRESHOLD } from '../js/analysis/cyclic.js';
 import { denoiseChannel, overlapWeights } from '../workers/denoise-worker.js';
 import { FFT as DnFFT, hann as dnHann } from '../js/fft.js';
 import { sha256HexSync } from '../js/loom/identity.js';
@@ -5558,8 +5559,152 @@ const excerptCases = [
   },
 ];
 
+// ---------- cyclic modulation: the periodicity a spectrogram averages away ----------
+//
+// Every case here is a signal whose answer is known before the code runs: an
+// amplitude modulation of depth m must read m at its own alpha, a square-wave
+// keying must read 4/pi at its fundamental with odd harmonics, and noise must
+// read nothing. The watermark case is the one that matters most: a clock too
+// weak to win anywhere, present in several separated bands at once.
+
+const CY_RATE = 48000;
+function cySignal(seconds, fn) {
+  const n = Math.round(CY_RATE * seconds);
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = fn(i / CY_RATE, i);
+  return x;
+}
+// xorshift32, not a linear congruential generator. An LCG's lattice structure
+// is itself a periodicity: swept through this detector it plants an even comb
+// of false clocks about 4.5 Hz apart, while xorshift and a cryptographic
+// source plant none. A detector for hidden regularity cannot be tested with a
+// regular "random" source.
+let cySeed = 2463534242 >>> 0;
+function cyNoise() {
+  cySeed ^= cySeed << 13; cySeed >>>= 0;
+  cySeed ^= cySeed >> 17;
+  cySeed ^= cySeed << 5; cySeed >>>= 0;
+  return cySeed / 4294967296 - 0.5;
+}
+const cyReseed = (n) => { cySeed = (n >>> 0) || 1; };
+const cyPeakNear = (peaks, hz, tol = 0.6) => peaks.find((p) => Math.abs(p.alphaHz - hz) <= tol) || null;
+
+const cyclicCases = [
+  function anAmplitudeModulationReadsItsOwnDepth() {
+    // 1 kHz carrier, 40% modulated at 7 Hz. Each bin is normalised by its own
+    // mean, so the reading is the depth itself and not a level. The default
+    // 85 ms window is a low-pass on the envelope and costs about 15% at 7 Hz,
+    // which is the measured cost of a plane clean enough to trust.
+    const x = cySignal(8, (t) => (1 + 0.4 * Math.cos(2 * Math.PI * 7 * t)) * Math.sin(2 * Math.PI * 1000 * t));
+    const r = analyseCyclic({ mono: x, sampleRate: CY_RATE });
+    assert.ok(r, 'the window is long enough to analyse');
+    const peak = cyPeakNear(r.peaks, 7);
+    assert.ok(peak, 'found a periodicity at 7 Hz, got ' + JSON.stringify(r.peaks.map((p) => +p.alphaHz.toFixed(2))));
+    const b = r.peakBin[peak.index];
+    const hz = b * r.spectrum.binHz;
+    assert.ok(Math.abs(hz - 1000) < 2 * r.spectrum.binHz, 'the peak sits at 1 kHz in f, got ' + Math.round(hz));
+    const depth = r.spectrum.mod[peak.index * r.spectrum.bins + b];
+    assert.ok(depth > 0.30 && depth < 0.42, 'reads its depth, attenuated by the window: ' + depth.toFixed(3));
+  },
+  function neitherASteadyToneNorNoiseInventsAClock() {
+    // Two different ways to get a false positive, and both are closed. A
+    // steady tone leaks into its own envelope when the window is short; noise
+    // beats a threshold set below its own maximum.
+    for (const f0 of [1000, 1031.25, 937.5, 2600]) {
+      const r = analyseCyclic({ mono: cySignal(6, (t) => Math.sin(2 * Math.PI * f0 * t)), sampleRate: CY_RATE });
+      assert.equal(r.peaks.length, 0, f0 + ' Hz steady tone has no clock, got '
+        + JSON.stringify(r.peaks.map((p) => +p.alphaHz.toFixed(1))));
+    }
+    cyReseed(999);
+    const r = analyseCyclic({ mono: cySignal(8, () => cyNoise()), sampleRate: CY_RATE });
+    assert.equal(r.peaks.length, 0, 'noise has no clock, got ' + r.peaks.length);
+    assert.ok(r.peaks.every((pk) => pk.bands === 0), 'and no band count to report');
+  },
+  function keyingShowsItsFundamentalAndMarksItsHarmonics() {
+    // On-off keying at 12.5 Hz: a Morse dot rate. The harmonic family is how
+    // switching is told from a sine, so harmonics are marked, not dropped.
+    const x = cySignal(8, (t) => ((Math.floor(t * 25) % 2) ? 1 : 0) * Math.sin(2 * Math.PI * 1200 * t));
+    const r = analyseCyclic({ mono: x, sampleRate: CY_RATE });
+    const f0 = cyPeakNear(r.peaks, 12.5);
+    assert.ok(f0, 'found the keying rate, got ' + JSON.stringify(r.peaks.map((p) => +p.alphaHz.toFixed(2))));
+    const second = cyPeakNear(r.peaks, 25);
+    assert.ok(second && second.harmonicOf != null, 'the 25 Hz partial is marked a harmonic, not a second clock');
+    assert.equal(f0.harmonicOf, null, 'and the fundamental is not marked as one');
+  },
+  function aClockSharedAcrossSeparatedBandsIsFoundByTheSpreadReduction() {
+    // The watermark case. Two narrow bands, each modulated only 18%, under
+    // broadband noise four times their amplitude. Neither is remarkable alone;
+    // what gives them away is carrying the SAME clock.
+    cyReseed(4242);
+    const clock = (t) => 1 + 0.18 * Math.cos(2 * Math.PI * 9 * t);
+    const x = cySignal(8, (t) => 4 * cyNoise()
+      + clock(t) * Math.sin(2 * Math.PI * 1200 * t)
+      + clock(t) * Math.sin(2 * Math.PI * 2600 * t));
+    const r = analyseCyclic({ mono: x, sampleRate: CY_RATE });
+    const shared = cyPeakNear(r.peaks, 9, 0.8);
+    assert.ok(shared, 'the shared clock is found, got ' + JSON.stringify(r.peaks.map((p) => +p.alphaHz.toFixed(2))));
+    assert.ok(shared.bands >= 2, 'and it is reported as carried by several bands, got ' + shared.bands);
+    const bins = [];
+    for (let b = 0; b < r.spectrum.bins; b++) {
+      if (r.spectrum.mod[shared.index * r.spectrum.bins + b] / (r.floors[b] || 1) >= 6) bins.push(b * r.spectrum.binHz);
+    }
+    assert.ok(bins.some((hz) => Math.abs(hz - 1200) < 200) && bins.some((hz) => Math.abs(hz - 2600) < 200),
+      'both planted bands carry it, got ' + JSON.stringify(bins.map(Math.round)));
+  },
+  function theWindowAndHopBothFollowTheCyclicCeiling() {
+    // Neither is guessed. The hop sets the frame rate to twice the ceiling;
+    // the window is 2.56 / ceiling, which is the measured point where the
+    // plane stops inventing clocks.
+    assert.equal(fftSizeFor(48000, 30), 4096, '85 ms at the default ceiling');
+    assert.equal(fftSizeFor(48000, 120), 1024, 'a higher ceiling shortens the window');
+    assert.ok(fftSizeFor(48000, 1) <= 8192, 'and it is bounded');
+    const x = cySignal(4, (t) => Math.sin(2 * Math.PI * 800 * t));
+    const lo = envelopeMatrix({ mono: x, sampleRate: CY_RATE, alphaMaxHz: 30 });
+    const hi = envelopeMatrix({ mono: x, sampleRate: CY_RATE, alphaMaxHz: 120 });
+    assert.ok(lo.frameRate >= 60 && hi.frameRate >= 240, 'frame rate covers twice the ceiling');
+    assert.ok(hi.fftSize < lo.fftSize, 'a faster ceiling means a shorter window');
+    assert.ok((lo.frames & (lo.frames - 1)) === 0, 'frames is a power of two for the time FFT');
+    assert.equal(envelopeMatrix({ mono: new Float32Array(64), sampleRate: CY_RATE }), null, 'too short to say anything');
+    assert.equal(envelopeMatrix({ mono: null, sampleRate: CY_RATE }), null);
+    assert.equal(analyseCyclic({ mono: new Float32Array(64), sampleRate: CY_RATE }), null);
+  },
+  function silentBinsAreExcludedRatherThanNormalisedIntoNonsense() {
+    // Modulation depth is a ratio to a bin's own mean, so a near-silent bin
+    // divides numeric noise by almost zero. DC is the usual offender. Left
+    // ungated it reported depths in the millions.
+    cyReseed(77);
+    const x = cySignal(8, (t) => Math.sin(2 * Math.PI * 500 * t) * (1 + 0.5 * Math.cos(2 * Math.PI * 5 * t)));
+    const env = envelopeMatrix({ mono: x, sampleRate: CY_RATE });
+    const spec = modulationSpectrum(env, {});
+    assert.ok(spec.activeBins > 0 && spec.activeBins < spec.bins, 'a lone tone leaves most bins inactive, got ' + spec.activeBins);
+    assert.equal(spec.active[0], 0, 'DC is never active');
+    const floors = binFloors(spec);
+    assert.equal(floors[0], 0, 'and an inactive bin gets no floor');
+    assert.ok([...floors].every((f) => f >= 0 && Number.isFinite(f)), 'every floor is finite');
+    const { profile, spread } = alphaProfile(spec, floors);
+    assert.equal(profile.length, spec.alphaBins);
+    assert.equal(spread.length, spec.alphaBins);
+    const peaks = findPeriodicities(profile, spec);
+    assert.ok(cyPeakNear(peaks, 5), 'the 5 Hz modulation survives the gating');
+    assert.deepEqual(findPeriodicities(new Float32Array(spec.alphaBins), spec), []);
+  },
+  function theThresholdSitsAboveTheNoiseMaximumNotBelowIt() {
+    // Measured over ~130,000 cells of true random noise the ratio to a bin's
+    // median floor has median 1.0, p99 5.0 and a MAXIMUM of 9.3, so a
+    // threshold of 6 finds about a dozen clocks in silence.
+    assert.equal(DEFAULT_THRESHOLD, 12);
+    cyReseed(31337);
+    const noise = cySignal(8, () => cyNoise());
+    const loose = analyseCyclic({ mono: noise, sampleRate: CY_RATE, threshold: 6 });
+    const tight = analyseCyclic({ mono: noise, sampleRate: CY_RATE });
+    assert.ok(loose.peaks.length > tight.peaks.length, 'a threshold below the noise maximum finds more in the same noise');
+    assert.equal(tight.peaks.length, 0);
+  },
+];
+
 const groups = [
   ['quick take', quickTakeCases],
+  ['cyclic modulation', cyclicCases],
   ['playback resample', playbackResampleCases],
   ['streamed wav', streamCases],
   ['windowed load', windowCases],
