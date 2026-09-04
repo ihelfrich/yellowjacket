@@ -560,3 +560,22 @@ named three, but `workers/whisper-worker.js:6` imports transformers.js from
 
 **The lesson worth keeping:** a test that checks a value is *well-formed* is
 not a test that the claim is *true*.
+
+## One Command-Z, one undo stack
+`TranscriptView` registered its own window-level keydown listener in its
+constructor (transcript-ui.js:47) and popped a private undo stack on
+Command-Z, calling `preventDefault()` but never `stopImmediatePropagation()`.
+`main.js:478` registers a second window listener that calls `ctx.api.undo()`
+and checks neither `defaultPrevented` nor which bench is active. The view is
+built ~280 lines earlier, so it fired first and BOTH ran on one press.
+
+Worse than the double-pop: the view's handler had no active-bench guard and
+words are `<button>` elements, so main.js's `contenteditable` guard did not
+exclude them. Command-Z on MACHINE, after any earlier transcript edit, would
+silently rewind the transcript out of sight.
+
+The view's stack is deleted. All five of its edit sites already dispatch
+`beforeedit`, which is exactly what ProjectStore snapshots on
+(bench-controller.js:305), so the store's history is 1:1 with the edits and
+nothing is lost but the duplication. One cost, stated: deep transcript undo
+shortens from the view's own cap of 100 to the shared `historyLimit` of 60.

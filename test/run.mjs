@@ -5171,6 +5171,28 @@ const visualCases = [
     assert.match(pc, /if \(discarded && sourceSize <= AUTO_RESTORE_MAX_SOURCE_BYTES && !R\.buffer\)/, 'only after a discard, only for a modest source, only with nothing loaded');
     assert.match(pc, /if \(!R\.buffer && !restoreFailed\) restore\(\);/, 'one attempt; a failed restore leaves the panel');
   },
+  async function oneKeystrokeMeansOneUndoStack() {
+    const t = await readFile(new URL('../js/transcript-ui.js', import.meta.url), 'utf8');
+    // The view kept a second undo stack and popped it on its own window-level
+    // Command-Z. Both handlers were window listeners, this one never stopped
+    // propagation, and it had no active-bench guard, so one press ran both and
+    // Command-Z on MACHINE could rewind a transcript edit out of sight.
+    assert.doesNotMatch(t, /_undoPop/, 'the view no longer pops its own stack');
+    assert.doesNotMatch(t, /UNDO_CAP/, 'and no longer caps one');
+    assert.doesNotMatch(t, /this\._undo\b/, 'the second stack is gone');
+    const onKeyAt = t.indexOf('_onKey(e) {');
+    const onKey = t.slice(onKeyAt, onKeyAt + 700);
+    assert.doesNotMatch(onKey, /metaKey \|\| e\.ctrlKey/, 'the view does not answer Command-Z at all now');
+    assert.match(onKey, /Delete' \|\| e\.key === 'Backspace'/, 'it still owns Delete and Backspace');
+    // The premise: every edit still snapshots the store, so nothing is lost.
+    assert.equal((t.match(/this\._pushUndo\(\)/g) || []).length, 5, 'all five edit sites still snapshot');
+    const push = t.slice(t.indexOf('_pushUndo() {'), t.indexOf('// ---------- input'));
+    assert.match(push, /dispatchEvent\(new CustomEvent\('beforeedit'/, 'and beforeedit is what they fire');
+    const b = await readFile(new URL('../js/app/bench-controller.js', import.meta.url), 'utf8');
+    assert.match(b, /transcript\.addEventListener\('beforeedit'/, 'which the store snapshots on');
+    const m = await readFile(new URL('../js/main.js', import.meta.url), 'utf8');
+    assert.equal((m.match(/e\.code !== 'KeyZ'/g) || []).length, 1, 'exactly one Command-Z handler in the app');
+  },
   async function statusIsALiveRegionAndResumeComesFirst() {
     const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     assert.match(html, /<footer class="yj-status" role="status" aria-live="polite">/);

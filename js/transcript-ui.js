@@ -7,7 +7,6 @@
 const GAP_PILL = 0.35;    // gaps longer than this get a clickable pill token
 const GAP_BREATH = 0.12;  // dead-air cuts keep this much room at each end
 const MERGE_TOL = 0.02;   // cuts this close together merge into one
-const UNDO_CAP = 100;
 const SCROLL_MS = 300;    // playback autoscroll throttle
 
 export class TranscriptView extends EventTarget {
@@ -28,7 +27,6 @@ export class TranscriptView extends EventTarget {
     this._gapCut = [];      // parallel to words: true = gap after word i is cut
     this._wordEls = [];
     this._gapEls = [];      // sparse, indexed by word; null when no pill
-    this._undo = [];        // snapshots of {del: bool[], gap: bool[]}
     this._sel = null;       // {a, b} inclusive word indices, a <= b
     this._selAnchor = null;
     this._focusIndex = -1;  // roving keyboard focus among transcript words
@@ -59,7 +57,6 @@ export class TranscriptView extends EventTarget {
     this._gapCut = Array.isArray(gapCuts) ? gapCuts : [];
     this._gapCut.length = n;
     for (let i = 0; i < n; i++) this._gapCut[i] = !!this._gapCut[i];
-    this._undo = [];
     this._sel = null;
     this._selAnchor = null;
     this._focusIndex = n ? 0 : -1;
@@ -352,30 +349,20 @@ export class TranscriptView extends EventTarget {
   }
 
   // ---------- undo ----------
+  //
+  // There is ONE undo stack, and it lives in ProjectStore. This view used to
+  // keep a second one and pop it on its own Command-Z; because both handlers
+  // were window listeners and this one never stopped propagation, a single
+  // press ran both, and the view's handler had no active-bench guard — so
+  // Command-Z on MACHINE could silently rewind a transcript edit the user was
+  // not looking at. Every edit site below already fires 'beforeedit', which is
+  // what the store snapshots on, so nothing is lost but the duplication.
 
   _pushUndo() {
     // ProjectStore snapshots the durable document on this event. It must fire
     // before the shared words/gap arrays change, not after an edit has already
     // made the prior state unrecoverable.
     this.dispatchEvent(new CustomEvent('beforeedit', { detail: {} }));
-    this._undo.push({
-      del: this._words.map((w) => !!w.deleted),
-      gap: this._gapCut.slice(),
-    });
-    if (this._undo.length > UNDO_CAP) this._undo.shift();
-  }
-
-  _undoPop() {
-    const snap = this._undo.pop();
-    if (!snap) return;
-    this.dispatchEvent(new CustomEvent('beforeedit', { detail: {} }));
-    const words = this._words;
-    const n = Math.min(words.length, snap.del.length);
-    for (let i = 0; i < n; i++) words[i].deleted = snap.del[i];
-    this._gapCut.length = words.length;
-    for (let i = 0; i < words.length; i++) this._gapCut[i] = !!snap.gap[i];
-    this._refresh();
-    this._emitEdited();
   }
 
   // ---------- input ----------
@@ -496,13 +483,6 @@ export class TranscriptView extends EventTarget {
   _onKey(e) {
     const t = e.target;
     if (t && t.closest && t.closest('input, select, textarea, [contenteditable="true"]')) return;
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
-      if (this._undo.length) {
-        e.preventDefault();
-        this._undoPop();
-      }
-      return;
-    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && this._sel) {
       e.preventDefault();
       this.deleteSelection();
