@@ -46,9 +46,14 @@ export const MAX_FFT_SIZE = 8192;
 //   3 at 2048); it is the window that governs.
 //
 // So the factor is 2.56, twice what sensitivity alone would ask, which buys a
-// clean plane at the default ceiling. Raising alphaMaxHz shortens the window
-// and trades that back: at 30 Hz the plane is clean, and a 20 Hz modulation
-// still reads 44% of its true depth, far above the detection floor.
+// clean plane. The cost is stated rather than hidden: a window chosen this way
+// has its null at 2 x its bin width, which is BELOW the ceiling the caller
+// named. The analysis reports `usableAlphaHz` and `nullAlphaHz` and clamps
+// itself to the latter, so it never claims to have searched a band it is deaf
+// to. Confirmed against the measured transfer: at 48 kHz with an 85 ms window
+// the null lands at 23.4 Hz, and a sinusoidal modulation there reads 0.013 of
+// a true 0.40. Square keying is still found past it, because its harmonics and
+// sidebands reach back down into the passband.
 export const WINDOW_ALPHA_PRODUCT = 2.56;
 export function fftSizeFor(sampleRate, alphaMaxHz) {
   const want = WINDOW_ALPHA_PRODUCT * sampleRate / Math.max(MIN_ALPHA_HZ, alphaMaxHz);
@@ -163,8 +168,19 @@ export function envelopeMatrix({
       env[row + b] = Math.sqrt(power);
     }
   }
+  // What this window can actually reach, which is NOT what the caller asked
+  // for. The magnitude of a bin is its subband lowpassed BY THE ANALYSIS
+  // WINDOW, so a modulation at alpha is transferred with the window's own
+  // response: for Hann, half amplitude at one bin width and a hard null at
+  // two. The hop only decides whether what survives is aliased. Asking for a
+  // ceiling above the null does not reach it, so the reach is reported and
+  // the analysis is clamped to it rather than searching a dead band.
+  const df = rate / fftSize;
   return {
     env, frames, bins, frameRate, group, fftSize,
+    binWidthHz: df,
+    usableAlphaHz: df,        // about half the depth survives here
+    nullAlphaHz: 2 * df,      // and none survives here
     binHz: rate / fftSize * group,
     startSec: from / rate,
     seconds: (frames * hop) / rate,
@@ -192,7 +208,14 @@ export function modulationSpectrum(envelope, { alphaMaxHz = DEFAULT_ALPHA_MAX_HZ
   const scale = 2 / (wsum || 1);
 
   const alphaStep = frameRate / frames;
-  const ceiling = Math.min(frameRate / 2, Math.max(MIN_ALPHA_HZ, alphaMaxHz));
+  // Clamped by the window's null as well as by aliasing: past 2 x the bin
+  // width the estimator is deaf, and reporting peaks from there would be
+  // reporting noise from a band it cannot hear.
+  const ceiling = Math.min(
+    frameRate / 2,
+    envelope.nullAlphaHz || Infinity,
+    Math.max(MIN_ALPHA_HZ, alphaMaxHz),
+  );
   const alphaBins = Math.max(1, Math.min(frames >> 1, Math.ceil(ceiling / alphaStep) + 1));
   const mod = new Float32Array(alphaBins * bins);
   const re = new Float32Array(frames);
@@ -228,6 +251,10 @@ export function modulationSpectrum(envelope, { alphaMaxHz = DEFAULT_ALPHA_MAX_HZ
     mod, alphaBins, bins, means, active,
     activeBins: active.reduce((n, v) => n + v, 0),
     alphaStep,
+    requestedAlphaHz: alphaMaxHz,
+    usableAlphaHz: envelope.usableAlphaHz,
+    nullAlphaHz: envelope.nullAlphaHz,
+    reachedCeiling: alphaMaxHz > (envelope.nullAlphaHz || Infinity),
     maxAlphaHz: (alphaBins - 1) * alphaStep,
     alphaHz: (i) => i * alphaStep,
     binHz: envelope.binHz,

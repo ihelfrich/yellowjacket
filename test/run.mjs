@@ -5624,7 +5624,11 @@ const cyclicCases = [
     // On-off keying at 12.5 Hz: a Morse dot rate. The harmonic family is how
     // switching is told from a sine, so harmonics are marked, not dropped.
     const x = cySignal(8, (t) => ((Math.floor(t * 25) % 2) ? 1 : 0) * Math.sin(2 * Math.PI * 1200 * t));
-    const r = analyseCyclic({ mono: x, sampleRate: CY_RATE });
+    // Ask for a ceiling that actually covers the second harmonic. At the
+    // default the window's null lands at 23.4 Hz and the estimator refuses to
+    // look past it, which is the honest answer rather than a miss.
+    const r = analyseCyclic({ mono: x, sampleRate: CY_RATE, alphaMaxHz: 60 });
+    assert.ok(r.spectrum.maxAlphaHz > 25, 'the ceiling reaches the harmonic, got ' + r.spectrum.maxAlphaHz.toFixed(1));
     const f0 = cyPeakNear(r.peaks, 12.5);
     assert.ok(f0, 'found the keying rate, got ' + JSON.stringify(r.peaks.map((p) => +p.alphaHz.toFixed(2))));
     const second = cyPeakNear(r.peaks, 25);
@@ -5658,6 +5662,14 @@ const cyclicCases = [
     assert.equal(fftSizeFor(48000, 30), 4096, '85 ms at the default ceiling');
     assert.equal(fftSizeFor(48000, 120), 1024, 'a higher ceiling shortens the window');
     assert.ok(fftSizeFor(48000, 1) <= 8192, 'and it is bounded');
+    // The window, not the hop, sets how far up the alpha axis the estimator
+    // can hear: half the depth survives at one bin width and none at two. A
+    // ceiling asked for above that is reported as unreached, not pretended.
+    const wide = analyseCyclic({ mono: cySignal(6, (t) => Math.sin(2 * Math.PI * 1000 * t)), sampleRate: CY_RATE });
+    assert.ok(Math.abs(wide.envelope.usableAlphaHz - 48000 / wide.envelope.fftSize) < 0.01, 'usable reach is one bin width');
+    assert.ok(Math.abs(wide.envelope.nullAlphaHz - 2 * wide.envelope.usableAlphaHz) < 0.01, 'and the null is at two');
+    assert.equal(wide.spectrum.reachedCeiling, true, 'the default ceiling of 30 Hz overreaches an 85 ms window');
+    assert.ok(wide.spectrum.maxAlphaHz <= wide.envelope.nullAlphaHz + 0.01, 'so the search is clamped to what it can hear');
     const x = cySignal(4, (t) => Math.sin(2 * Math.PI * 800 * t));
     const lo = envelopeMatrix({ mono: x, sampleRate: CY_RATE, alphaMaxHz: 30 });
     const hi = envelopeMatrix({ mono: x, sampleRate: CY_RATE, alphaMaxHz: 120 });
@@ -5694,11 +5706,25 @@ const cyclicCases = [
     // threshold of 6 finds about a dozen clocks in silence.
     assert.equal(DEFAULT_THRESHOLD, 12);
     cyReseed(31337);
-    const noise = cySignal(8, () => cyNoise());
-    const loose = analyseCyclic({ mono: noise, sampleRate: CY_RATE, threshold: 6 });
-    const tight = analyseCyclic({ mono: noise, sampleRate: CY_RATE });
-    assert.ok(loose.peaks.length > tight.peaks.length, 'a threshold below the noise maximum finds more in the same noise');
-    assert.equal(tight.peaks.length, 0);
+    // The invariant, stated directly: over a plane of pure noise, the largest
+    // ratio any cell reaches must sit BELOW the threshold. A threshold under
+    // it does not mean "sensitive", it means every noise plane reports clocks.
+    let worst = 0;
+    for (let trial = 0; trial < 3; trial++) {
+      const r = analyseCyclic({ mono: cySignal(8, () => cyNoise()), sampleRate: CY_RATE });
+      assert.equal(r.peaks.length, 0, 'noise reports nothing at the calibrated threshold');
+      for (let a = 2; a < r.spectrum.alphaBins; a++) {
+        for (let b = 0; b < r.spectrum.bins; b++) {
+          const floor = r.floors[b];
+          if (!(floor > 0)) continue;
+          const ratio = r.spectrum.mod[a * r.spectrum.bins + b] / floor;
+          if (ratio > worst) worst = ratio;
+        }
+      }
+    }
+    assert.ok(worst < DEFAULT_THRESHOLD,
+      'the threshold clears the worst cell noise produced (' + worst.toFixed(1) + ' of ' + DEFAULT_THRESHOLD + ')');
+    assert.ok(worst > 3, 'and noise really does reach well past its own median, got ' + worst.toFixed(1));
   },
 ];
 

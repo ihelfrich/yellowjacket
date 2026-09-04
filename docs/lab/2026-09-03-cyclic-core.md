@@ -83,3 +83,38 @@ The bench surface (rendering the alpha-versus-f plane), segmentation driven by
 these signatures, and the first decoder. The signature table for real modes
 (RTTY, PSK31, SSTV, PPM-family watermarks) is being written by a separate
 review, in 2026-09-03-cyclic-spectrum.md.
+
+## Correction after adversarial review: the window sets the reach, not the hop
+The review's central finding, and my own transfer table already contained the
+evidence. The magnitude of a bin is its subband **lowpassed by the analysis
+window**, so a modulation at alpha is transferred with that window's own
+response: for Hann, half amplitude at one bin width and a hard null at two. The
+hop only decides whether what survives is aliased.
+
+So the ceiling I shipped was a claim the estimator could not honour. At 48 kHz
+the default window is 85 ms, bin width 11.7 Hz, null at **23.4 Hz** — while the
+stated ceiling was 30 Hz. The measured transfer agrees exactly: a sinusoidal
+modulation at 30 Hz read 0.013 of a true 0.40.
+
+Fixed by reporting rather than pretending. `usableAlphaHz` (one bin width),
+`nullAlphaHz` (two), and `reachedCeiling` are returned, and the search is
+clamped to the null. The estimator no longer claims to have looked at a band it
+is deaf to.
+
+One prediction of the review did **not** hold. It expected the 8 kHz shelf
+captures to be unusable, reasoning from a fixed 2048-point window (256 ms, null
+at 7.8 Hz) that would erase every keying rate. `fftSizeFor` is rate-aware and
+picks 512 samples at 8 kHz (64 ms, null at 31.3 Hz), so keying at 8, 16 and
+25 Hz is found at both 48 kHz and 8 kHz. Verified before changing anything.
+
+Square keying is still found past the null, because its harmonics and sidebands
+reach back into the passband; the null bounds sinusoidal modulation.
+
+## Taken from the review, not yet built
+The cross-band statistic should pool **phase** coherently rather than count
+bands: `gamma(alpha) = |sum_c exp(2i*phi_c(alpha))|^2 / Nc^2`, whose null
+distribution is closed-form (`Nc*gamma ~ Exp(1)`), claimed at 15-20 dB of
+effective gain against a watermark buried under masking audio. That is the
+principled version of the detector deleted above, and unlike the count it can
+be calibrated from theory rather than by sweeping. It is the next thing to
+build, before the bench surface.
