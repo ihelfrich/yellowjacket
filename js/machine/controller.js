@@ -3,6 +3,7 @@
 // assignment now also records an asset registry entry (persistence groundwork).
 
 import { cutExcerpt, excerptKey, ExcerptCache } from '../loom/excerpt.js';
+import { semanticRate } from '../loom/schedule.js';
 import { createVoice, registerAsset } from '../app/project-store.js';
 import { buildBundle } from '../app/project-bundle.js';
 import { encodeWav, download } from '../export.js';
@@ -80,7 +81,8 @@ export function initMachineController(ctx) {
     // lane, cut once per (source, plan, event, rate) and cached by seconds.
     excerptFor: (planId, event, rate) => {
       if (!R.buffer || !event) return null;
-      const key = excerptKey(R.sourceHash, planId, event.eventId || event.id, rate);
+      const pitchRatio = semanticRate(event);
+      const key = excerptKey(R.sourceHash, planId, event.eventId || event.id, rate, pitchRatio);
       const hit = excerptCache.get(key);
       if (hit) return hit;
       const channels = [];
@@ -91,6 +93,7 @@ export function initMachineController(ctx) {
         offsetSec: event.sourceOffsetSec,
         spanSec: event.sourceSpanSec,
         outRate: rate,
+        pitchRatio,
         resampleFn: (ch, inRate, outRate) => resample(ch, inRate, outRate, { cutoffScale: PLAYBACK_CUTOFF_SCALE }),
       });
       return cut ? excerptCache.set(key, cut) : null;

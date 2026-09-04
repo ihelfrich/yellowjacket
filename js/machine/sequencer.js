@@ -10,7 +10,7 @@ import { encodeWav, encodeWavWithStats } from '../export.js';
 import { stretchSamples } from '../dsp/stretch.js';
 import { plateImpulse, delayTimeFor, dampingCoeff } from '../dsp/space.js';
 import { processLimiter } from '../dsp/limiter.js';
-import { scheduleSemanticEvent } from '../loom/schedule.js';
+import { scheduleSemanticEvent, semanticRate } from '../loom/schedule.js';
 import {
   compilePerformanceRender,
   compilePerformanceWindow,
@@ -130,7 +130,9 @@ export class Sequencer extends EventTarget {
     const buffer = this._semanticSource(planId);
     if (!buffer || !ctx) return null;
     const rate = Math.round(ctx.sampleRate);
-    if (Math.round(buffer.sampleRate) === rate) return { buffer, offsetSec: null };
+    // Only an unpitched note on a matched rate can skip the excerpt: a pitched
+    // one needs its ratio baked into the excerpt's own rate to stay a copy.
+    if (Math.round(buffer.sampleRate) === rate && semanticRate(event) === 1) return { buffer, offsetSec: null };
     const resolver = this._performanceSources;
     if (!resolver || typeof resolver.excerptFor !== 'function') return { buffer, offsetSec: null };
     const excerpt = resolver.excerptFor(planId, event, rate);

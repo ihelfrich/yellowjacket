@@ -3,6 +3,20 @@
 // performs no musical decisions and never copies source PCM.
 
 export const SEMANTIC_EDGE_FADE_SEC = 0.008;
+export const SEMANTIC_RATE_MIN = 0.5;
+export const SEMANTIC_RATE_MAX = 2;
+
+// The pitch ratio a semantic event will actually play at. The excerpt builder
+// and the scheduler must agree on it exactly, or the buffer's rate and the
+// node's playbackRate stop cancelling and the pitch is wrong.
+export function semanticRate(event) {
+  // Guard the event before coercing: Number(null) is 0, which would clamp to
+  // half speed and pitch a missing event down an octave instead of leaving it
+  // alone. Only a real, finite rate is clamped.
+  if (!event) return 1;
+  const r = Number(event.rate);
+  return Number.isFinite(r) ? Math.max(SEMANTIC_RATE_MIN, Math.min(SEMANTIC_RATE_MAX, r)) : 1;
+}
 
 function clamp(value, low, high, fallback = low) {
   const number = Number(value);
@@ -20,7 +34,7 @@ export function scheduleSemanticEvent({
   const offset = clamp(wanted, 0, sourceBuffer.duration, 0);
   const requestedSpan = clamp(event.sourceSpanSec, 0, sourceBuffer.duration - offset, 0);
   if (!(requestedSpan > 0)) return null;
-  const rate = clamp(event.rate, 0.5, 2, 1);
+  const rate = semanticRate(event);
   const gainValue = clamp(event.gain, 0, 1, 0);
   if (!(gainValue > 0)) return null;
   const startAt = Math.max(Number(ctx.currentTime) || 0, Number(when) || 0);

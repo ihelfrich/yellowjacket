@@ -82,7 +82,8 @@ import { windowRange, windowLabel, parseClock, clock as windowClock } from '../j
 import { dbToByte, MAG_LEVELS } from '../js/render/spectrogram-quant.js';
 import { resample as kaiserResample, resampleChannels, PLAYBACK_CUTOFF_SCALE } from '../js/dsp/resample.js';
 import { createTrackBuffer } from '../js/machine/sequencer.js';
-import { cutExcerpt, excerptKey, ExcerptCache, EXCERPT_PAD_SEC } from '../js/loom/excerpt.js';
+import { cutExcerpt, excerptKey, ExcerptCache, EXCERPT_PAD_SEC, excerptRateFor, MAX_BUFFER_RATE } from '../js/loom/excerpt.js';
+import { semanticRate } from '../js/loom/schedule.js';
 import { denoiseChannel, overlapWeights } from '../workers/denoise-worker.js';
 import { FFT as DnFFT, hann as dnHann } from '../js/fft.js';
 import { sha256HexSync } from '../js/loom/identity.js';
@@ -5433,7 +5434,7 @@ const excerptCases = [
     assert.equal(cutExcerpt({ channels: [ch], sourceRate: 48000, offsetSec: 99, spanSec: 1, outRate: 48000, resampleFn: kaiser }), null, 'past the end of the recording');
   },
   function theCacheIsBoundedBySecondsAndKeyedByEverythingThatCanChange() {
-    assert.equal(excerptKey('sha', 'plan', 'ev', 96000), 'sha|plan|ev|96000');
+    assert.equal(excerptKey('sha', 'plan', 'ev', 96000), 'sha|plan|ev|96000|1.000000', 'the pitch is part of the key');
     assert.notEqual(excerptKey('sha', 'plan', 'ev', 96000), excerptKey('sha', 'plan', 'ev', 48000), 'rate is part of the key');
     assert.notEqual(excerptKey('a', 'plan', 'ev', 96000), excerptKey('b', 'plan', 'ev', 96000), 'a new source is a new key');
     const cache = new ExcerptCache(1.0);
@@ -5451,13 +5452,74 @@ const excerptCases = [
     assert.equal(cache.size, 0);
     assert.equal(cache.seconds, 0);
   },
+  function theExcerptRateCancelsTheNotesPitchRatio() {
+    assert.equal(excerptRateFor(96000, 1), 96000, 'an unpitched note needs no help');
+    assert.equal(excerptRateFor(96000, 2), 48000, 'an octave up: half the rate, played twice as fast');
+    assert.equal(excerptRateFor(96000, 0.5), 192000, 'an octave down');
+    assert.equal(excerptRateFor(96000, Math.pow(2, 4 / 12)), 76195);
+    // the product is the context rate again, which is what makes the ratio 1
+    for (const r of [0.5, 0.7937, 1.2599, 2]) {
+      const target = excerptRateFor(96000, r);
+      assert.ok(Math.abs(r * target / 96000 - 1) < 1e-4, 'ratio at r=' + r + ' is ' + (r * target / 96000));
+    }
+    assert.equal(excerptRateFor(96000, 0), 96000, 'junk falls back to the context rate');
+    assert.equal(excerptRateFor(96000, NaN), 96000);
+    assert.equal(excerptRateFor(384000, 0.5), 384000, 'past what a buffer may be tagged, fall back');
+    assert.ok(excerptRateFor(384000, 1) <= MAX_BUFFER_RATE);
+    assert.equal(excerptRateFor(0, 1), 0);
+  },
+  function aPitchedExcerptIsBuiltAtTheCancellingRateAndKeepsItsDuration() {
+    const ch = new Float32Array(3 * 44100).map((_, i) => i / 44100);
+    const r = Math.pow(2, 4 / 12);
+    const cut = cutExcerpt({ channels: [ch], sourceRate: 44100, offsetSec: 1, spanSec: 0.5, outRate: 96000, pitchRatio: r, resampleFn: kaiser });
+    assert.equal(cut.sampleRate, excerptRateFor(96000, r), 'tagged at the cancelling rate, not the context rate');
+    // seconds and offsetSec stay in source time: the frame count and the tag move together
+    assert.ok(Math.abs(cut.seconds - (0.5 + 2 * EXCERPT_PAD_SEC)) < 2e-3, 'duration is the source window, ' + cut.seconds);
+    assert.ok(Math.abs(cut.offsetSec - EXCERPT_PAD_SEC) < 1e-3, 'the offset is still where the event starts');
+  },
+  function thePitchShiftItselfIsCleanNow() {
+    // At a cancelling rate the played output IS the excerpt, sample for
+    // sample, so the excerpt's own spectrum read on the context's frequency
+    // axis is what a listener hears. Before this, the same note went through
+    // Chromium's linear interpolator and measured about -42 dB (E12e).
+    const C = 96000, S = 48000, r = Math.pow(2, 4 / 12);
+    const toneHz = snap(8000, S);
+    const cut = cutExcerpt({
+      channels: [e12Tone(S, toneHz, 3)], sourceRate: S,
+      offsetSec: 0.1, spanSec: 2.5, outRate: C, pitchRatio: r, resampleFn: kaiser,
+    });
+    const played = toneHz * r;
+    const m = e12Measure(cut.channels[0], C, played, e12Tone(C, played, 2));
+    // The bar is not an absolute number, it is the analysis floor: a tone
+    // generated directly at the played pitch, measured the same way. Matching
+    // it means the pitch shift itself adds nothing.
+    const ideal = e12Measure(e12Tone(C, played, 2), C, played, e12Tone(C, played, 2));
+    // Measured 2.8 dB above the floor: the Kaiser's own stopband and the
+    // excerpt's hard edges, not the pitch shift. 4 dB is the honest bar.
+    assert.ok(m.imageDb <= ideal.imageDb + 4,
+      'pitched excerpt ' + m.imageDb.toFixed(1) + ' dB vs a directly generated tone ' + ideal.imageDb.toFixed(1) + ' dB');
+    assert.ok(m.imageDb <= -60, 'and far below the -42 dB the interpolated path measured (E12e): ' + m.imageDb.toFixed(1));
+  },
+  function theCacheAndTheSchedulerAgreeOnOneClampedRate() {
+    assert.equal(semanticRate({ rate: 1.5 }), 1.5);
+    assert.equal(semanticRate({ rate: 4 }), 2, 'clamped up');
+    assert.equal(semanticRate({ rate: 0.1 }), 0.5, 'clamped down');
+    assert.equal(semanticRate({}), 1);
+    assert.equal(semanticRate(null), 1);
+    // the key separates two pitches of the same event
+    assert.notEqual(excerptKey('s', 'p', 'e', 96000, 1), excerptKey('s', 'p', 'e', 96000, 1.26));
+    assert.equal(excerptKey('s', 'p', 'e', 96000), excerptKey('s', 'p', 'e', 96000, 1), 'unpitched is the default');
+  },
   async function theLiveLaneUsesTheExcerptAndTheOfflinePrintIsUntouched() {
     const sched = await readFile(new URL('../js/loom/schedule.js', import.meta.url), 'utf8');
     assert.match(sched, /offsetSec = null/, 'the scheduler takes an offset override');
     assert.match(sched, /const wanted = offsetSec == null \? event\.sourceOffsetSec : offsetSec;/, 'and no event is cloned per hit');
     const seq = await readFile(new URL('../js/machine/sequencer.js', import.meta.url), 'utf8');
     assert.match(seq, /_semanticVoice\(planId, event, ctx\)/);
-    assert.match(seq, /if \(Math\.round\(buffer\.sampleRate\) === rate\) return \{ buffer, offsetSec: null \};/, 'a matched rate is the recording itself, no copy');
+    assert.match(seq, /=== rate && semanticRate\(event\) === 1\) return \{ buffer, offsetSec: null \};/, 'only an UNPITCHED note on a matched rate skips the excerpt');
+    assert.match(sched, /const rate = semanticRate\(event\);/, 'the scheduler uses the shared clamped rate');
+    const ctrl2 = await readFile(new URL('../js/machine/controller.js', import.meta.url), 'utf8');
+    assert.match(ctrl2, /const pitchRatio = semanticRate\(event\);/, 'and so does the excerpt builder');
     assert.match(seq, /const voice = this\._semanticVoice\(event\.planId, event, ctx\);/, 'the live path resolves against its context');
     // the offline print still renders at max(track rates, source rate), so it
     // is already at the source's rate in the common case: left alone.

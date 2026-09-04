@@ -438,3 +438,53 @@ Also fixed, in the harness rather than the product: a test that left the
 engine playing held the 250 ms hidden-tab interval `_startTick` installs on
 purpose, so `node test/run.mjs` ran every group and then never exited. The
 suite exits cleanly again.
+
+## Experiment E12f (2026-09-03) — the pitch shift can be transparent, with no worklet
+E12e left a residual: a pitched semantic note stayed at a −42 dB image even
+once its excerpt matched the context rate, because a Take plays at
+`2^(semitones/12)` and that ratio is never 1. The assumed fix was a
+resampling voice in an AudioWorklet. It is not needed.
+
+A source node's real ratio is `playbackRate × (bufferRate / contextRate)`.
+Tag the excerpt at **`contextRate / pitchRatio`** and the two cancel exactly,
+so Chromium copies and the Kaiser resampler that built the excerpt does the
+pitch shift. Measured on a 44.1 kHz source, 96 kHz context, 8 kHz tone, +4
+semitones:
+
+| arrangement | image |
+|---|---|
+| excerpt at the context rate, played at r (E12e / step 6) | −42.2 dB |
+| **excerpt at contextRate / r, played at r** | **−66.6 dB** |
+| a tone generated directly at the played pitch (the floor) | −66.6 dB |
+
+Indistinguishable from the ideal. In node, measuring the excerpt array itself
+(at unity the output samples *are* the excerpt samples) gives −72.1 dB against
+a −74.9 dB analysis floor: a 2.8 dB residual from the Kaiser's own stopband
+and the excerpt's hard edges, not from the pitch shift.
+
+Shipped: `excerptRateFor(outRate, pitchRatio)` in js/loom/excerpt.js, the
+pitch in the cache key, and one clamped `semanticRate(event)` in
+js/loom/schedule.js that the excerpt builder and the scheduler both use — if
+they disagreed, the buffer rate and the playbackRate would stop cancelling and
+the note would play at the wrong pitch. A matched-rate shortcut now applies
+only to unpitched notes. Live on the demo (44.1 kHz source, 96 kHz device),
+all six distinct pitches in an armed QUICK TAKE plan resolved to excerpts at
+the cancelling rate with computed ratios of 1 to within 3 ppm:
+
+| note rate | excerpt rate | computed |
+|---|---|---|
+| 0.7492 | 128 145 | 1.000003 |
+| 0.8409 | 114 164 | 1.000001 |
+| 1.0000 | 96 000 | 1 |
+| 1.1225 | 85 526 | 0.999997 |
+| 1.2599 | 76 195 | 0.999997 |
+| 1.4983 | 64 072 | 0.999995 |
+
+Caught while writing it: `semanticRate(null)` coerced through `Number(null)`
+to 0 and clamped to 0.5, which would have pitched a missing event down an
+octave. Guarded.
+
+**Every path that plays the recording is now a copy**: bench transport, LOOM
+audition, clip audition, one-shot previews, SLOW at both factors, and the
+semantic lane at any pitch. The only resampler left is Chromium's own sinc
+stage from the transport to the device.
