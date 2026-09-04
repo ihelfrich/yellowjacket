@@ -283,3 +283,30 @@ Chromium: `chrome://discards` → Urgent discard on the bench tab → return.
 | source ≤ 100 MB encoded | status `THE BROWSER DISCARDED THIS TAB · RESTORING…`, then `RESTORED · <name> · AFTER A TAB DISCARD`, same SHA, no click |
 | larger source | the RESUME panel with a 4 px hazard rule: `THE BROWSER DISCARDED THIS TAB · SAVED N MIN AGO · …`, RESUME focused |
 | a restore fault | the panel stays; no second attempt |
+
+## 17. Playback runs at the recording's own rate
+
+Load anything whose rate differs from the output device (the demo is 44.1 kHz;
+most Macs run 48 or 96 kHz).
+
+| checkpoint | expected |
+|---|---|
+| load | status `LOADED AT 44.1 kHz · ITS OWN RATE · BENCH AT 44.1 kHz → 96 kHz SINC`; the readout beside the timecode says `TRANSPORT 44.1 kHz → DEVICE 96 kHz · CHROMIUM SINC` |
+| a file matching the device | the readout reads `MATCHED · NO CONVERSION` and no second context is opened |
+| SPEED once, twice | `SLOW ½× · TRANSPORT 22.1 kHz …`, then `SLOW ¼× · TRANSPORT 11.0 kHz …`; the playhead advances at half then a quarter; a brief gap at each change is the context swap, not a fault |
+| SPEED back to 1× | the transport returns to the file's rate |
+| a browser that refuses the rate | a fault-tone status naming the refusal, and playback continues on the device context |
+| load a second file at another rate | the first transport closes before the second opens; LOOM and clip auditions stop |
+
+## 18. Full regression after the playback work
+
+One pass, demo song, on a 96 kHz device. Every row was green on 2026-09-03.
+
+| bench | expected |
+|---|---|
+| SIGNAL | spectrogram matrix is a `Uint8Array` of about 7.8 MB at 8000 columns; beatmap finds a tempo and onsets |
+| transport | play advances in real time, STOP silences, the sounding readout names `BENCH` |
+| RACK | LIVE PREVIEW draws within a second of a knob; RENDER completes and A/B switches; export reports its rate and peak |
+| MACHINE | HARVEST seats eight tracks; RUN plays with track buffers built at the device rate; STOP silences |
+| QUICK TAKE | arms lane 9 and runs; every pitch resolves to an excerpt at its cancelling rate |
+| console | no errors, and `window.__yjErrors` is empty |
