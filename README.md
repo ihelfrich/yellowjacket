@@ -17,12 +17,13 @@ performance without losing where any sound came from.
 
 Live at **[ihelfrich.github.io/yellowjacket](https://ihelfrich.github.io/yellowjacket/)**.
 
-It is a static page. There is no server to upload to. The only things fetched over the
-network are the page itself, on first use the Whisper model weights from Hugging
-Face's CDN, and any FIELD recording you choose to stream from archive.org; the browser
-caches the first two, so the second session works on a plane. Your audio
-never leaves the machine. If that claim sounds like marketing, open the network tab and
-watch it stay empty while you work.
+It is a static page. There is no server to upload to. Four things are fetched over the
+network, and that is the whole list: the page itself; the transformers.js runtime from
+jsDelivr, once, the first time you transcribe; on the same first use the Whisper model
+weights from Hugging Face's CDN; and any SHELF recording you choose to stream from
+archive.org. The browser caches the first three, so the second session works on a plane.
+Your audio never leaves the machine. If that claim sounds like marketing, open the
+network tab and watch it stay empty while you work.
 
 Audio gets in five ways: load the bundled demo, open a FIELD recording, drop a file,
 pick one, or paste a URL. Files are decoded **at their own sample rate**, up to 192 kHz:

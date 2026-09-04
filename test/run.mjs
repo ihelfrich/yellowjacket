@@ -1202,6 +1202,12 @@ const lifecycleCases = [
       assert.match(rec.source, /^https:\/\/archive\.org\/details\//, rec.id + ' cites its item page');
       assert.match(rec.dur, /^\d+:\d\d$/, rec.id + ' duration reads as M:SS');
       assert.ok(fieldLicenseUrl(rec.license), rec.id + ' license tag resolves to a deed URL');
+      // The shelf says "all public domain" in three places and a commercial
+      // licensee cannot use a Non-Commercial recording, so the promise is
+      // asserted directly. A tag that merely RESOLVED once let a CC BY-NC-SA
+      // entry onto the shelf (found 2026-09-03, hours after it shipped).
+      assert.ok(rec.license === 'CC0' || rec.license === 'PD',
+        rec.id + ' is public domain, not ' + rec.license);
       // Every variant must stream from the item it cites, and a lossless
       // variant must carry the header-read rate and depth the badge shows.
       const item = rec.source.slice('https://archive.org/details/'.length) + '/';
@@ -5215,7 +5221,7 @@ const windowCases = [
   },
   async function longShelfItemsCarryTheirLengthAndFetchARange() {
     const longs = FIELD_RECORDINGS.filter((r) => r.long);
-    assert.ok(longs.length >= 3, 'the hour of HM01, the SOS traffic, and the launch commentary');
+    assert.ok(longs.length >= 2, 'the SOS traffic and the launch commentary');
     for (const r of longs) {
       assert.ok(r.long.seconds > 1800 && r.long.bytes > 10 * 1024 * 1024, r.id + ' is genuinely long');
       assert.ok(r.light && /\.mp3$/i.test(r.light.url), r.id + ' windows an MP3 (frame-resync decode)');

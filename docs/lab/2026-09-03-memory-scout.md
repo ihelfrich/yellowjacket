@@ -532,3 +532,31 @@ of 16 steps at 120 BPM printed 2.000 s of stereo audio, peak 0.79, RMS
 which is what `renderSampleRate` intends. In that context the samples and the
 context agree, so `createTrackBuffer` takes its copy path exactly as before.
 No regression.
+
+## A licence error I shipped this morning, caught by the survey
+`hm01-hour` went onto the SHELF in `a871cbf` carrying **CC BY-NC-SA** — the
+only non-public-domain entry among 34 — while the drawer's own note
+(index.html:460), the manifest's header comment, and the README all say the
+shelf is public domain. All three clauses bite: **NC** collides with the
+commercial licence this tool sells to organisations, **BY** falsifies the
+"all public domain" sentence, and **SA** would be viral onto any track
+printed from it.
+
+The manifest test did not catch it because it asserted the wrong thing: that
+the licence tag *resolves to a deed URL*. `LICENSE_URLS` had a BY-NC-SA deed
+in it, so the assertion passed. The test now asserts the promise itself —
+every entry is CC0 or PD — and the deed map holds only public-domain tags, so
+a non-PD tag has no URL and fails.
+
+The entry is removed. Windowed loading is still demonstrated by the two long
+entries that were always public domain: the Marine Electric SOS traffic (CC0,
+1:31:38) and the Voyager launch commentary (PD, 87:37). Verified live after
+the removal: `≈ 20:00 + 2:00` of the SOS traffic loads in 2 s, 118 s at
+11 025 Hz, 561 KB fetched, transport opened to match.
+
+Also corrected: the README enumerated the network fetches as exhaustive and
+named three, but `workers/whisper-worker.js:6` imports transformers.js from
+`cdn.jsdelivr.net`. It now names four.
+
+**The lesson worth keeping:** a test that checks a value is *well-formed* is
+not a test that the claim is *true*.

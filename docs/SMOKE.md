@@ -256,12 +256,12 @@ and pressing it stopped the machine *and started the song* — "I can't stop it"
 
 ## 14. A long capture loads a window at a time
 
-SHELF → SIGNAL → **HM01, A FULL HOUR** (badge `LONG · MP3`).
+SHELF → SIGNAL → **SS MARINE ELECTRIC, SOS ON 500 kHz** (badge `LONG · MP3`).
 
 | checkpoint | expected |
 |---|---|
-| click the card | a window row appears under it: `1:03:25 TOTAL · LOAD A WINDOW FROM [0:00] [5:00 LONG ▾] LOAD WINDOW · POSITION IS ≈ FOR A VARIABLE-BITRATE FILE` |
-| `20:00`, `2:00 LONG`, LOAD WINDOW | ~1 s later: source `HM01, A FULL HOUR · ≈ 20:00 + 2:00 — …`, 120.0 s at the file's own rate (32 kHz for this capture), spectrogram at that rate |
+| click the card | a window row appears under it: `1:31:38 TOTAL · LOAD A WINDOW FROM [0:00] [5:00 LONG ▾] LOAD WINDOW · POSITION IS ≈ FOR A VARIABLE-BITRATE FILE` |
+| `20:00`, `2:00 LONG`, LOAD WINDOW | ~2 s later: source `SS MARINE ELECTRIC, SOS ON 500 kHz · ≈ 20:00 + 2:00 — …`, 118 s at the file's own rate (11.025 kHz for this capture), 561 KB fetched, the transport opened to match |
 | a host that ignores Range | `WINDOW REFUSED · <host> sent the whole file instead of a range` |
 
 ## 15. Export streams to disk

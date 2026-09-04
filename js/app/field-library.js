@@ -128,10 +128,6 @@ export const FIELD_RECORDINGS = Object.freeze([
   // `long` carries the file's total seconds and bytes so the card can offer a
   // window (2 / 5 / 10 minutes from any point). MP3 only: an MPEG stream
   // resyncs at any frame, so a byte range decodes wherever it is cut.
-  { id: 'hm01-hour', shelf: 'SIGNAL', kind: 'NUMBERS · HOUR', title: 'HM01, A FULL HOUR', place: 'Cuba, 5855 kHz AM · February 3, 2013, 10:00 UTC', dur: '63:25',
-    license: 'CC BY-NC-SA', source: IA_ITEM + 'NumbersStationhm01-5855khz-1000utc-03february2013',
-    light: light('NumbersStationhm01-5855khz-1000utc-03february2013', 'HM01-NumbersStation-5.855MHz-1000UTC-03Feb2013.mp3', 36.3),
-    long: { seconds: 3805, bytes: 38058848 } },
   { id: 'marine-electric-sos', shelf: 'SIGNAL', kind: 'DISTRESS · MORSE', title: 'SS MARINE ELECTRIC, SOS ON 500 kHz', place: 'USCG COMMSTA Boston · February 12, 1983', dur: '91:38',
     license: 'CC0', source: IA_ITEM + 'SsMarineElectricWoohSos',
     light: light('SsMarineElectricWoohSos', 'Marine_Electric_SOS.mp3', 24.5),
@@ -181,10 +177,14 @@ export const FIELD_RECORDINGS = Object.freeze([
     light: light('auroral_chorus_2_cd', '02Track02-AlbertaNoseWhistlerjune96-mono.mp3', 6.7) },
 ]);
 
+// Only public-domain tags live here, and that is load-bearing rather than
+// tidy: the shelf's own note says "all public domain", the README says it
+// twice, and a commercial licensee of this tool cannot use a Non-Commercial
+// recording. A tag outside this map has no deed URL and fails the manifest
+// test, which is the point.
 const LICENSE_URLS = Object.freeze({
   CC0: 'https://creativecommons.org/publicdomain/zero/1.0/',
   PD: 'https://creativecommons.org/publicdomain/mark/1.0/',
-  'CC BY-NC-SA': 'https://creativecommons.org/licenses/by-nc-sa/3.0/',
 });
 
 export function fieldLicenseUrl(tag) {
