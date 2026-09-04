@@ -484,7 +484,34 @@ Caught while writing it: `semanticRate(null)` coerced through `Number(null)`
 to 0 and clamped to 0.5, which would have pitched a missing event down an
 octave. Guarded.
 
-**Every path that plays the recording is now a copy**: bench transport, LOOM
-audition, clip audition, one-shot previews, SLOW at both factors, and the
-semantic lane at any pitch. The only resampler left is Chromium's own sinc
-stage from the transport to the device.
+### Precision, against my own first wording
+"Chromium copies" is too strong for the pitched case, and the measurement
+says why. `excerptRateFor` rounds `contextRate / pitchRatio` to an integer, so
+the ratio is 1 to within a few parts per million, not exactly 1 — and
+Chromium's fast path needs exact equality. What actually happens is
+interpolation at a ratio of 0.999997, which is a pass-through with a slowly
+drifting sub-sample offset: measured against the buffer's own samples, a max
+absolute deviation of 3.3e-3 (about −50 dB), while the *spectrum* sits at the
+analysis floor. So: **spectrally transparent, with a sub-sample timing drift**,
+not a literal copy. Exact unity is only reachable at octaves, where
+`contextRate / 2^(±1)` is an integer. The unpitched paths (bench transport,
+SLOW, matched-rate audition) are literal copies, verified bit-exact by R5.
+
+### Where the same defect still lives: MACHINE pitch locks
+`sequencer.js:999` sets `src.playbackRate.value = event.rate` for every drum
+voice, and track buffers are built at the context rate (step 2), so a pitch
+lock is interpolated exactly as the semantic lane was. Pitch is quantised to
+integer semitones (project-store.js:13, −24..24), so the rate set is small
+and discrete. Measured, a percussive slice pitched up a fifth (r = 1.4983),
+error energy relative to the correctly-resampled signal:
+
+| material | linear interpolation, vs correct |
+|---|---|
+| synthetic snare (noise burst + 180 Hz body, 50 ms decay) | **−28.1 dB**, max abs error 0.029 |
+| sustained 9 kHz tone | −29.5 dB, max abs error 0.039 |
+
+So it is not a sustained-tone-only problem: a drum hit carries about 4 %
+error. The fix is the same trick, but it needs a bounded per-pitch buffer
+cache (a full track sample per distinct pitch per track, against the memory
+work done today), and it touches the step scheduler's hot path. Deliberately
+not started on a hunch — queued for the ranked plan.
