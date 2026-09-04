@@ -515,3 +515,20 @@ error. The fix is the same trick, but it needs a bounded per-pitch buffer
 cache (a full track sample per distinct pitch per track, against the memory
 work done today), and it touches the step scheduler's hot path. Deliberately
 not started on a hunch — queued for the ranked plan.
+
+## Regression pass after the playback work (2026-09-03, 96 kHz device)
+One end-to-end run on the demo, zero console errors and an empty
+`window.__yjErrors` throughout: load at 44.1 kHz with the transport opened to
+match; spectrogram matrix a 7.8 MB `Uint8Array` over 8000 columns; beatmap
+110 BPM with 1579 onsets; play/seek/stop with the sounding readout naming
+BENCH; SLOW to ½ and ¼ and back; LIVE PREVIEW inside a second; RENDER and
+A/B; HARVEST 24 clips onto 8 tracks; MACHINE run with track buffers at the
+device rate; QUICK TAKE arming 9 events; LOOM and STUDIO present; WAV export.
+
+MACHINE **FREEZE** checked separately, because step 2 changed how track
+buffers are built and an offline print runs in a different context: one loop
+of 16 steps at 120 BPM printed 2.000 s of stereo audio, peak 0.79, RMS
+−16.9 dB, header rate 44 100 — the material's own rate, not the device's,
+which is what `renderSampleRate` intends. In that context the samples and the
+context agree, so `createTrackBuffer` takes its copy path exactly as before.
+No regression.
