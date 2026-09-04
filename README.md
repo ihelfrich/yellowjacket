@@ -390,15 +390,27 @@ node test/run.mjs.
 
 Playback runs at the recording's own rate. A file is decoded at the rate its own header
 states, and the bench plays it on a transport AudioContext opened at that same rate, so
-the source node runs at unity ratio — a copy, verified bit-exact — instead of through
-Chromium's `AudioBufferSourceNode` resampler, which is linear and puts an image 5.8 dB
-under a 19 kHz tone when a 48 kHz file plays on a 96 kHz output. SLOW retunes that
-transport to a quarter or half the clock so the ratio stays exactly 1 rather than folding
-images into the audible band. Machine slices and the live semantic lane are rate-matched
-once through a Kaiser polyphase sinc that is flat to 23 kHz with images below -80 dB.
-What remains is Chromium's own sinc conversion from the transport to the device, the same
-stage every web page passes through; it cannot be measured from inside the page, so that
-claim rests on Chromium's source rather than on a measurement here.
+the source node runs at unity ratio — a literal copy, verified bit-exact — instead of
+through Chromium's `AudioBufferSourceNode` resampler, which is linear and puts an image
+5.8 dB under a 19 kHz tone when a 48 kHz file plays on a 96 kHz output. SLOW retunes that
+transport to a quarter or half the clock, so slowing down stays a copy rather than folding
+images into the audible band.
+
+Pitch shifting is handled the same way, by arithmetic rather than by a heavier engine. A
+source node's real ratio is its playback rate times the ratio of buffer rate to context
+rate, so a semantic note that plays a phrase four semitones up gets its excerpt built at
+the rate that cancels its own pitch. The shift is then performed by the same Kaiser
+polyphase sinc that is flat to 23 kHz with images below -80 dB, and the note measures at
+the analysis floor — indistinguishable from a tone generated directly at that pitch, where
+before it sat 42 dB down. Because that cancelling rate is rounded to a whole number, a
+pitched note is spectrally transparent with a sub-sample timing drift rather than a
+literal copy; only the unpitched paths are copies. Machine slices are rate-matched once by
+the same filter. Drum pitch locks are the one place that still interpolates, measured at
+-28 dB of error, and it is written down rather than glossed.
+
+What remains everywhere is Chromium's own sinc conversion from the transport to the
+device, the same stage every web page passes through. It cannot be observed from inside
+the page, so that claim rests on Chromium's source rather than on a measurement here.
 
 Factory drum PCM is fixed at 96 kHz and synthesized through a 4× nonlinear core before
 band-limited decimation. Live monitoring still follows the actual AudioContext/device
