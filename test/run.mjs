@@ -37,6 +37,9 @@ import { renderScore } from '../js/compose/cyclic-synth.js';
 import { peakRows, scoreSummary } from '../js/app/cyclic-controller.js';
 import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlinearity } from '../js/instrument/card.js';
 import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from '../js/instrument/family.js';
+import { runBank } from '../js/instrument/excite/bank.js';
+import { strike } from '../js/instrument/excite/strike.js';
+import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6082,6 +6085,34 @@ const instrumentCases = [
     for (const h of [0, 0.25, 0.5, 0.75, 1]) { const c = centroid(h); assert.ok(c > last, `centroid rises: h=${h} → ${c.toFixed(0)} Hz`); last = c; }
     close(contactTimeSec(0), 0.008, 1e-6, 'soft: 8 ms'); close(contactTimeSec(1), 0.0002, 1e-6, 'hard: 0.2 ms');
     close(halfSineWeight(0, 0.003), 1, 1e-9, 'DC weight is one');
+  },
+  function theBankRingsAnImpulseAtTheModesAmplitudeAndDecay() {
+    const sr = 48000, modes = [{ freqHz: 500, tauSec: 0.2, amp: 0.4, phase: 0 }];
+    const x = new Float32Array(sr); x[0] = 1;
+    const y = runBank(modes, x, sr);
+    let peak = 0; for (let i = 0; i < 200; i++) peak = Math.max(peak, Math.abs(y[i]));
+    close(peak, 0.4, 0.04, 'first cycle peak is the mode amplitude');
+    const env = (t) => { let m = 0; for (let i = Math.round(t * sr); i < Math.round(t * sr) + 200; i++) m = Math.max(m, Math.abs(y[i])); return m; };
+    close(env(0.2) / env(0.002), Math.exp(-1), 0.05, 'decays to 1/e in tauSec');
+  },
+  function aNonlinearModeBendsWhileLoudAndSettlesWhenQuiet() {
+    const sr = 48000, modes = [{ freqHz: 300, tauSec: 0.3, amp: 0.5, phase: 0 }];
+    const x = new Float32Array(sr); x[0] = 1;
+    const y = runBank(modes, x, sr, { nonlinearity: [{ mode: 0, hzPerAmp: 60, r2: 1 }] });
+    const zeroRate = (a, b) => { let z = 0; for (let i = Math.round(a * sr) + 1; i < Math.round(b * sr); i++) if ((y[i - 1] < 0) !== (y[i] < 0)) z++; return z / (b - a) / 2; };
+    assert.ok(zeroRate(0.01, 0.06) > zeroRate(0.8, 0.95) + 5, `loud ${zeroRate(0.01, 0.06).toFixed(1)} Hz vs quiet ${zeroRate(0.8, 0.95).toFixed(1)} Hz`);
+    close(zeroRate(0.8, 0.95), 300, 5, 'settles to the linear frequency (zero-crossing quantum 3.3 Hz, residual bend under 2 Hz)');
+  },
+  function pluckingNearTheBridgeIsBrighterThanTheMiddle() {
+    const w = pluckWeights(6, 0.5);
+    close(w[1], 0, 1e-9, 'a mid-string pluck cannot excite the even modes');
+    const sr = 48000, card = buildCard(damped(sr, 1, [1, 2, 3, 4, 5, 6].map((n) => ({ f: 220 * n, tau: 0.6 / n, amp: 0.5 / n, phase: 0 }))), sr, { name: 'string' });
+    const centroid = (x) => { const N = 1 << 15, re = new Float32Array(N), im = new Float32Array(N); for (let i = 0; i < N; i++) re[i] = x[i] || 0; new RepairFFT(N).forward(re, im); const mag = new Float32Array(N / 2); let top = 0; for (let k = 1; k < N / 2; k++) { mag[k] = Math.hypot(re[k], im[k]); if (mag[k] > top) top = mag[k]; } let n = 0, d = 0; for (let k = 1; k < N / 2; k++) if (mag[k] > 0.01 * top) { n += mag[k] * k * sr / N; d += mag[k]; } return n / d; }; // magnitude over the peaks, floor excluded
+    const bridge = centroid(pluck(card, { pitchHz: 220, position: 0.05, seconds: 1, sampleRate: sr }));
+    const middle = centroid(pluck(card, { pitchHz: 220, position: 0.5, seconds: 1, sampleRate: sr }));
+    assert.ok(bridge > middle * 1.2, `bridge ${bridge.toFixed(0)} Hz vs middle ${middle.toFixed(0)} Hz`);
+    const hit = strike(card, { pitchHz: 220, hardness: 0.8, seconds: 1, sampleRate: sr });
+    assert.equal(hit.length, sr); assert.ok(Math.max(...hit) > 0.05, 'a strike sounds');
   },
 ];
 
