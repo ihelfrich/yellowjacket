@@ -27,6 +27,11 @@ import {
   sniffSampleRate, planDecodeRate, probeContainer, decodedFootprintBytes,
 } from '../js/dsp/native-rate.js';
 import { parseSmf, smfToStudio } from '../js/midi/smf.js';
+import {
+  parseOpz, patternEvents, patternGrid, describeOpz, opzToSmf, buildSmf,
+  OPZ_BODY_BYTES, OPZ_HEADER_BYTES, OPZ_PATTERN_BYTES, OPZ_NOTE_SLOTS, OPZ_NOTE_OFFSET, OPZ_NOTE_COUNT,
+  OPZ_TICKS_PER_STEP, OPZ_TICKS_PER_QUARTER, OPZ_EMPTY_NOTE,
+} from '../js/export/opz-project.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -5728,7 +5733,141 @@ const cyclicCases = [
   },
 ];
 
+// --- OP-Z project decoder -------------------------------------------------
+// A synthetic file in the shape the device writes: 0x49 file id, every note
+// slot pre-filled with the empty signature (duration 2560, note 0xFF,
+// velocity 100), a version-7 trailer. The facts under test are the ones
+// measured on real files in docs/lab/opz/cap-project-format.md, not the
+// wiki's: empty is 0xFF not zero, micro-timing is ±96 for half a step, and
+// modern files are 342,848 bytes because of the trailer.
+function opzFixture({ trailer = true } = {}) {
+  const b = new Uint8Array(OPZ_BODY_BYTES + (trailer ? 4 : 0));
+  const v = new DataView(b.buffer);
+  v.setUint32(0, 0x49, true);
+  b.fill(0xff, 4, 4 + 512);
+  b[4] = 2; b[5] = 0; // chain 1 = patterns 3, 1
+  b[516] = 200; b[517] = 180; b[518] = 0; b[519] = 255;
+  b[520] = 120; b[565] = 30; b[566] = 90; b[567] = 3;
+  for (let p = 0; p < 16; p++) {
+    const base = OPZ_HEADER_BYTES + p * OPZ_PATTERN_BYTES;
+    for (let t = 0; t < 16; t++) { b[base + t * 12 + 4] = 16; b[base + t * 12 + 5] = 5; b[base + t * 12 + 6] = 1; }
+    for (let i = 0; i < 16 * OPZ_NOTE_SLOTS; i++) {
+      const n = base + 192 + i * 8;
+      v.setInt32(n, 2560, true); b[n + 4] = OPZ_EMPTY_NOTE; b[n + 5] = 100;
+    }
+  }
+  const put = (p, t, step, k, { note, velocity = 100, duration = 2560, micro = 0 }) => {
+    const n = OPZ_HEADER_BYTES + p * OPZ_PATTERN_BYTES + 192 + (step * OPZ_NOTE_SLOTS + OPZ_NOTE_OFFSET[t] + k) * 8;
+    v.setInt32(n, duration, true); b[n + 4] = note; b[n + 5] = velocity; v.setInt8(n + 6, micro);
+  };
+  put(0, 0, 0, 0, { note: 53 });                                   // kick, slot 0, on the one
+  put(0, 0, 0, 1, { note: 60 });                                   // second kick voice on the same step
+  put(0, 1, 15, 0, { note: 70 });                                  // snare on the last step
+  put(0, 5, 4, 0, { note: 64, velocity: 90, duration: 5120, micro: 96 }); // lead, pushed half a step late
+  put(0, 5, 4, 1, { note: 67, velocity: 90, duration: 5120, micro: 96 });
+  // arp: an 8-step track at double step length, with a note past its length
+  const arp = OPZ_HEADER_BYTES + 6 * 12; b[arp + 4] = 8; b[arp + 6] = 2;
+  put(0, 6, 3, 0, { note: 72 });
+  put(0, 6, 12, 0, { note: 84 });                                  // beyond step 8: never played
+  put(2, 4, 2, 0, { note: 43, duration: 1024 });                   // pattern 3, bass
+  if (trailer) v.setUint32(OPZ_BODY_BYTES, 7, true);
+  return b;
+}
+
+const opzCases = [
+  function theNoteBudgetIsFiftyFiveSlotsAtFixedOffsets() {
+    assert.equal(OPZ_NOTE_COUNT.reduce((a, b) => a + b, 0), OPZ_NOTE_SLOTS);
+    let at = 0;
+    OPZ_NOTE_OFFSET.forEach((off, t) => { assert.equal(off, at, 'track ' + t); at += OPZ_NOTE_COUNT[t]; });
+    assert.equal(OPZ_TICKS_PER_QUARTER, 4 * OPZ_TICKS_PER_STEP);
+  },
+  function aDeviceShapedFileDecodesFieldByField() {
+    const p = parseOpz(opzFixture());
+    assert.equal(p.version, 7);
+    assert.equal(p.tempo, 120);
+    assert.equal(p.swing, 30);
+    assert.deepEqual(p.mixer, { drum: 200, synth: 180, punch: 0, master: 255 });
+    assert.deepEqual(p.metronome, { level: 90, sound: 3 });
+    assert.deepEqual(p.chains[0], [2, 0]);
+    assert.deepEqual(p.chains[1], []);
+    assert.equal(p.noteCount, 8, 'empty slots (note 0xFF) are not notes');
+    const kick = p.patterns[0].tracks[0];
+    assert.equal(kick.steps, 16);
+    assert.deepEqual(kick.notes, [
+      { step: 0, note: 53, velocity: 100, duration: 2560, micro: 0 },
+      { step: 0, note: 60, velocity: 100, duration: 2560, micro: 0 },
+    ]);
+    const lead = p.patterns[0].tracks[5].notes[0];
+    assert.equal(lead.micro, 96);
+    assert.equal(lead.duration, 5120);
+    assert.equal(p.patterns[2].tracks[4].notes[0].note, 43);
+    assert.equal(parseOpz(opzFixture({ trailer: false })).version, null, 'a 342,844-byte file has no trailer');
+  },
+  function rejectsWhatIsNotAProject() {
+    const wrong = opzFixture(); wrong[0] = 0x4a;
+    assert.throws(() => parseOpz(wrong), /file id/);
+    assert.throws(() => parseOpz(new Uint8Array(1000)), /need/);
+  },
+  function eventsFollowStepLengthMicroTimingAndTrackLength() {
+    const p = parseOpz(opzFixture());
+    const ev = patternEvents(p.patterns[0], { bars: 1 });
+    const at = (track, note) => ev.filter((e) => e.track === track && e.note === note).map((e) => e.startTicks);
+    assert.deepEqual(at(0, 53), [0]);
+    assert.deepEqual(at(1, 70), [15 * OPZ_TICKS_PER_STEP]);
+    // micro +96 is half a step late; the documented ±24 would put it at an eighth of that
+    assert.deepEqual(at(5, 64), [4 * OPZ_TICKS_PER_STEP + OPZ_TICKS_PER_STEP / 2]);
+    // arp: step 3 at double length lands on sixteenth 6, and the 8-step track loops once per bar
+    assert.deepEqual(at(6, 72), [6 * OPZ_TICKS_PER_STEP, (16 + 6) * OPZ_TICKS_PER_STEP].filter((t) => t < 16 * OPZ_TICKS_PER_STEP));
+    assert.deepEqual(at(6, 84), [], 'a note past the track length is never played');
+    assert.equal(ev.find((e) => e.track === 5).channel, 5, 'lead is track 6 on channel 6 (0-based 5)');
+    assert.equal(ev.find((e) => e.track === 5).durationTicks, 5120);
+    const two = patternEvents(p.patterns[0], { bars: 2 });
+    assert.equal(two.filter((e) => e.note === 53).length, 2, 'a 16-step track plays once per bar');
+  },
+  function theGridReadsTheRhythmWithoutADevice() {
+    const p = parseOpz(opzFixture());
+    const grid = patternGrid(p.patterns[0]);
+    assert.equal(grid[0], 'kick    x...............  2 notes');
+    assert.equal(grid[1], 'snare   ...............x  1 notes');
+    assert.ok(grid.some((r) => r.startsWith('arp     ...x....|')), 'the arp row shows its 8-step end: ' + grid.join(' / '));
+    const text = describeOpz(p, { label: 'fixture' });
+    assert.match(text, /^fixture: 120 bpm, swing 30, format v7, 8 notes/);
+    assert.match(text, /chains 1:\[3 1\]/);
+    assert.match(text, /pattern 3\n  bass/);
+  },
+  function midiExportReadsBackThroughTheRepoReader() {
+    const p = parseOpz(opzFixture());
+    const bytes = opzToSmf(p, { patterns: [0], name: 'fixture' });
+    assert.equal(String.fromCharCode(...bytes.subarray(0, 4)), 'MThd');
+    const smf = parseSmf(bytes);
+    assert.equal(smf.division, OPZ_TICKS_PER_QUARTER, 'ticks are the file\'s own: nothing is re-quantised');
+    assert.equal(smf.usPerQuarter, 500000, '120 bpm');
+    const notes = smf.tracks.flatMap((t) => t.notes);
+    const kick = notes.find((n) => n.note === 53);
+    assert.deepEqual([kick.channel, kick.startTicks, kick.durationTicks, kick.velocity], [0, 0, 2560, 100]);
+    const lead = notes.find((n) => n.note === 64);
+    assert.deepEqual([lead.channel, lead.startTicks, lead.durationTicks, lead.velocity], [5, 4 * 2560 + 1280, 5120, 90]);
+    assert.equal(notes.filter((n) => n.note === 84).length, 0);
+    assert.equal(notes.length, 6, 'every played note and nothing else: ' + notes.map((n) => n.note).join(','));
+    // two patterns in sequence: pattern 3's bass lands a bar later
+    const seq = parseSmf(opzToSmf(p, { patterns: [0, 2] }));
+    const bass = seq.tracks.flatMap((t) => t.notes).find((n) => n.note === 43);
+    assert.deepEqual([bass.channel, bass.startTicks, bass.durationTicks], [4, 16 * OPZ_TICKS_PER_STEP + 2 * OPZ_TICKS_PER_STEP, 1024]);
+  },
+  function buildSmfWritesRunningDeltasNotAbsoluteTimes() {
+    const bytes = buildSmf({ division: 96, tempoBpm: 100, tracks: [{ name: 't', channel: 3, notes: [
+      { note: 60, velocity: 100, startTicks: 96, durationTicks: 48 },
+      { note: 62, velocity: 100, startTicks: 96, durationTicks: 96 },
+    ] }] });
+    const smf = parseSmf(bytes);
+    assert.equal(smf.usPerQuarter, 600000);
+    const notes = smf.tracks.flatMap((t) => t.notes).sort((a, b) => a.note - b.note);
+    assert.deepEqual(notes.map((n) => [n.note, n.startTicks, n.durationTicks, n.channel]), [[60, 96, 48, 3], [62, 96, 96, 3]]);
+  },
+];
+
 const groups = [
+  ['op-z project', opzCases],
   ['quick take', quickTakeCases],
   ['cyclic modulation', cyclicCases],
   ['playback resample', playbackResampleCases],

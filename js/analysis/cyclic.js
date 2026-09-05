@@ -218,6 +218,10 @@ export function modulationSpectrum(envelope, { alphaMaxHz = DEFAULT_ALPHA_MAX_HZ
   );
   const alphaBins = Math.max(1, Math.min(frames >> 1, Math.ceil(ceiling / alphaStep) + 1));
   const mod = new Float32Array(alphaBins * bins);
+  // The phase of each bin's modulation, kept because a clock SHARED across
+  // bands agrees in phase and independent noise does not. Magnitude alone
+  // cannot tell those apart; see bandCoherence below.
+  const phase = new Float32Array(alphaBins * bins);
   const re = new Float32Array(frames);
   const im = new Float32Array(frames);
 
@@ -245,10 +249,11 @@ export function modulationSpectrum(envelope, { alphaMaxHz = DEFAULT_ALPHA_MAX_HZ
     fft.forward(re, im);
     for (let a = 0; a < alphaBins; a++) {
       mod[a * bins + b] = Math.hypot(re[a], im[a]) * scale;
+      phase[a * bins + b] = Math.atan2(im[a], re[a]);
     }
   }
   return {
-    mod, alphaBins, bins, means, active,
+    mod, phase, alphaBins, bins, means, active,
     activeBins: active.reduce((n, v) => n + v, 0),
     alphaStep,
     requestedAlphaHz: alphaMaxHz,
@@ -321,6 +326,76 @@ export function alphaProfile(spectrum, floors, {
 }
 
 /**
+ * How strongly the bands AGREE about a clock, rather than how many carry one.
+ *
+ * This is the principled replacement for the band-count detector that was
+ * built and deleted. For each cyclic frequency it pools the modulation phase
+ * across every active band:
+ *
+ *     stat(alpha) = | sum_c exp(2i * phase_c(alpha)) |^2 / Nc
+ *
+ * Two properties make it worth the extra array. Its null distribution is
+ * closed form: independent bands are independent phases, the sum is a random
+ * walk of Nc unit steps, and stat is then Exp(1) whatever Nc is — so the
+ * threshold comes from the false-alarm rate you choose rather than from
+ * sweeping noise until it looks quiet. And it accumulates COHERENTLY, so k
+ * bands that each carry a clock far too weak to be detected alone still sum to
+ * something detectable, which is exactly how a watermark spread thinly under
+ * masking audio hides from a per-band test.
+ *
+ * The phase is doubled so that a band modulating in antiphase counts as
+ * agreement, not disagreement: a watermark that adds level in one band while
+ * removing it from another shares one clock, and should read as one.
+ */
+export function bandCoherence(spectrum, floors, { doublePhase = false } = {}) {
+  const { mod, phase, alphaBins, bins, active } = spectrum;
+  const stat = new Float32Array(alphaBins);
+  const counted = new Uint16Array(alphaBins);
+  if (!phase) return { stat, counted };
+  for (let a = 0; a < alphaBins; a++) {
+    let sumRe = 0;
+    let sumIm = 0;
+    let sumSq = 0;
+    let n = 0;
+    for (let b = 0; b < bins; b++) {
+      if (active && !active[b]) continue;
+      const floor = floors && floors[b];
+      if (!(floor > 0)) continue;
+      // Weight by how far this band's modulation stands above its own floor.
+      // Unweighted pooling was tried first and it fails for the reason the
+      // whole detector exists: a clock carried by sixteen bands among a
+      // hundred quiet ones is diluted to nothing by the ninety-four that hold
+      // only noise. Weighting makes this a matched filter, and because
+      // magnitude and phase of a complex Gaussian are independent, using the
+      // magnitude as a weight does not bias the phase test.
+      const w = mod[a * bins + b] / floor;
+      const angle = doublePhase ? 2 * phase[a * bins + b] : phase[a * bins + b];
+      sumRe += w * Math.cos(angle);
+      sumIm += w * Math.sin(angle);
+      sumSq += w * w;
+      n++;
+    }
+    counted[a] = n;
+    // Weighted random walk: |sum w e^{i0}|^2 / sum(w^2) is Exp(1) under the
+    // null for any fixed weights, so the closed-form threshold survives.
+    stat[a] = sumSq > 0 ? (sumRe * sumRe + sumIm * sumIm) / sumSq : 0;
+  }
+  return { stat, counted };
+}
+
+/**
+ * The threshold for a phase-coherence statistic, from the false-alarm rate
+ * you are willing to accept over a whole plane. Under the null stat is Exp(1),
+ * so P(stat > x) = exp(-x) per cyclic frequency, and testing `alphaBins` of
+ * them at a family-wise rate p gives -ln(p / alphaBins).
+ */
+export function coherenceThreshold(alphaBins, familyWiseRate = 0.01) {
+  const bins = Math.max(1, Number(alphaBins) || 1);
+  const p = Math.min(0.5, Math.max(1e-9, Number(familyWiseRate) || 0.01));
+  return -Math.log(p / bins);
+}
+
+/**
  * Local maxima in a reduction over alpha, as periodicities worth naming.
  * `minSeparationHz` keeps one broad ridge from being reported many times, and
  * harmonics are marked rather than dropped: a square-wave keying at 12.5 Hz
@@ -368,8 +443,14 @@ export function analyseCyclic(opts) {
   if (!spectrum) return null;
   const floors = binFloors(spectrum);
   const { profile, spread, peakBin } = alphaProfile(spectrum, floors, opts);
+  const { stat: coherence, counted } = bandCoherence(spectrum, floors, opts);
+  const cohThreshold = coherenceThreshold(spectrum.alphaBins, opts && opts.familyWiseRate);
   const withBands = (peaks) => {
-    for (const peak of peaks) peak.bands = spread[peak.index] || 0;
+    for (const peak of peaks) {
+      peak.bands = spread[peak.index] || 0;
+      peak.coherence = coherence[peak.index] || 0;
+      peak.bandsPooled = counted[peak.index] || 0;
+    }
     return peaks;
   };
   return {
@@ -377,6 +458,11 @@ export function analyseCyclic(opts) {
     peaks: withBands(findPeriodicities(profile, spectrum, opts)),
     // The spread reduction gets its own peak list, with a threshold in BINS
     // rather than in multiples of a floor: this is the watermark detector.
-    // No second peak list: `bands` on each peak above says how many carried it.
+    coherence, coherenceCounted: counted, coherenceThreshold: cohThreshold,
+    // Clocks the bands AGREE on, which may include ones too weak in every
+    // single band for the profile detector to have found at all.
+    coherentPeaks: withBands(findPeriodicities(coherence, spectrum, {
+      ...opts, threshold: cohThreshold,
+    })),
   };
 }
