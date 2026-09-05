@@ -1,0 +1,9 @@
+TWO STATIONS — 105.7 bpm (UVB-76 × 2), B minor (WWV 500/600 Hz) → B major (UVB-76 156 Hz), 3:01
+intro     bars  1– 8  0:00–0:18  Bm Bm G G Bm Bm A A
+verse     bars  9–24  0:18–0:54  Bm G D A
+bridge    bars 25–32  0:54–1:12  G A Bm Bm
+chorus    bars 33–48  1:12–1:48  B E Fs B
+verse 2   bars 49–56  1:48–2:07  Bm G D A
+chorus 2  bars 57–72  2:07–2:43  B E Fs B
+outro     bars 73–80  2:43–3:01  Bm G Bm Bm G Bm Bm Bm
+events {"ccrel":72,"on":2359,"off":2359}  relative-level net {"7:47":0}  texture layers 2.53/3.41/4.29/2.29 Hz
