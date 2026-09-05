@@ -133,6 +133,26 @@ and clocking the same project at 105.7 bpm; only its USB audio output is
 dead. Next check is physical: volume knob, then re-seat the USB cable (a
 re-enumeration), then a power cycle.
 
+## 3d. In the bench: PERIODICITIES on the SIGNAL rail (v71)
+
+The loop now runs in the browser with no hardware: `js/app/cyclic-controller.js`
+adds a PERIODICITIES panel under MEASUREMENT. READ PERIODICITIES analyses the
+first 60 s and lists each rate with its period, carrier and band count
+(harmonics dimmed), then transcribes the first 120 s in 20-s sections and
+prints the section/layer/motion summary. HEAR plays the transcription on the
+stand-in instrument through `engine.audition` (shared code:
+`js/compose/cyclic-synth.js`); STOP, and the header stop, end it. MIDI saves
+the score. Verified in the app on UVB-76 from the shelf: five periodicities
+on the 3.6 kHz carrier (0.73, 1.97, 3.58, 4.52, 5.40 Hz), a 22-layer
+transcription (5 swells, 17 pulses), audible, stoppable, saved, no console
+errors. The palette knows it as READ PERIODICITIES. Service worker `yj-v71`;
+preload graph regenerated (95 modules).
+
+Not yet: the header's "sounding" label does not name the stand-in audition;
+selection-aware reading (it always reads from 0); Web MIDI out to the OP-Z
+from the browser (`js/midi/wire.js` exists; Chrome allows it, the in-app pane
+does not).
+
 ## 4. Why this is new, and what it is not
 
 - It is not beat tracking, not onset transcription, not sonification of a

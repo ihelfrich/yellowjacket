@@ -126,6 +126,7 @@ export function initBenchController(ctx) {
     if (loomEngine && loomEngine.playing) loomEngine.stop();
     if (studioEngine && studioEngine.running) studioEngine.stop();
     if (auditioner && auditioner.playing) auditioner.stop();
+    if (ctx.api.stopCyclic) ctx.api.stopCyclic();
     refreshTransport();
   }
   // The header button and Space: stop whatever is sounding; otherwise play

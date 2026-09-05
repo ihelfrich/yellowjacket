@@ -902,3 +902,10 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   line-height: 1.5; color: var(--yj-blue);
 }
 .yj-slow-out.is-empty { color: var(--yj-ink-dim); }
+
+/* PERIODICITIES (SIGNAL rail): the modulation-spectrum readout and its transcription */
+.yj-cyclic-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-family: var(--f-mono); font-size: 10px; }
+.yj-cyclic-list li { display: flex; justify-content: space-between; gap: 8px; }
+.yj-cyclic-list li span:last-child { color: var(--yj-ink-dim); text-align: right; }
+.yj-cyclic-list li.is-harmonic { color: var(--yj-ink-dim); }
+.yj-cyclic-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

@@ -33,6 +33,8 @@ import {
   OPZ_TICKS_PER_STEP, OPZ_TICKS_PER_QUARTER, OPZ_EMPTY_NOTE,
 } from '../js/export/opz-project.js';
 import { composeCyclic, scoreEvents, scoreToSmf, describeScore, scoreFidelity, bandOf, motionOf, foldNote, hzToMidi } from '../js/compose/cyclic-score.js';
+import { renderScore } from '../js/compose/cyclic-synth.js';
+import { peakRows, scoreSummary } from '../js/app/cyclic-controller.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -5975,7 +5977,34 @@ const cyclicScoreCases = [
   },
 ];
 
+// --- periodicities panel + stand-in synth ---------------------------------
+const cyclicPanelCases = [
+  function theStandInRendersEveryNoteAtTheScoreLength() {
+    const score = composeCyclic({ mono: cyclicSource(), sampleRate: 8000, sectionSec: 20, maxLayers: 6 });
+    const out = renderScore(score, { rate: 8000 });
+    assert.equal(out.length, Math.ceil((score.seconds + 1) * 8000), 'score length plus a one-second tail');
+    let peak = 0, first = -1; for (let i = 0; i < out.length; i++) { const v = Math.abs(out[i]); if (v > peak) peak = v; if (first < 0 && v > 1e-4) first = i; }
+    assert.ok(peak > 0.05 && peak <= 1, 'audible and unclipped, peak ' + peak.toFixed(2));
+    const firstOn = Math.min(...scoreEvents(score).filter((e) => e.kind === 'on').map((e) => e.t));
+    assert.ok(Math.abs(first / 8000 - firstOn) < 0.002, 'sound starts at the first note-on');
+    const again = renderScore(score, { rate: 8000 });
+    assert.deepEqual(Array.from(out.subarray(1000, 1010)), Array.from(again.subarray(1000, 1010)), 'deterministic');
+  },
+  function theRowsAndSummaryReadTheAnalysisNotTheDom() {
+    const r = analyseCyclic({ mono: cyclicSource(), sampleRate: 8000, startSec: 0, endSec: 20 });
+    const rows = peakRows(r, { limit: 4 });
+    assert.ok(rows.length >= 2 && rows.length <= 4);
+    assert.ok(rows.some((x) => Math.abs(x.alphaHz - 3) < 0.06 && /3\.0\d Hz · 0\.33 s/.test(x.text)), JSON.stringify(rows.map((x) => x.text)));
+    assert.ok(rows.every((x) => /\d+ Hz · \d+ bands?/.test(x.detail)), JSON.stringify(rows.map((x) => x.detail)));
+    const score = composeCyclic({ mono: cyclicSource(), sampleRate: 8000, sectionSec: 20, maxLayers: 6 });
+    const text = scoreSummary(score);
+    assert.match(text, /^2 sections · \d+ layers · .*swell.*pulse.* · exact rates, measured phase$/);
+    assert.equal(peakRows(null).length, 0);
+  },
+];
+
 const groups = [
+  ['periodicities panel', cyclicPanelCases],
   ['cyclic transcription', cyclicScoreCases],
   ['op-z project', opzCases],
   ['quick take', quickTakeCases],

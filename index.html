@@ -70,6 +70,11 @@
 <link rel="modulepreload" href="js/dsp/preview.js">
 <link rel="modulepreload" href="js/app/transport.js">
 <link rel="modulepreload" href="js/app/bench-controller.js">
+<link rel="modulepreload" href="js/analysis/cyclic.js">
+<link rel="modulepreload" href="js/export/opz-project.js">
+<link rel="modulepreload" href="js/compose/cyclic-score.js">
+<link rel="modulepreload" href="js/compose/cyclic-synth.js">
+<link rel="modulepreload" href="js/app/cyclic-controller.js">
 <link rel="modulepreload" href="js/app/source-handle.js">
 <link rel="modulepreload" href="js/app/fingerprint.js">
 <link rel="modulepreload" href="js/app/source-controller.js">
@@ -264,6 +269,17 @@
             <p class="yj-soundscape-note" id="ndsiNote">Measures the recording, not the ecosystem.</p>
           </div>
           <p class="yj-slow-out" id="slowOut" hidden></p>
+        </div>
+        <div class="yj-panel" data-label="PERIODICITIES">
+          <button id="btnCyclic" class="yj-btn yj-btn-primary" disabled title="Read the rates at which the bands rise and fall, then transcribe them at those exact rates.">READ PERIODICITIES</button>
+          <p class="yj-canvas-note" id="cyclicNote">Rates at which the bands rise and fall. Reads the loaded audio.</p>
+          <ol class="yj-cyclic-list" id="cyclicList" hidden></ol>
+          <p class="yj-canvas-note" id="cyclicScoreNote" hidden></p>
+          <div class="yj-cyclic-actions" id="cyclicActions" hidden>
+            <button id="btnCyclicPlay" class="yj-btn" title="Hear the transcription on a stand-in instrument: noise for perc, sines for the rest.">HEAR</button>
+            <button id="btnCyclicStop" class="yj-btn" hidden>STOP</button>
+            <button id="btnCyclicMidi" class="yj-btn" title="Save the transcription as a Standard MIDI File: one track per channel, filter motion as CC 3.">MIDI</button>
+          </div>
         </div>
       </aside>
     </div>

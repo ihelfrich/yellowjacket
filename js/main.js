@@ -31,6 +31,7 @@ import { Keybed } from './machine/keybed.js';
 import { PipelineView, deriveStages } from './app/pipeline-ui.js';
 import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
+import { initCyclicController } from './app/cyclic-controller.js';
 import { initSourceController } from './app/source-controller.js';
 import { initFieldLibrary } from './app/field-library.js';
 import { initMachineController } from './machine/controller.js';
@@ -240,6 +241,7 @@ ctx.api.beginJob = beginJob;
 // names what died.
 const CONTROLLERS = [
   ['bench', initBenchController],
+  ['cyclic', initCyclicController],
   ['machine', initMachineController],
   ['repair', initRepairController],
   ['wire', initWireController],
@@ -381,6 +383,7 @@ const commandDefs = [
   { id: 'field-library', group: 'SOURCE', label: 'OPEN THE SHELF', note: 'Public-domain places, voices, scores, records, and oddities, streamed from archive.org', keywords: 'shelf field nature birds ocean waves rain thunder storm crickets frogs cicada city street soundscape voice speech poem hiawatha roosevelt fireside voa news nasa voyager golden record bow shock signal radio shortwave numbers station spy cuba hm01 m08 uvb-76 buzzer wwv jjy time morse code bach goldberg piano jazz blues 1921 kid ory ethel waters vlf magnetosphere whistler lossless flac 96k', button: 'btnField', run: () => ctx.api.revealFieldLibrary() },
   { id: 'transcribe', group: 'SOURCE', label: 'TRANSCRIBE', note: 'Run Whisper locally on the loaded source', keywords: 'speech words captions ai', button: 'btnTranscribe', reason: 'LOAD AUDIO FIRST', run: () => { jump('transcript'); $('btnTranscribe').click(); } },
   { id: 'measure', group: 'TOOLS', label: 'MEASURE LOUDNESS', note: 'Run the BS.1770 measurement stack', keywords: 'lufs true peak rms crest', button: 'btnMeasure', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnMeasure').click(); } },
+  { id: 'cyclic', group: 'TOOLS', label: 'READ PERIODICITIES', note: 'What repeats, at what rate, on which carrier — then transcribe it at those exact rates', keywords: 'cyclic modulation alpha rhythm tempo transcription periodicity', button: 'btnCyclic', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnCyclic').click(); } },
   { id: 'harvest', group: 'TOOLS', label: 'HARVEST AUTO-KIT', note: 'Mine the source for a diverse labeled kit', keywords: 'kick snare hat bass vocal chops', button: 'btnHarvest', reason: 'WAIT FOR THE BEATMAP', run: () => { jump('machine', 'slice'); $('btnHarvest').click(); } },
   { id: 'render-rack', group: 'OUTPUT', label: 'RENDER RACK', note: 'Print the active repair and mastering chain', keywords: 'process bounce effects', button: 'btnRender', reason: 'LOAD AUDIO FIRST', run: () => { jump('rack'); $('btnRender').click(); } },
   { id: 'export-wav24', group: 'OUTPUT', label: 'EXPORT WAV · 24 BIT', note: 'Export the fresh render or edited original', keywords: 'download audio high resolution', button: 'btnWav24', reason: 'LOAD AUDIO FIRST', run: () => $('btnWav24').click() },
