@@ -35,6 +35,7 @@ import {
 import { composeCyclic, scoreEvents, scoreToSmf, describeScore, scoreFidelity, bandOf, motionOf, foldNote, hzToMidi } from '../js/compose/cyclic-score.js';
 import { renderScore } from '../js/compose/cyclic-synth.js';
 import { peakRows, scoreSummary } from '../js/app/cyclic-controller.js';
+import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS } from '../js/instrument/card.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6003,7 +6004,48 @@ const cyclicPanelCases = [
   },
 ];
 
+// --- found instruments -----------------------------------------------------
+// Synthetic objects with known physics; every assertion is a number.
+function barRecording(sr = 48000, f1 = 440, seconds = 1.5, q = 800) {
+  // free-free bar: ratios 1 : 2.756 : 5.404 : 8.933, constant Q
+  return damped(sr, seconds, FAMILY_RATIOS.bar.slice(0, 4).map((r, i) => ({ f: f1 * r, tau: q / (Math.PI * f1 * r), amp: 0.5 / (i + 1), phase: 0 })));
+}
+const instrumentCases = [
+  function aBarRecordingBecomesABarCardWithItsRatios() {
+    const sr = 48000;
+    const card = buildCard(barRecording(sr), sr, { name: 'synthetic bar', license: 'test' });
+    assert.equal(card.version, 1);
+    assert.equal(card.family.kind, 'bar', JSON.stringify(card.family));
+    assert.ok(card.family.confidence > 0.3, 'confident: ' + card.family.confidence.toFixed(2));
+    const ratios = card.family.ratios.slice(0, 3);
+    close(ratios[1], 2.756, 0.0016 * 2.756, 'second partial within one cent');
+    close(ratios[2], 5.404, 0.0016 * 5.404, 'third partial within one cent');
+    assert.equal(card.damping.model, 'constant-q');
+    close(card.damping.q0, 800, 40, 'Q within 5%');
+    assert.ok(card.residual.samples.length > 0 && card.residual.seconds <= 0.1, 'a residual print of at most 100 ms');
+    assert.equal(card.nonlinearity, undefined, 'a linear synthetic hit carries no nonlinearity law');
+  },
+  function theDampingLawPrefersThePowerModelWhenQFalls() {
+    const modes = [200, 400, 800, 1600].map((f) => ({ freqHz: f, tauSec: (3000 * Math.pow(f / 200, -0.5)) / (Math.PI * f), amp: 1, phase: 0 }));
+    const law = fitDampingLaw(modes);
+    assert.equal(law.model, 'power');
+    close(law.exponent, -0.5, 0.05, 'exponent');
+    close(qAt(law, 800), 3000 * Math.pow(4, -0.5), 30, 'Q at 800 Hz');
+  },
+  function membraneAndStringRatiosClassifyThemselves() {
+    const membrane = classifyFamily(FAMILY_RATIOS.membrane.map((r) => ({ freqHz: 100 * r, tauSec: 0.3, amp: 1, phase: 0 })));
+    assert.equal(membrane.kind, 'membrane');
+    const B = 0.0004;
+    const string = classifyFamily([1, 2, 3, 4, 5, 6].map((n) => ({ freqHz: 220 * n * Math.sqrt(1 + B * n * n), tauSec: 0.5, amp: 1, phase: 0 })));
+    assert.equal(string.kind, 'string');
+    close(string.inharmonicity, B, B * 0.5, 'inharmonicity recovered to within half');
+    const junk = classifyFamily([1, 1.31, 1.77, 2.9].map((r) => ({ freqHz: 300 * r, tauSec: 0.3, amp: 1, phase: 0 })));
+    assert.equal(junk.kind, 'unknown', JSON.stringify(junk));
+  },
+];
+
 const groups = [
+  ['found instruments', instrumentCases],
   ['periodicities panel', cyclicPanelCases],
   ['cyclic transcription', cyclicScoreCases],
   ['op-z project', opzCases],
