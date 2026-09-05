@@ -43,6 +43,7 @@ import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
 import { retuneDelta, applyRetune, dissonanceCurve, relatedScale } from '../js/instrument/tuning.js';
 import { convolve, radiationFilter, applyBody } from '../js/instrument/body.js';
 import { renderVoice, voiceKey, clearCache, TRUTH_RATE } from '../js/instrument/render.js';
+import { breath } from '../js/instrument/excite/breath.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6173,6 +6174,18 @@ const instrumentCases = [
     assert.equal(v.meta.used.path, 'bank-4x');
     assert.equal(v.samples.length, Math.round(0.5 * TRUTH_RATE));
     assert.ok(v.meta.peak > 0.01);
+  },
+  function theBlownModelLocksToTheFirstMode() {
+    const sr = 48000, card = buildCard(barRecording(sr, 330), sr, { name: 'bar' });
+    const y = breath(card, { pitchHz: 330, pressure: 0.6, seconds: 1.5, sampleRate: sr });
+    const tail = y.subarray(Math.round(0.5 * sr), Math.round(1.5 * sr));
+    let z = 0; for (let i = 1; i < tail.length; i++) if ((tail[i - 1] < 0) !== (tail[i] < 0)) z++;
+    const hz = z / 2 / (tail.length / sr);
+    close(hz, 330, 3.3, 'fundamental within 1% of the first mode');
+    let rms = 0; for (const v of tail) rms += v * v; rms = Math.sqrt(rms / tail.length);
+    assert.ok(rms > 0.02, 'it sustains: rms ' + rms.toFixed(3));
+    const v = renderVoice({ card, pitchHz: 330, excitation: 'breath', seconds: 0.5 });
+    assert.equal(v.meta.used.path, 'bank-4x');
   },
 ];
 

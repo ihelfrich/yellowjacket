@@ -7,6 +7,7 @@ import { resample } from '../dsp/resample.js';
 import { FFT } from '../fft.js';
 import { strike } from './excite/strike.js';
 import { pluck } from './excite/pluck.js';
+import { breath } from './excite/breath.js';
 import { applyBody } from './body.js';
 
 export const TRUTH_RATE = 96000;
@@ -52,14 +53,16 @@ export function describe(samples, sampleRate) {
 const EXCITATIONS = {
   strike: (card, o) => strike(card, o),
   pluck: (card, o) => pluck(card, o),
+  breath: (card, o) => breath(card, { ...o, pressure: (o.pressure ?? 0.6) * (o.dynamics ?? 1) }),
 };
+// Driven excitations run the bank sample by sample and take the oversampled path.
+const DRIVEN = new Set(['breath']);
 
-/** Register a driven excitation (breath, bow) that must run through the oversampled bank path. */
+/** Register another excitation; `driven` sends it through the oversampled bank path. */
 export function registerExcitation(name, fn, { driven = true } = {}) {
   EXCITATIONS[name] = fn;
   if (driven) DRIVEN.add(name);
 }
-const DRIVEN = new Set();
 
 export function renderVoice({ card, pitchHz, excitation = 'strike', params = {}, dynamics = 1, seconds = 2, body = { kind: 'radiation' }, seed = 1 } = {}) {
   const inputs = { id: card.id, modes: card.modes, damping: card.damping, family: card.family, nonlinearity: card.nonlinearity || null, retune: card.retune || null, pitchHz, excitation, params, dynamics, seconds, body, seed };
