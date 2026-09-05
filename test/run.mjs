@@ -36,6 +36,7 @@ import { composeCyclic, scoreEvents, scoreToSmf, describeScore, scoreFidelity, b
 import { renderScore } from '../js/compose/cyclic-synth.js';
 import { peakRows, scoreSummary } from '../js/app/cyclic-controller.js';
 import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlinearity } from '../js/instrument/card.js';
+import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from '../js/instrument/family.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6055,6 +6056,32 @@ const instrumentCases = [
     assert.ok(law[0].r2 >= 0.6, 'r² ' + law[0].r2.toFixed(2));
     const linear = fitNonlinearity(damped(sr, seconds, [{ f: f0, tau, amp: 0.5, phase: 0 }]), sr, [{ freqHz: f0, tauSec: tau, amp: 0.5, phase: 0 }]);
     assert.equal(linear.length, 0, 'a linear mode gets no law');
+  },
+  function anOctaveUpDecaysAsTheDampingLawSaysNotAsTheCardSays() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const base = modesAt(card, cardPitchHz(card));
+    const up = modesAt(card, 2 * cardPitchHz(card));
+    close(up[0].freqHz, 2 * base[0].freqHz, 0.01, 'pitch doubled');
+    close(up[1].freqHz / up[0].freqHz, 2.756, 0.01, 'ratios preserved');
+    // constant Q: τ = Q/(π f) halves an octave up
+    close(up[0].tauSec, base[0].tauSec / 2, base[0].tauSec * 0.05, 'decay follows Q(f) within 5%');
+  },
+  function aStrikeOnANodeSilencesThatMode() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    // free-free bar: mode 2 (index 1) has a node at the centre
+    const centre = modesAt(card, cardPitchHz(card), { position: 0.5 });
+    const off = modesAt(card, cardPitchHz(card), { position: 0.3 });
+    const db = 20 * Math.log10((centre[1].amp + 1e-12) / (off[1].amp + 1e-12));
+    assert.ok(db < -40, 'mode 2 at its node is ' + db.toFixed(1) + ' dB below off-node');
+    assert.ok(centre[0].amp > 0.5 * off[0].amp, 'the fundamental still sounds at the centre');
+  },
+  function hardnessBrightensMonotonically() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const centroid = (h) => { const m = modesAt(card, cardPitchHz(card), { hardness: h }); let n = 0, d = 0; for (const x of m) { n += x.amp * x.freqHz; d += x.amp; } return n / d; };
+    let last = -1;
+    for (const h of [0, 0.25, 0.5, 0.75, 1]) { const c = centroid(h); assert.ok(c > last, `centroid rises: h=${h} → ${c.toFixed(0)} Hz`); last = c; }
+    close(contactTimeSec(0), 0.008, 1e-6, 'soft: 8 ms'); close(contactTimeSec(1), 0.0002, 1e-6, 'hard: 0.2 ms');
+    close(halfSineWeight(0, 0.003), 1, 1e-9, 'DC weight is one');
   },
 ];
 
