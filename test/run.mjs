@@ -42,6 +42,7 @@ import { strike } from '../js/instrument/excite/strike.js';
 import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
 import { retuneDelta, applyRetune, dissonanceCurve, relatedScale } from '../js/instrument/tuning.js';
 import { convolve, radiationFilter, applyBody } from '../js/instrument/body.js';
+import { renderVoice, voiceKey, clearCache, TRUTH_RATE } from '../js/instrument/render.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6147,6 +6148,31 @@ const instrumentCases = [
     const bars = radiationFilter('bar', sr), skins = radiationFilter('membrane', sr);
     const hf = (h) => { let s = 0; for (let i = 0; i < h.length; i++) s += h[i] * Math.cos(2 * Math.PI * 6000 * i / sr); return Math.abs(s); };
     assert.ok(hf(bars) > hf(skins), 'bars radiate more at 6 kHz than skins');
+  },
+  function rendersAreDeterministicCachedAndDescribed() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    clearCache();
+    const a = renderVoice({ card, pitchHz: 440, excitation: 'strike', seconds: 1 });
+    const b = renderVoice({ card, pitchHz: 440, excitation: 'strike', seconds: 1 });
+    assert.equal(a.sampleRate, TRUTH_RATE);
+    assert.equal(a.samples.length, TRUTH_RATE);
+    assert.deepEqual(Array.from(a.samples.subarray(0, 64)), Array.from(b.samples.subarray(0, 64)), 'bit-identical');
+    assert.equal(a.key, b.key); assert.equal(a.samples, b.samples, 'the second call is the cached buffer');
+    assert.ok(a.meta.peak > 0 && a.meta.decay60Sec > 0.05 && a.meta.centroidHz > 400, JSON.stringify(a.meta));
+    assert.equal(a.meta.used.path, 'closed-form');
+    const other = renderVoice({ card, pitchHz: 880, excitation: 'pluck', seconds: 1 });
+    assert.notEqual(other.key, a.key);
+    const long = renderVoice({ card, pitchHz: 440, excitation: 'strike', seconds: 6 }), longUp = renderVoice({ card, pitchHz: 880, excitation: 'strike', seconds: 6 });
+    assert.ok(longUp.meta.decay60Sec < 0.6 * long.meta.decay60Sec && long.meta.decay60Sec < 5.9, `an octave up decays in about half the time: ${longUp.meta.decay60Sec.toFixed(2)} vs ${long.meta.decay60Sec.toFixed(2)} s`);
+    assert.equal(voiceKey({ a: 1 }), voiceKey({ a: 1 })); assert.notEqual(voiceKey({ a: 1 }), voiceKey({ a: 2 }));
+  },
+  function aNonlinearCardTakesTheOversampledPathAndALinearOneDoesNot() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const bent = { ...card, nonlinearity: [{ mode: 0, hzPerAmp: 30, r2: 1 }] };
+    const v = renderVoice({ card: bent, pitchHz: 440, seconds: 0.5 });
+    assert.equal(v.meta.used.path, 'bank-4x');
+    assert.equal(v.samples.length, Math.round(0.5 * TRUTH_RATE));
+    assert.ok(v.meta.peak > 0.01);
   },
 ];
 
