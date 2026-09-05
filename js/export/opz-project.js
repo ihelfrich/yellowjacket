@@ -295,7 +295,8 @@ function metaText(type, text) {
 
 /**
  * Build a type-1 SMF. Tracks are `{ name, channel, notes: [{ note, velocity,
- * startTicks, durationTicks }] }`; the first MTrk carries tempo and 4/4.
+ * startTicks, durationTicks }], controls?: [{ ticks, cc, value }] }`; the
+ * first MTrk carries tempo and 4/4.
  */
 export function buildSmf({ name = '', division = 480, tempoBpm = 120, tracks = [], endTicks = 0 }) {
   const usPerQuarter = Math.round(60_000_000 / Math.max(1, tempoBpm));
@@ -320,6 +321,10 @@ export function buildSmf({ name = '', division = 480, tempoBpm = 120, tracks = [
       events.push({ ticks: n.startTicks, order: 2, bytes: [0x90 | ch, n.note & 0x7f, Math.max(1, Math.min(127, n.velocity))] });
       events.push({ ticks: off, order: 1, bytes: [0x80 | ch, n.note & 0x7f, 0] });
       if (off > last) last = off;
+    }
+    for (const c of track.controls || []) {
+      events.push({ ticks: c.ticks, order: 1, bytes: [0xb0 | ch, c.cc & 0x7f, Math.max(0, Math.min(127, Math.round(c.value)))] });
+      if (c.ticks > last) last = c.ticks;
     }
     chunks.push(trackChunk(events, Math.max(endTicks, last)));
   }

@@ -32,6 +32,7 @@ import {
   OPZ_BODY_BYTES, OPZ_HEADER_BYTES, OPZ_PATTERN_BYTES, OPZ_NOTE_SLOTS, OPZ_NOTE_OFFSET, OPZ_NOTE_COUNT,
   OPZ_TICKS_PER_STEP, OPZ_TICKS_PER_QUARTER, OPZ_EMPTY_NOTE,
 } from '../js/export/opz-project.js';
+import { composeCyclic, scoreEvents, scoreToSmf, describeScore, scoreFidelity, bandOf, motionOf, foldNote, hzToMidi } from '../js/compose/cyclic-score.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -5866,7 +5867,98 @@ const opzCases = [
   },
 ];
 
+// --- cyclic transcription -------------------------------------------------
+// A signal with two known periodicities on two carriers becomes a score whose
+// layers run at exactly those rates, on the tracks the carriers imply; the
+// events keep the rates to the millisecond; the relative-CC swells sum to
+// zero; the SMF reads back; and a synthetic "performance" of the events
+// carries the rates back through the detector.
+function cyclicSource(seconds = 40, rate = 8000) {
+  const n = Math.floor(seconds * rate);
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate;
+    const slow = (1 + 0.6 * Math.cos(2 * Math.PI * 0.7 * t)) * Math.sin(2 * Math.PI * 150 * t);       // 0.7 Hz on a low carrier (the detector's floor is 0.5)
+    const pulse = (Math.cos(2 * Math.PI * 3 * t) > 0.85 ? 1 : 0) * Math.sin(2 * Math.PI * 3000 * t);  // 3 Hz clicks on a high carrier
+    x[i] = 0.4 * slow + 0.4 * pulse;
+  }
+  return x;
+}
+
+const cyclicScoreCases = [
+  function bandsMotionsAndFoldingAreDeterministic() {
+    assert.equal(bandOf(100), 'low'); assert.equal(bandOf(1000), 'mid'); assert.equal(bandOf(5000), 'high');
+    assert.equal(motionOf(0.5), 'swell'); assert.equal(motionOf(3), 'pulse'); assert.equal(motionOf(12), 'buzz');
+    assert.equal(foldNote(hzToMidi(440), 55, 84), 69);
+    assert.equal(foldNote(hzToMidi(3520), 55, 84), 81, 'A7 folds down two octaves into the lead range');
+    assert.equal(foldNote(hzToMidi(55), 55, 84), 57, 'A1 folds up into the lead range');
+  },
+  function twoPeriodicitiesBecomeTwoLayersOnTheRightTracks() {
+    const score = composeCyclic({ mono: cyclicSource(), sampleRate: 8000, sectionSec: 20, maxLayers: 6 });
+    assert.equal(score.sections.length, 2);
+    const s = score.sections[0];
+    const slow = s.layers.find((L) => Math.abs(L.alphaHz - 0.7) < 0.06);
+    const fast = s.layers.find((L) => Math.abs(L.alphaHz - 3) < 0.06);
+    assert.ok(slow, 'found the 0.7 Hz swell: ' + JSON.stringify(s.layers.map((L) => +L.alphaHz.toFixed(2))));
+    assert.ok(fast, 'found the 3 Hz pulse: ' + JSON.stringify(s.layers.map((L) => +L.alphaHz.toFixed(2))));
+    assert.equal(slow.motion, 'swell'); assert.equal(slow.band, 'low'); assert.equal(slow.track, 'bass');
+    assert.ok(Math.abs(slow.carrierHz - 150) < 40, 'carrier centroid near 150 Hz, got ' + slow.carrierHz.toFixed(0));
+    assert.equal(fast.motion, 'pulse'); assert.equal(fast.band, 'high'); assert.equal(fast.track, 'perc');
+    assert.ok(fast.onset >= 0 && fast.onset < fast.period, 'onset lies inside one period');
+    assert.ok(slow.depth > 0.3 && slow.depth < 0.8, '60% modulation reads as a depth, got ' + slow.depth.toFixed(2));
+  },
+  function eventsKeepTheExactRatesAndReturnEveryParameter() {
+    const score = composeCyclic({ mono: cyclicSource(), sampleRate: 8000, sectionSec: 20, maxLayers: 6 });
+    const ev = scoreEvents(score);
+    const fast = score.sections[0].layers.find((L) => L.motion === 'pulse');
+    const ons = ev.filter((e) => e.kind === 'on' && e.channel === fast.channel && e.t < 20).map((e) => e.t);
+    assert.ok(ons.length >= 55, 'about sixty pulses in twenty seconds, got ' + ons.length);
+    const gaps = ons.slice(1).map((t, i) => t - ons[i]);
+    for (const g of gaps) assert.ok(Math.abs(g - fast.period) < 1e-9, 'pulse period exact to the sample: ' + g);
+    const net = {};
+    for (const e of ev) if (e.kind === 'ccrel') { const k = e.channel + ':' + e.cc; net[k] = (net[k] || 0) + e.delta; }
+    assert.ok(Object.keys(net).length >= 1, 'the swell moved a parameter');
+    for (const [k, v] of Object.entries(net)) assert.equal(v, 0, 'relative CC returns to origin on ' + k);
+    for (let i = 1; i < ev.length; i++) assert.ok(ev[i].t >= ev[i - 1].t, 'events are in time order');
+    const swells = score.sections[0].layers.filter((L) => L.motion === 'swell');
+    const held = ev.filter((e) => e.kind === 'on' && e.t < 20 && swells.some((L) => L.channel === e.channel && L.note === e.note));
+    assert.equal(held.length, swells.length, 'a swell is one held note per section');
+  },
+  function theScoreReadsBackAsMidiWithItsFilterMotion() {
+    const score = composeCyclic({ mono: cyclicSource(), sampleRate: 8000, sectionSec: 20, maxLayers: 6 });
+    const smf = parseSmf(scoreToSmf(score, { division: 960, tempoBpm: 120 }));
+    assert.equal(smf.division, 960);
+    const notes = smf.tracks.flatMap((t) => t.notes);
+    const fast = score.sections[0].layers.find((L) => L.motion === 'pulse');
+    const pulses = notes.filter((n) => n.channel === fast.channel);
+    assert.ok(pulses.length >= 110, 'both sections of pulses, got ' + pulses.length);
+    const first = pulses.sort((a, b) => a.startTicks - b.startTicks);
+    assert.ok(Math.abs((first[1].startTicks - first[0].startTicks) / 1920 - fast.period) < 0.002, 'period survives the tick grid');
+    assert.match(describeScore(score), /swell .* -> bass/);
+  },
+  function aSyntheticPerformanceCarriesTheRatesBackThroughTheDetector() {
+    const score = composeCyclic({ mono: cyclicSource(), sampleRate: 8000, sectionSec: 20, maxLayers: 6 });
+    // "perform": every note-on becomes a 30 ms burst on a carrier chosen by track, held notes a tone
+    const rate = 8000, out = new Float32Array(Math.ceil(score.seconds * rate) + rate);
+    for (const e of scoreEvents(score)) {
+      if (e.kind !== 'on') continue;
+      const swell = score.sections.some((s) => s.layers.some((L) => L.motion === 'swell' && L.channel === e.channel));
+      const hz = e.channel === 2 ? 3000 : 200, len = swell ? Math.floor(19.9 * rate) : Math.floor(0.03 * rate);
+      const at = Math.floor(e.t * rate);
+      for (let i = 0; i < len && at + i < out.length; i++) {
+        const env = swell ? 0.5 + 0.5 * Math.cos(2 * Math.PI * 0.7 * (i / rate)) : 1 - i / len;
+        out[at + i] += 0.4 * env * Math.sin(2 * Math.PI * hz * i / rate);
+      }
+    }
+    const f = scoreFidelity(score, { mono: out, sampleRate: rate });
+    const fast = f.sections[0].layers.find((L) => L.motion === 'pulse');
+    assert.ok(fast.detected, '3 Hz came back: ' + JSON.stringify(f.sections[0].peaks.map((p) => +p.alphaHz.toFixed(2))));
+    assert.ok(f.rate >= 0.5, 'at least half the layers survive a crude performance, got ' + f.rate.toFixed(2));
+  },
+];
+
 const groups = [
+  ['cyclic transcription', cyclicScoreCases],
   ['op-z project', opzCases],
   ['quick take', quickTakeCases],
   ['cyclic modulation', cyclicCases],
