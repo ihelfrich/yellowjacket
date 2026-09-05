@@ -35,7 +35,7 @@ import {
 import { composeCyclic, scoreEvents, scoreToSmf, describeScore, scoreFidelity, bandOf, motionOf, foldNote, hzToMidi } from '../js/compose/cyclic-score.js';
 import { renderScore } from '../js/compose/cyclic-synth.js';
 import { peakRows, scoreSummary } from '../js/app/cyclic-controller.js';
-import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS } from '../js/instrument/card.js';
+import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlinearity } from '../js/instrument/card.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6041,6 +6041,20 @@ const instrumentCases = [
     close(string.inharmonicity, B, B * 0.5, 'inharmonicity recovered to within half');
     const junk = classifyFamily([1, 1.31, 1.77, 2.9].map((r) => ({ freqHz: 300 * r, tauSec: 0.3, amp: 1, phase: 0 })));
     assert.equal(junk.kind, 'unknown', JSON.stringify(junk));
+  },
+  function aLoudHitWhosePitchBendsWithAmplitudeGetsALaw() {
+    // one mode whose frequency is f0 + k·A(t): phase integrates the instantaneous frequency
+    const sr = 48000, f0 = 300, k = 40, tau = 0.4, seconds = 1.2, n = sr * seconds;
+    const x = new Float32Array(n);
+    let phase = 0;
+    for (let i = 0; i < n; i++) { const A = 0.5 * Math.exp(-i / sr / tau); x[i] = A * Math.sin(phase); phase += 2 * Math.PI * (f0 + k * A) / sr; }
+    const modes = [{ freqHz: f0 + k * 0.25, tauSec: tau, amp: 0.5, phase: 0 }];
+    const law = fitNonlinearity(x, sr, modes);
+    assert.equal(law.length, 1, 'one mode, one law');
+    close(law[0].hzPerAmp, k, k * 0.15, 'Hz per unit amplitude within 15%');
+    assert.ok(law[0].r2 >= 0.6, 'r² ' + law[0].r2.toFixed(2));
+    const linear = fitNonlinearity(damped(sr, seconds, [{ f: f0, tau, amp: 0.5, phase: 0 }]), sr, [{ freqHz: f0, tauSec: tau, amp: 0.5, phase: 0 }]);
+    assert.equal(linear.length, 0, 'a linear mode gets no law');
   },
 ];
 

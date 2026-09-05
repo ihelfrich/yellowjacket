@@ -116,6 +116,51 @@ export function residualSamples(card) {
 }
 
 /**
+ * Heterodyne one mode: per frame, the complex mean of x·e^{-iωt} gives the
+ * mode's amplitude and phase; the phase advance between frames gives its
+ * instantaneous frequency. Frames of `frameSec`, hop half a frame.
+ */
+export function trackMode(samples, sampleRate, freqHz, { frameSec = 0.02 } = {}) {
+  const frame = Math.max(8, Math.round(frameSec * sampleRate)), hop = Math.max(1, frame >> 1);
+  const w = 2 * Math.PI * freqHz / sampleRate;
+  const times = [], amps = [], freqs = [];
+  let prevPhase = null, prevT = 0;
+  for (let start = 0; start + frame <= samples.length; start += hop) {
+    let re = 0, im = 0;
+    for (let i = 0; i < frame; i++) {
+      const win = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / frame);
+      const v = samples[start + i] * win, ang = w * (start + i);
+      re += v * Math.cos(ang); im -= v * Math.sin(ang);
+    }
+    // Hann window sums to frame/2; a sinusoid of amplitude a gives |mean| = a/2
+    const amp = Math.hypot(re, im) * (2 / (0.5 * frame)), ph = Math.atan2(im, re), t = (start + frame / 2) / sampleRate;
+    if (prevPhase !== null) {
+      let d = ph - prevPhase;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      freqs.push(freqHz + d / (2 * Math.PI * (t - prevT))); amps.push(amp); times.push(t);
+    }
+    prevPhase = ph; prevT = t;
+  }
+  return { times, amps, freqs };
+}
+
+/** Per-mode frequency-versus-amplitude slope over the decay, kept only when it explains the drift. */
+export function fitNonlinearity(samples, sampleRate, modes, { minR2 = 0.6, minHzPerAmp = 1 } = {}) {
+  const out = [];
+  modes.forEach((m, index) => {
+    const tr = trackMode(samples, sampleRate, m.freqHz);
+    const peak = Math.max(0, ...tr.amps);
+    const xs = [], ys = [];
+    for (let i = 0; i < tr.amps.length; i++) if (tr.amps[i] > 0.05 * peak && tr.amps[i] < 0.95 * peak) { xs.push(tr.amps[i]); ys.push(tr.freqs[i]); }
+    if (xs.length < 6) return;
+    const fit = linearFit(xs, ys);
+    if (fit.r2 >= minR2 && Math.abs(fit.slope) >= minHzPerAmp) out.push({ mode: index, hzPerAmp: fit.slope, r2: fit.r2 });
+  });
+  return out;
+}
+
+/**
  * Build a card from a mono recording of one hit. Options: name, license,
  * note, maxModes (16), floorDb (-60). The nonlinearity law is attached only
  * when the hit's own decay supports it (`fitNonlinearity`).
@@ -139,5 +184,7 @@ export function buildCard(samples, sampleRate, { name = 'untitled', license = ''
     family: classifyFamily(modes),
     residual: residualPrint(fit.residual, sampleRate),
   };
+  const law = fitNonlinearity(samples, sampleRate, modes);
+  if (law.length) card.nonlinearity = law;
   return card;
 }
