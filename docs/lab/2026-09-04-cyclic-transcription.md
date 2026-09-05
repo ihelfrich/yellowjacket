@@ -6,9 +6,9 @@ and that transcription can be played by an instrument at the exact rates
 (not a grid), with the source's own phase relations, and then measured back
 with the same detector to say how much of the structure the instrument
 carried. The loop is source → `analyseCyclic` → score → performance →
-`analyseCyclic` → fidelity. Every stage exists and is tested; the last real
-stage (the OP-Z playing it) is built and waiting on the device's audio,
-which went silent mid-session (§5).
+`analyseCyclic` → fidelity. Every stage exists and is tested, and the last real stage — the OP-Z
+playing it — has run: 34 of 39 layers across two sources came back through
+the detector (§3e).
 
 What shipped: `js/compose/cyclic-score.js` (`composeCyclic`, `scoreEvents`,
 `scoreToSmf`, `describeScore`, `scoreFidelity`, `carrierCentroid`),
@@ -152,6 +152,57 @@ Not yet: the header's "sounding" label does not name the stand-in audition;
 selection-aware reading (it always reads from 0); Web MIDI out to the OP-Z
 from the browser (`js/midi/wire.js` exists; Chrome allows it, the in-app pane
 does not).
+
+## 3e. The OP-Z takes — the instrument in the loop
+
+A USB re-plug restored the device's audio (peak 0.98 on a test note; the
+fault was the USB audio stream, not the synth — headphones had worked all
+along). `scripts/opz-perform.py` then played both scores into the OP-Z over
+USB MIDI while recording its USB output, and `scoreFidelity` read the
+takes back:
+
+| source | events | timing (median / p95 lateness) | layers back | stand-in |
+|---|---|---|---|---|
+| UVB-76, 160 s | 5,844 | 1.0 ms / 3.5 ms | **26 / 30 (87 %)** | 25 / 30 (83 %) |
+| WWV, 120 s | 995 | 1.1 ms / 3.5 ms | **8 / 9 (89 %)** | 8 / 9 (89 %) |
+
+Relative cutoff moves returned to origin on every channel (`residual 0`).
+
+```
+UVB-76 on the OP-Z
+   0 s  0.88 --  2.00 ok  3.82 ok  6.11 ok   heard: 1.99 3.81 6.09 7.62 11.43 12.25
+  20 s  1.47 ok  2.53 ok  3.41 ok  4.29 ok   heard: 1.46 2.52 3.40 4.28 5.86 6.80
+  40 s  0.88 ok  2.29 ok  3.35 ok  4.23 --   heard: 0.88 2.29 3.34 4.57 6.86 9.14
+  60 s  0.76 ok  1.59 ok  2.47 ok  3.23 ok   heard: 0.76 1.58 2.46 3.22 3.98 4.92
+  80 s  0.65 --  1.70 ok  3.64 ok  4.46 ok   heard: 1.70 3.63 4.45 7.27 8.50 10.90
+ 100 s  0.82 ok  1.94 ok  3.99 ok  4.99 ok   heard: 0.82 1.93 3.98 4.98 5.80 7.73
+ 120 s  0.94 ok  4.76 ok                     heard: 0.94 1.88 2.81 3.75 4.75 5.63
+ 140 s  0.76 ok  1.76 --  2.76 ok  4.17 ok   heard: 0.76 1.52 2.75 4.16 5.27 7.03
+
+WWV on the OP-Z: every full-minute section reads 1.00 1.99 2.99 3.98 4.98 5.98
+```
+
+What the instrument did to the transcription:
+
+- **The OP-Z beat the stand-in on UVB-76** (87 % vs 83 %). Its drum samples
+  have sharper transients than sine bursts, so pulse layers read back more
+  cleanly; the comb of the 0.94 Hz layer at 120 s (`1.88 2.81 3.75 4.75`)
+  is the device's own envelope shape, not the score's.
+- **The misses are swells.** Two of the four failures are sub-1-Hz swells
+  (0.88 Hz at 0 s, 0.65 Hz at 80 s) carried by relative cutoff moves on the
+  lead: ±24 steps of cutoff on this patch is too shallow a modulation for the
+  detector at this section length. The same layers survived where the
+  section's depth was higher. Swells need a deeper carrier — the OP-Z's own
+  LFO (CC 9/10), or level (CC 16) rather than cutoff.
+- **The tick is exact.** WWV's 1 Hz comes back at 1.00 with its comb intact
+  in five of five minute-sections; the one miss is the first section's
+  0.88 Hz line, which is the recording's voice announcement, not the tick.
+- **Timing over USB MIDI is not the limit:** median 1 ms, p95 3.5 ms late,
+  against a finest period of 160 ms.
+
+The number that matters: with the instrument in the loop, 34 of 39 layers
+of two sources' periodicity structure survived transcription, performance
+on hardware, and re-measurement — and the losses have a named cause.
 
 ## 4. Why this is new, and what it is not
 
