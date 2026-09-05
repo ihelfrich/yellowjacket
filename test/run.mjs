@@ -35,6 +35,16 @@ import {
 import { composeCyclic, scoreEvents, scoreToSmf, describeScore, scoreFidelity, bandOf, motionOf, foldNote, hzToMidi } from '../js/compose/cyclic-score.js';
 import { renderScore } from '../js/compose/cyclic-synth.js';
 import { peakRows, scoreSummary } from '../js/app/cyclic-controller.js';
+import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlinearity } from '../js/instrument/card.js';
+import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from '../js/instrument/family.js';
+import { runBank } from '../js/instrument/excite/bank.js';
+import { strike } from '../js/instrument/excite/strike.js';
+import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
+import { retuneDelta, applyRetune, dissonanceCurve, relatedScale } from '../js/instrument/tuning.js';
+import { convolve, radiationFilter, applyBody } from '../js/instrument/body.js';
+import { renderVoice, voiceKey, clearCache, TRUTH_RATE } from '../js/instrument/render.js';
+import { breath } from '../js/instrument/excite/breath.js';
+import { bow, stableForceRange } from '../js/instrument/excite/bow.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6003,7 +6013,201 @@ const cyclicPanelCases = [
   },
 ];
 
+// --- found instruments -----------------------------------------------------
+// Synthetic objects with known physics; every assertion is a number.
+function barRecording(sr = 48000, f1 = 440, seconds = 1.5, q = 800) {
+  // free-free bar: ratios 1 : 2.756 : 5.404 : 8.933, constant Q
+  return damped(sr, seconds, FAMILY_RATIOS.bar.slice(0, 4).map((r, i) => ({ f: f1 * r, tau: q / (Math.PI * f1 * r), amp: 0.5 / (i + 1), phase: 0 })));
+}
+const instrumentCases = [
+  function aBarRecordingBecomesABarCardWithItsRatios() {
+    const sr = 48000;
+    const card = buildCard(barRecording(sr), sr, { name: 'synthetic bar', license: 'test' });
+    assert.equal(card.version, 1);
+    assert.equal(card.family.kind, 'bar', JSON.stringify(card.family));
+    assert.ok(card.family.confidence > 0.3, 'confident: ' + card.family.confidence.toFixed(2));
+    const ratios = card.family.ratios.slice(0, 3);
+    close(ratios[1], 2.756, 0.0016 * 2.756, 'second partial within one cent');
+    close(ratios[2], 5.404, 0.0016 * 5.404, 'third partial within one cent');
+    assert.equal(card.damping.model, 'constant-q');
+    close(card.damping.q0, 800, 40, 'Q within 5%');
+    assert.ok(card.residual.samples.length > 0 && card.residual.seconds <= 0.1, 'a residual print of at most 100 ms');
+    assert.equal(card.nonlinearity, undefined, 'a linear synthetic hit carries no nonlinearity law');
+  },
+  function theDampingLawPrefersThePowerModelWhenQFalls() {
+    const modes = [200, 400, 800, 1600].map((f) => ({ freqHz: f, tauSec: (3000 * Math.pow(f / 200, -0.5)) / (Math.PI * f), amp: 1, phase: 0 }));
+    const law = fitDampingLaw(modes);
+    assert.equal(law.model, 'power');
+    close(law.exponent, -0.5, 0.05, 'exponent');
+    close(qAt(law, 800), 3000 * Math.pow(4, -0.5), 30, 'Q at 800 Hz');
+  },
+  function membraneAndStringRatiosClassifyThemselves() {
+    const membrane = classifyFamily(FAMILY_RATIOS.membrane.map((r) => ({ freqHz: 100 * r, tauSec: 0.3, amp: 1, phase: 0 })));
+    assert.equal(membrane.kind, 'membrane');
+    const B = 0.0004;
+    const string = classifyFamily([1, 2, 3, 4, 5, 6].map((n) => ({ freqHz: 220 * n * Math.sqrt(1 + B * n * n), tauSec: 0.5, amp: 1, phase: 0 })));
+    assert.equal(string.kind, 'string');
+    close(string.inharmonicity, B, B * 0.5, 'inharmonicity recovered to within half');
+    const junk = classifyFamily([1, 1.31, 1.77, 2.9].map((r) => ({ freqHz: 300 * r, tauSec: 0.3, amp: 1, phase: 0 })));
+    assert.equal(junk.kind, 'unknown', JSON.stringify(junk));
+  },
+  function aLoudHitWhosePitchBendsWithAmplitudeGetsALaw() {
+    // one mode whose frequency is f0 + k·A(t): phase integrates the instantaneous frequency
+    const sr = 48000, f0 = 300, k = 40, tau = 0.4, seconds = 1.2, n = sr * seconds;
+    const x = new Float32Array(n);
+    let phase = 0;
+    for (let i = 0; i < n; i++) { const A = 0.5 * Math.exp(-i / sr / tau); x[i] = A * Math.sin(phase); phase += 2 * Math.PI * (f0 + k * A) / sr; }
+    const modes = [{ freqHz: f0 + k * 0.25, tauSec: tau, amp: 0.5, phase: 0 }];
+    const law = fitNonlinearity(x, sr, modes);
+    assert.equal(law.length, 1, 'one mode, one law');
+    close(law[0].hzPerAmp, k, k * 0.15, 'Hz per unit amplitude within 15%');
+    assert.ok(law[0].r2 >= 0.6, 'r² ' + law[0].r2.toFixed(2));
+    const linear = fitNonlinearity(damped(sr, seconds, [{ f: f0, tau, amp: 0.5, phase: 0 }]), sr, [{ freqHz: f0, tauSec: tau, amp: 0.5, phase: 0 }]);
+    assert.equal(linear.length, 0, 'a linear mode gets no law');
+  },
+  function anOctaveUpDecaysAsTheDampingLawSaysNotAsTheCardSays() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const base = modesAt(card, cardPitchHz(card));
+    const up = modesAt(card, 2 * cardPitchHz(card));
+    close(up[0].freqHz, 2 * base[0].freqHz, 0.01, 'pitch doubled');
+    close(up[1].freqHz / up[0].freqHz, 2.756, 0.01, 'ratios preserved');
+    // constant Q: τ = Q/(π f) halves an octave up
+    close(up[0].tauSec, base[0].tauSec / 2, base[0].tauSec * 0.05, 'decay follows Q(f) within 5%');
+  },
+  function aStrikeOnANodeSilencesThatMode() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    // free-free bar: mode 2 (index 1) has a node at the centre
+    const centre = modesAt(card, cardPitchHz(card), { position: 0.5 });
+    const off = modesAt(card, cardPitchHz(card), { position: 0.3 });
+    const db = 20 * Math.log10((centre[1].amp + 1e-12) / (off[1].amp + 1e-12));
+    assert.ok(db < -40, 'mode 2 at its node is ' + db.toFixed(1) + ' dB below off-node');
+    assert.ok(centre[0].amp > 0.5 * off[0].amp, 'the fundamental still sounds at the centre');
+  },
+  function hardnessBrightensMonotonically() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const centroid = (h) => { const m = modesAt(card, cardPitchHz(card), { hardness: h }); let n = 0, d = 0; for (const x of m) { n += x.amp * x.freqHz; d += x.amp; } return n / d; };
+    let last = -1;
+    for (const h of [0, 0.25, 0.5, 0.75, 1]) { const c = centroid(h); assert.ok(c > last, `centroid rises: h=${h} → ${c.toFixed(0)} Hz`); last = c; }
+    close(contactTimeSec(0), 0.008, 1e-6, 'soft: 8 ms'); close(contactTimeSec(1), 0.0002, 1e-6, 'hard: 0.2 ms');
+    close(halfSineWeight(0, 0.003), 1, 1e-9, 'DC weight is one');
+  },
+  function theBankRingsAnImpulseAtTheModesAmplitudeAndDecay() {
+    const sr = 48000, modes = [{ freqHz: 500, tauSec: 0.2, amp: 0.4, phase: 0 }];
+    const x = new Float32Array(sr); x[0] = 1;
+    const y = runBank(modes, x, sr);
+    let peak = 0; for (let i = 0; i < 200; i++) peak = Math.max(peak, Math.abs(y[i]));
+    close(peak, 0.4, 0.04, 'first cycle peak is the mode amplitude');
+    const env = (t) => { let m = 0; for (let i = Math.round(t * sr); i < Math.round(t * sr) + 200; i++) m = Math.max(m, Math.abs(y[i])); return m; };
+    close(env(0.2) / env(0.002), Math.exp(-1), 0.05, 'decays to 1/e in tauSec');
+  },
+  function aNonlinearModeBendsWhileLoudAndSettlesWhenQuiet() {
+    const sr = 48000, modes = [{ freqHz: 300, tauSec: 0.3, amp: 0.5, phase: 0 }];
+    const x = new Float32Array(sr); x[0] = 1;
+    const y = runBank(modes, x, sr, { nonlinearity: [{ mode: 0, hzPerAmp: 60, r2: 1 }] });
+    const zeroRate = (a, b) => { let z = 0; for (let i = Math.round(a * sr) + 1; i < Math.round(b * sr); i++) if ((y[i - 1] < 0) !== (y[i] < 0)) z++; return z / (b - a) / 2; };
+    assert.ok(zeroRate(0.01, 0.06) > zeroRate(0.8, 0.95) + 5, `loud ${zeroRate(0.01, 0.06).toFixed(1)} Hz vs quiet ${zeroRate(0.8, 0.95).toFixed(1)} Hz`);
+    close(zeroRate(0.8, 0.95), 300, 5, 'settles to the linear frequency (zero-crossing quantum 3.3 Hz, residual bend under 2 Hz)');
+  },
+  function pluckingNearTheBridgeIsBrighterThanTheMiddle() {
+    const w = pluckWeights(6, 0.5);
+    close(w[1], 0, 1e-9, 'a mid-string pluck cannot excite the even modes');
+    const sr = 48000, card = buildCard(damped(sr, 1, [1, 2, 3, 4, 5, 6].map((n) => ({ f: 220 * n, tau: 0.6 / n, amp: 0.5 / n, phase: 0 }))), sr, { name: 'string' });
+    const centroid = (x) => { const N = 1 << 15, re = new Float32Array(N), im = new Float32Array(N); for (let i = 0; i < N; i++) re[i] = x[i] || 0; new RepairFFT(N).forward(re, im); const mag = new Float32Array(N / 2); let top = 0; for (let k = 1; k < N / 2; k++) { mag[k] = Math.hypot(re[k], im[k]); if (mag[k] > top) top = mag[k]; } let n = 0, d = 0; for (let k = 1; k < N / 2; k++) if (mag[k] > 0.01 * top) { n += mag[k] * k * sr / N; d += mag[k]; } return n / d; }; // magnitude over the peaks, floor excluded
+    const bridge = centroid(pluck(card, { pitchHz: 220, position: 0.05, seconds: 1, sampleRate: sr }));
+    const middle = centroid(pluck(card, { pitchHz: 220, position: 0.5, seconds: 1, sampleRate: sr }));
+    assert.ok(bridge > middle * 1.2, `bridge ${bridge.toFixed(0)} Hz vs middle ${middle.toFixed(0)} Hz`);
+    const hit = strike(card, { pitchHz: 220, hardness: 0.8, seconds: 1, sampleRate: sr });
+    assert.equal(hit.length, sr); assert.ok(Math.max(...hit) > 0.05, 'a strike sounds');
+  },
+  function aRetuneDeltaRoundTripsExactly() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const delta = retuneDelta(card, 'harmonic');
+    const tuned = applyRetune(card, delta);
+    close(tuned.modes[1].freqHz / tuned.modes[0].freqHz, 3, 1e-9, 'the 2.756 partial is now the twelfth (3), its nearest harmonic');
+    const back = applyRetune(tuned, { target: delta.target, cents: delta.cents.map((c) => -c) });
+    for (let i = 0; i < card.modes.length; i++) close(back.modes[i].freqHz, card.modes[i].freqHz, 1e-9, 'mode ' + i + ' round-trips');
+    assert.notEqual(tuned, card, 'the physical card is untouched');
+    assert.equal(card.retune, undefined);
+  },
+  function theRelatedScaleOfAHarmonicTimbreIsJust() {
+    const modes = [1, 2, 3, 4, 5, 6].map((n) => ({ freqHz: 261.6 * n, tauSec: 1, amp: 0.88 ** n, phase: 0 }));
+    const scale = relatedScale(modes);
+    const cents = scale.map((s) => s.cents);
+    for (const [ratio, name] of [[3 / 2, 'fifth'], [4 / 3, 'fourth'], [5 / 4, 'major third'], [6 / 5, 'minor third']]) {
+      const c = 1200 * Math.log2(ratio);
+      assert.ok(cents.some((x) => Math.abs(x - c) <= 5), `${name} (${c.toFixed(1)} c) is a minimum: ${cents.map((x) => x.toFixed(0)).join(' ')}`);
+    }
+    const curve = dissonanceCurve(modes);
+    assert.ok(curve[0].roughness < curve[Math.round(curve.length * 0.05)].roughness, 'unison is smoother than a small interval');
+  },
+  function convolutionMatchesTheDirectSumAndTheBodyKeepsLength() {
+    const x = Float32Array.from({ length: 300 }, (_, i) => Math.sin(i * 0.3)), ir = Float32Array.from([1, 0.5, -0.25, 0.125]);
+    const y = convolve(x, ir);
+    assert.equal(y.length, x.length + ir.length - 1);
+    for (let i = 0; i < 20; i++) { let d = 0; for (let k = 0; k < ir.length; k++) if (i - k >= 0) d += x[i - k] * ir[k]; close(y[i], d, 1e-5, 'sample ' + i); }
+    const sr = 48000, tone = Float32Array.from({ length: sr }, (_, i) => Math.sin(2 * Math.PI * 440 * i / sr) * Math.exp(-i / sr / 0.3));
+    for (const kind of ['radiation', 'plate']) { const b = applyBody(tone, sr, { kind, family: 'bar' }); assert.equal(b.length, tone.length, kind + ' keeps length'); assert.ok(Math.max(...b) > 0.1, kind + ' sounds'); }
+    const bars = radiationFilter('bar', sr), skins = radiationFilter('membrane', sr);
+    const hf = (h) => { let s = 0; for (let i = 0; i < h.length; i++) s += h[i] * Math.cos(2 * Math.PI * 6000 * i / sr); return Math.abs(s); };
+    assert.ok(hf(bars) > hf(skins), 'bars radiate more at 6 kHz than skins');
+  },
+  function rendersAreDeterministicCachedAndDescribed() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    clearCache();
+    const a = renderVoice({ card, pitchHz: 440, excitation: 'strike', seconds: 1 });
+    const b = renderVoice({ card, pitchHz: 440, excitation: 'strike', seconds: 1 });
+    assert.equal(a.sampleRate, TRUTH_RATE);
+    assert.equal(a.samples.length, TRUTH_RATE);
+    assert.deepEqual(Array.from(a.samples.subarray(0, 64)), Array.from(b.samples.subarray(0, 64)), 'bit-identical');
+    assert.equal(a.key, b.key); assert.equal(a.samples, b.samples, 'the second call is the cached buffer');
+    assert.ok(a.meta.peak > 0 && a.meta.decay60Sec > 0.05 && a.meta.centroidHz > 400, JSON.stringify(a.meta));
+    assert.equal(a.meta.used.path, 'closed-form');
+    const other = renderVoice({ card, pitchHz: 880, excitation: 'pluck', seconds: 1 });
+    assert.notEqual(other.key, a.key);
+    const long = renderVoice({ card, pitchHz: 440, excitation: 'strike', seconds: 6 }), longUp = renderVoice({ card, pitchHz: 880, excitation: 'strike', seconds: 6 });
+    assert.ok(longUp.meta.decay60Sec < 0.6 * long.meta.decay60Sec && long.meta.decay60Sec < 5.9, `an octave up decays in about half the time: ${longUp.meta.decay60Sec.toFixed(2)} vs ${long.meta.decay60Sec.toFixed(2)} s`);
+    assert.equal(voiceKey({ a: 1 }), voiceKey({ a: 1 })); assert.notEqual(voiceKey({ a: 1 }), voiceKey({ a: 2 }));
+  },
+  function aNonlinearCardTakesTheOversampledPathAndALinearOneDoesNot() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const bent = { ...card, nonlinearity: [{ mode: 0, hzPerAmp: 30, r2: 1 }] };
+    const v = renderVoice({ card: bent, pitchHz: 440, seconds: 0.5 });
+    assert.equal(v.meta.used.path, 'bank-4x');
+    assert.equal(v.samples.length, Math.round(0.5 * TRUTH_RATE));
+    assert.ok(v.meta.peak > 0.01);
+  },
+  function theBlownModelLocksToTheFirstMode() {
+    const sr = 48000, card = buildCard(barRecording(sr, 330), sr, { name: 'bar' });
+    const y = breath(card, { pitchHz: 330, pressure: 0.6, seconds: 1.5, sampleRate: sr });
+    const tail = y.subarray(Math.round(0.5 * sr), Math.round(1.5 * sr));
+    let z = 0; for (let i = 1; i < tail.length; i++) if ((tail[i - 1] < 0) !== (tail[i] < 0)) z++;
+    const hz = z / 2 / (tail.length / sr);
+    close(hz, 330, 3.3, 'fundamental within 1% of the first mode');
+    let rms = 0; for (const v of tail) rms += v * v; rms = Math.sqrt(rms / tail.length);
+    assert.ok(rms > 0.02, 'it sustains: rms ' + rms.toFixed(3));
+    const v = renderVoice({ card, pitchHz: 330, excitation: 'breath', seconds: 0.5 });
+    assert.equal(v.meta.used.path, 'bank-4x');
+  },
+  function theBowSustainsInItsStableRangeAndGrowsWithForce() {
+    const sr = 48000, card = buildCard(damped(sr, 1, [1, 2, 3, 4, 5, 6].map((n) => ({ f: 196 * n, tau: 0.8 / n, amp: 0.5 / n, phase: 0 }))), sr, { name: 'string' });
+    const range = stableForceRange(card, { pitchHz: 196 });
+    assert.ok(range.max > range.min && range.min >= 0, JSON.stringify(range));
+    const rmsOf = (y, a, b) => { let s = 0, c = 0; for (let i = Math.round(a * sr); i < Math.round(b * sr); i++) { s += y[i] * y[i]; c++; } return Math.sqrt(s / c); };
+    const mid = (range.min + range.max) / 2;
+    const y = bow(card, { pitchHz: 196, force: mid, seconds: 2, sampleRate: sr });
+    const r1 = rmsOf(y, 1.0, 1.5), r2 = rmsOf(y, 1.5, 2.0);
+    assert.ok(r1 > 0.01, 'it sounds: ' + r1.toFixed(4));
+    assert.ok(Math.abs(r1 - r2) / r1 < 0.1, `steady over the second half: ${r1.toFixed(4)} vs ${r2.toFixed(4)}`);
+    const louder = bow(card, { pitchHz: 196, force: range.min + 0.8 * (range.max - range.min), seconds: 2, sampleRate: sr });
+    const softer = bow(card, { pitchHz: 196, force: range.min + 0.2 * (range.max - range.min), seconds: 2, sampleRate: sr });
+    assert.ok(rmsOf(louder, 1, 2) > rmsOf(softer, 1, 2), 'more force, more sound');
+    const v = renderVoice({ card, pitchHz: 196, excitation: 'bow', seconds: 0.5 });
+    assert.equal(v.meta.used.path, 'bank-4x');
+  },
+];
+
 const groups = [
+  ['found instruments', instrumentCases],
   ['periodicities panel', cyclicPanelCases],
   ['cyclic transcription', cyclicScoreCases],
   ['op-z project', opzCases],
