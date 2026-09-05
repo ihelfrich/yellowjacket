@@ -40,6 +40,7 @@ import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from 
 import { runBank } from '../js/instrument/excite/bank.js';
 import { strike } from '../js/instrument/excite/strike.js';
 import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
+import { retuneDelta, applyRetune, dissonanceCurve, relatedScale } from '../js/instrument/tuning.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6113,6 +6114,27 @@ const instrumentCases = [
     assert.ok(bridge > middle * 1.2, `bridge ${bridge.toFixed(0)} Hz vs middle ${middle.toFixed(0)} Hz`);
     const hit = strike(card, { pitchHz: 220, hardness: 0.8, seconds: 1, sampleRate: sr });
     assert.equal(hit.length, sr); assert.ok(Math.max(...hit) > 0.05, 'a strike sounds');
+  },
+  function aRetuneDeltaRoundTripsExactly() {
+    const sr = 48000, card = buildCard(barRecording(sr), sr, { name: 'bar' });
+    const delta = retuneDelta(card, 'harmonic');
+    const tuned = applyRetune(card, delta);
+    close(tuned.modes[1].freqHz / tuned.modes[0].freqHz, 3, 1e-9, 'the 2.756 partial is now the twelfth (3), its nearest harmonic');
+    const back = applyRetune(tuned, { target: delta.target, cents: delta.cents.map((c) => -c) });
+    for (let i = 0; i < card.modes.length; i++) close(back.modes[i].freqHz, card.modes[i].freqHz, 1e-9, 'mode ' + i + ' round-trips');
+    assert.notEqual(tuned, card, 'the physical card is untouched');
+    assert.equal(card.retune, undefined);
+  },
+  function theRelatedScaleOfAHarmonicTimbreIsJust() {
+    const modes = [1, 2, 3, 4, 5, 6].map((n) => ({ freqHz: 261.6 * n, tauSec: 1, amp: 0.88 ** n, phase: 0 }));
+    const scale = relatedScale(modes);
+    const cents = scale.map((s) => s.cents);
+    for (const [ratio, name] of [[3 / 2, 'fifth'], [4 / 3, 'fourth'], [5 / 4, 'major third'], [6 / 5, 'minor third']]) {
+      const c = 1200 * Math.log2(ratio);
+      assert.ok(cents.some((x) => Math.abs(x - c) <= 5), `${name} (${c.toFixed(1)} c) is a minimum: ${cents.map((x) => x.toFixed(0)).join(' ')}`);
+    }
+    const curve = dissonanceCurve(modes);
+    assert.ok(curve[0].roughness < curve[Math.round(curve.length * 0.05)].roughness, 'unison is smoother than a small interval');
   },
 ];
 
