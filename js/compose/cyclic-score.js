@@ -105,29 +105,69 @@ export function composeCyclic({
     const r = analyseCyclic({ mono, sampleRate, startSec: start, endSec: end, ...(alphaMaxHz ? { alphaMaxHz } : {}) });
     const layers = [];
     if (r) {
-      const picked = r.peaks.filter((p) => !p.harmonicOf && p.strength >= minStrength).slice(0, maxLayers);
+      // Harmonic bookkeeping is done here, not left to the detector's marks:
+      // the detector credits a comb to whichever of its lines is strongest,
+      // and for a narrow click that is often not the fundamental.
+      // The fundamental is quantised to an alpha bin; its k-th harmonic sits at
+      // k times the true rate, so the search tolerance grows with k.
+      const step = r.spectrum.alphaStep;
+      const members = (p, f0, kMax, tol) => r.peaks
+        .map((q) => ({ q, k: Math.round(q.alphaHz / f0) }))
+        .filter(({ q, k }) => q !== p && k >= 2 && k <= kMax && Math.abs(q.alphaHz - k * f0) <= tol(k));
+      // A comb is read on the 2nd–6th harmonics and must include the 2nd: an
+      // impulse train always has it, a smooth modulation never does, and two
+      // coincidences among higher lines are not a comb.
+      const combMembers = (p) => {
+        const m = members(p, p.alphaHz, 6, (k) => step * (0.5 + 0.5 * k));
+        return m.some(({ k }) => k === 2) ? m : [];
+      };
+      const combOf = (p) => combMembers(p).length;
+      // With a comb, the rate is the least-squares slope through the origin over
+      // its lines — finer than one alpha bin. Memoised: the peak list is short.
+      const refined = new Map();
+      const refinedAlpha = (p) => {
+        if (refined.has(p)) return refined.get(p);
+        const m = combMembers(p);
+        let f0 = p.alphaHz;
+        if (m.length >= 2) { let num = p.alphaHz, den = 1; for (const { q, k } of m) { num += k * q.alphaHz; den += k * k; } f0 = num / den; }
+        refined.set(p, f0);
+        return f0;
+      };
+      // Once a line has a comb and a refined rate, everything at its multiples
+      // (to the 16th, within one bin) is its own and not a separate layer.
+      const hasLowerFundamental = (p) => r.peaks.some((q) => {
+        if (q === p || q.alphaHz >= 0.75 * p.alphaHz || combOf(q) < 2) return false;
+        const f0 = refinedAlpha(q), k = Math.round(p.alphaHz / f0);
+        return k >= 2 && k <= 16 && Math.abs(p.alphaHz - k * f0) <= step;
+      });
+      const picked = r.peaks.filter((p) => !p.harmonicOf && !hasLowerFundamental(p) && p.strength >= minStrength).slice(0, maxLayers);
       const pulsesInBand = {};
       for (const p of picked) {
         const bin = r.peakBin[p.index];
         const carrierHz = carrierCentroid(r, p.index) ?? bin * r.spectrum.binHz;
         const phase = r.spectrum.phase ? r.spectrum.phase[p.index * r.spectrum.bins + bin] : 0;
         const band = bandOf(carrierHz);
-        const motion = motionOf(p.alphaHz);
+        // A harmonic comb above a periodicity means an impulsive envelope — a
+        // tick, not a swell — whatever its rate. WWV's 1 Hz tick reads as
+        // 0.999 Hz with seven harmonics; by rate alone it would be a swell.
+        const harmonics = combOf(p);
+        const motion = harmonics >= 2 && p.alphaHz < MOTION.pulse ? 'pulse' : motionOf(p.alphaHz);
         // Pulses in the same band alternate between the band's hit track and
         // its tone track, so three rates on one carrier are not one sound.
         const rank = motion === 'pulse' ? (pulsesInBand[band] = (pulsesInBand[band] || 0) + 1) - 1 : 0;
         const role = motion === 'pulse' && rank % 2 === 0 ? roles[band].hit : roles[band].tone;
-        const period = 1 / p.alphaHz;
+        const alphaHz = refinedAlpha(p);
+        const period = 1 / alphaHz;
         // envelope ∝ cos(2π α t + φ) peaks first at t = −φ/(2πα), taken modulo one period
         const onset = (((-phase / (2 * Math.PI)) % 1) + 1) % 1 * period;
         layers.push({
-          alphaHz: p.alphaHz, period, phase, onset,
+          alphaHz, alphaMeasured: p.alphaHz, period, phase, onset,
           carrierHz, band, motion,
           channel: role.channel, track: role.name,
           note: foldNote(hzToMidi(carrierHz), role.noteMin, role.noteMax),
           velocity: velocityFor(p.strength),
           depth: Math.max(0, Math.min(1, (r.spectrum.mod?.[p.index * r.spectrum.bins + bin] ?? 0))),
-          strength: p.strength, bands: p.bands, coherence: p.coherence ?? null,
+          strength: p.strength, bands: p.bands, coherence: p.coherence ?? null, harmonics,
         });
       }
     }
@@ -168,7 +208,8 @@ export function scoreEvents(score, { gapSec = 0.01 } = {}) {
         }
         if (pos !== 0) push({ t: s1 - gapSec, kind: 'ccrel', channel: L.channel, cc, delta: -pos });
       } else {
-        const hold = L.motion === 'buzz' ? Math.min(0.03, L.period * 0.4) : Math.min(0.25, L.period * 0.5);
+        // sharper comb, shorter hit: a click train with seven harmonics holds a sixteenth of its period
+        const hold = L.motion === 'buzz' ? Math.min(0.03, L.period * 0.4) : Math.max(0.005, Math.min(0.25, L.period * 0.5 / (1 + (L.harmonics || 0))));
         for (let t = s0 + L.onset; t < s1 - gapSec; t += L.period) {
           push({ t, kind: 'on', channel: L.channel, note: L.note, value: L.velocity });
           push({ t: Math.min(t + hold, s1 - gapSec), kind: 'off', channel: L.channel, note: L.note, value: 0 });
@@ -218,7 +259,7 @@ export function describeScore(score) {
     lines.push(`section ${s.startSec.toFixed(0)}–${(s.startSec + s.seconds).toFixed(0)} s  (${s.activeBands} active bands)`);
     if (!s.layers.length) lines.push('  (silence: no periodicity above threshold)');
     for (const L of s.layers) {
-      lines.push(`  ${L.motion.padEnd(5)} ${L.alphaHz.toFixed(3).padStart(7)} Hz  ${L.period.toFixed(3)} s  ${L.band.padEnd(4)} ${Math.round(L.carrierHz).toString().padStart(5)} Hz -> ${L.track.padEnd(6)} ch${String(L.channel + 1).padStart(2)} note ${L.note} vel ${L.velocity}  depth ${L.depth.toFixed(3)}  x${Math.round(L.strength)}  onset ${L.onset.toFixed(3)} s`);
+      lines.push(`  ${L.motion.padEnd(5)} ${L.alphaHz.toFixed(3).padStart(7)} Hz  ${L.period.toFixed(3)} s  ${L.band.padEnd(4)} ${Math.round(L.carrierHz).toString().padStart(5)} Hz -> ${L.track.padEnd(6)} ch${String(L.channel + 1).padStart(2)} note ${L.note} vel ${L.velocity}  depth ${L.depth.toFixed(3)}  x${Math.round(L.strength)}  ${L.harmonics ? L.harmonics + ' harmonics  ' : ''}onset ${L.onset.toFixed(3)} s`);
     }
   }
   return lines.join('\n');

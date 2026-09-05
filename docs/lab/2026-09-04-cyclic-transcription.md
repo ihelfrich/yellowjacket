@@ -15,7 +15,7 @@ What shipped: `js/compose/cyclic-score.js` (`composeCyclic`, `scoreEvents`,
 `scripts/opz-perform.py` (plays events over USB MIDI while recording USB
 audio; relative CCs return to origin; nothing written to the device),
 `scripts/cyclic-virtual.mjs` (a stand-in instrument for the loop),
-5 tests under `cyclic transcription`, and `buildSmf` gained CC events.
+6 tests under `cyclic transcription`, and `buildSmf` gained CC events.
 
 ## 1. The transcription rule
 
@@ -87,6 +87,51 @@ The synthetic test does the same with a known source (0.7 Hz AM on 150 Hz
 plus 3 Hz clicks on 3 kHz): two layers on the right tracks, pulse period
 exact to the sample, relative CC net zero, SMF period within 2 ms after the
 tick grid, and the 3 Hz rate back through the detector.
+
+## 3b. WWV, the calibration source (PD, 13:10, 8 kHz)
+
+WWV's structure is known in advance: a tick every second, 500/600 Hz tones
+alternating by minute, a voice announcement at 52.5 s. The detector on
+minutes two and three:
+
+```
+60–120 s   0.999 Hz  x123  125 bands  coh 54   + harmonics 2–8 all marked  (600 Hz minute)
+120–180 s  0.999 Hz  x133   81 bands  coh 26   + harmonics 2–8             (500 Hz minute)
+```
+
+The first pass transcribed this as a *swell* — 0.999 < 1 Hz — which is
+wrong: a tick is impulsive. That forced two rules that were missing:
+
+- **A harmonic comb means an impulsive envelope.** A line whose 2nd–6th
+  harmonics are present (the 2nd must be) is a pulse whatever its rate; a
+  smooth modulation has no comb. The comb also sets the hit length: a
+  five-harmonic tick holds a twelfth of its period.
+- **The composer does its own harmonic bookkeeping.** The detector credits a
+  comb to its strongest line, which for a narrow click is often not the
+  fundamental. Harmonics sit at multiples of the *true* rate, not the
+  bin-quantised one, so the search tolerance grows with the harmonic number;
+  once a line has a comb, its rate is refined by least squares over the comb
+  and every multiple to the 16th within one bin is folded into it. Without
+  the "2nd harmonic required" clause a smooth 0.7 Hz swell claimed a 3 Hz
+  pulse as its fourth harmonic on two coincidences — the test caught it.
+
+WWV then reads as one layer per minute-section: a 0.9986 Hz pulse with
+five harmonics (1.000 Hz quantised to the alpha bin; the comb is on the same
+grid, so refinement cannot beat the bin here). Stand-in fidelity 8/9 (89%);
+the performance's own spectrum carries the comb back: `1.00 1.99 2.99 3.99
+4.99 5.98`. UVB-76 under the final rule: 30 layers, 25 back (83%).
+
+## 3c. The OP-Z take: silent, and what was ruled out
+
+Ian ran `scripts/opz-perform.py` on the UVB-76 events: 162.4 s recorded,
+every event on time, peak **0.0000**. Ruled out since: the documented
+unmutes (CC 53/54 = 0 on all 16 channels) change nothing; a 120-s listener
+saw 5,080 clock ticks, no key note-ons, no audio; nothing in the incoming
+CC map (§2.3–2.4 of the OP-Z README) is reachable by anything sent today
+except cutoff, and the relative moves netted to zero. The device is awake
+and clocking the same project at 105.7 bpm; only its USB audio output is
+dead. Next check is physical: volume knob, then re-seat the USB cable (a
+re-enumeration), then a power cycle.
 
 ## 4. Why this is new, and what it is not
 

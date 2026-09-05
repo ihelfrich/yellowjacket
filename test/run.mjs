@@ -5907,6 +5907,24 @@ const cyclicScoreCases = [
     assert.ok(fast.onset >= 0 && fast.onset < fast.period, 'onset lies inside one period');
     assert.ok(slow.depth > 0.3 && slow.depth < 0.8, '60% modulation reads as a depth, got ' + slow.depth.toFixed(2));
   },
+  function aSlowTickIsAPulseNotASwellBecauseOfItsHarmonics() {
+    // WWV's 1 Hz tick reads as 0.999 Hz with a harmonic comb; by rate alone
+    // it would be a swell. A 0.8 Hz click train must come out as a pulse.
+    const rate = 8000, n = 40 * rate, x = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / rate, ph = (t * 0.8) % 1;
+      x[i] = (ph < 0.01 ? 1 : 0) * Math.sin(2 * Math.PI * 1000 * t) * 0.8;
+    }
+    const score = composeCyclic({ mono: x, sampleRate: rate, sectionSec: 20, maxLayers: 3 });
+    const tick = score.sections[0].layers.find((L) => Math.abs(L.alphaHz - 0.8) < 0.06);
+    assert.ok(tick, 'found the 0.8 Hz tick: ' + JSON.stringify(score.sections[0].layers.map((L) => +L.alphaHz.toFixed(2))));
+    assert.ok(tick.harmonics >= 2, 'a click train carries a harmonic comb, got ' + tick.harmonics);
+    assert.equal(tick.motion, 'pulse');
+    const ons = scoreEvents(score).filter((e) => e.kind === 'on' && e.t < 20);
+    assert.ok(ons.length >= 14 && ons.length <= 17, 'sixteen ticks in twenty seconds, got ' + ons.length);
+    const offs = scoreEvents(score).filter((e) => e.kind === 'off' && e.t < 20);
+    assert.ok(offs[0].t - ons[0].t < 0.2, 'a sharp comb means a short hit: ' + (offs[0].t - ons[0].t).toFixed(3));
+  },
   function eventsKeepTheExactRatesAndReturnEveryParameter() {
     const score = composeCyclic({ mono: cyclicSource(), sampleRate: 8000, sectionSec: 20, maxLayers: 6 });
     const ev = scoreEvents(score);
