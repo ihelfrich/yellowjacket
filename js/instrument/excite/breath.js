@@ -19,7 +19,9 @@ export function breath(card, { pitchHz, pressure = 0.6, noise = 0.05, seconds = 
   const amp0 = modes.length ? modes[0].amp : 1;
   const fbDrive = drive ?? 24 / Math.max(1e-3, amp0);
   const n = Math.round(seconds * sampleRate), out = new Float32Array(n);
-  const print = card.residual ? residualSamples(card) : new Float32Array(1), printLen = print.length || 1;
+  // the object's own contact noise; spectral cards carry none, so they breathe on the seeded noise alone
+  const stored = card.residual && card.residual.samples ? residualSamples(card) : new Float32Array(0);
+  const print = stored.length ? stored : new Float32Array(1), printLen = print.length;
   // Gains are normalised by the FUNDAMENTAL's damping only, so every mode keeps
   // its physical peak (amp × decay time) relative to the others and the
   // fundamental wins the mode competition by its Q.

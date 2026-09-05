@@ -45,6 +45,8 @@ import { convolve, radiationFilter, applyBody } from '../js/instrument/body.js';
 import { renderVoice, voiceKey, clearCache, TRUTH_RATE } from '../js/instrument/render.js';
 import { breath } from '../js/instrument/excite/breath.js';
 import { bow, stableForceRange } from '../js/instrument/excite/bow.js';
+import { trackPitch, voicedRuns } from '../js/analysis/pitch.js';
+import { spectralCard, envelopeAt } from '../js/instrument/spectral.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6203,6 +6205,40 @@ const instrumentCases = [
     assert.ok(rmsOf(louder, 1, 2) > rmsOf(softer, 1, 2), 'more force, more sound');
     const v = renderVoice({ card, pitchHz: 196, excitation: 'bow', seconds: 0.5 });
     assert.equal(v.meta.used.path, 'bank-4x');
+  },
+  function thePitchTrackerReadsAVibratoToneAndItsRuns() {
+    const sr = 48000, n = sr * 2, tone = new Float32Array(n);
+    let ph = 0;
+    for (let i = 0; i < n; i++) { ph += 2 * Math.PI * (220 + 4 * Math.sin(2 * Math.PI * 5 * i / sr)) / sr; tone[i] = (i < sr * 0.5 || i > sr * 1.5 ? 0 : 1) * (0.3 * Math.sin(ph) + 0.1 * Math.sin(2 * ph)); }
+    const t = trackPitch(tone, sr);
+    const f = t.f0.filter((x) => x > 0);
+    close(f.reduce((a, b) => a + b, 0) / f.length, 220, 2.2, 'mean f0 within 1%');
+    assert.ok(Math.min(...f) > 214 && Math.max(...f) < 226, 'vibrato of ±4 Hz is tracked, not smoothed away');
+    const runs = voicedRuns(t, { minSec: 0.2 });
+    assert.equal(runs.length, 1, 'one voiced run');
+    close(runs[0].startSec, 0.5, 0.05, 'run starts with the tone'); close(runs[0].endSec, 1.5, 0.05, 'and ends with it');
+    close(runs[0].meanHz, 220, 2.2, 'run pitch');
+  },
+  function aVowelBecomesACombUnderItsFormantsAndKeepsThemWhenTransposed() {
+    // synthetic vowel: 24 harmonics of 200 Hz shaped by two formants at 500 and 1500 Hz
+    const sr = 48000, n = sr * 0.4, x = new Float32Array(n);
+    const formant = (f) => Math.exp(-((Math.log(f / 500)) ** 2) / 0.5) + 0.4 * Math.exp(-((Math.log(f / 2000)) ** 2) / 0.3); // realistic bandwidths
+    for (let h = 1; h <= 24; h++) { const f = 200 * h, a = 0.2 * formant(f); for (let i = 0; i < n; i++) x[i] += a * Math.sin(2 * Math.PI * f * i / sr); }
+    const card = spectralCard(x, sr, { name: 'vowel', f0Hz: 200 });
+    assert.equal(card.spectral, true);
+    assert.ok(card.modes.length >= 12, 'harmonics read: ' + card.modes.length);
+    close(card.modes[0].freqHz, 200, 2, 'first harmonic'); close(card.modes[1].freqHz, 400, 2, 'second harmonic');
+    assert.equal(card.damping.assumed, true, 'no release given: decays are assumed and say so');
+    const strongest = card.modes.slice().sort((a, b) => b.amp - a.amp)[0];
+    assert.ok(strongest.freqHz >= 399 && strongest.freqHz <= 601, 'the loudest partial sits under the 500 Hz formant: ' + strongest.freqHz.toFixed(0));
+    assert.ok(envelopeAt(card.envelope, 500) > envelopeAt(card.envelope, 1000) + 6, 'the envelope has the first formant');
+    // transposed an octave up, the comb moves but the formant stays: the partial nearest 500 Hz is still the loudest
+    const up = modesAt(card, 400);
+    const loudUp = up.slice().sort((a, b) => b.amp - a.amp)[0];
+    close(loudUp.freqHz, 400, 2, 'at 400 Hz the fundamental itself sits under the formant and leads');
+    const down = modesAt(card, 100);
+    const loudDown = down.slice().sort((a, b) => b.amp - a.amp)[0];
+    assert.ok(loudDown.freqHz >= 380 && loudDown.freqHz <= 620, 'at 100 Hz a harmonic under the formant leads, not the fundamental: ' + loudDown.freqHz.toFixed(0));
   },
 ];
 

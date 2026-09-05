@@ -75,6 +75,23 @@ export function modesAt(card, pitchHz, { position = null, hardness = 0.5 } = {})
     const tauSec = qAt(card.damping, freqHz) / (Math.PI * freqHz);
     const shape = position === null ? 1 : modeShape(card.family.kind, index, position);
     const weight = shape * halfSineWeight(freqHz, tauC);
-    return { freqHz, tauSec, amp: m.amp * weight, phase: m.phase, index, weight };
+    // Source-filter cards (a vowel, a horn): the comb moves with pitch but the
+    // formants stay where the body put them, so each partial takes its
+    // amplitude from the card's spectral envelope at its NEW frequency.
+    const amp = card.envelope ? envelopeAmp(card, m, freqHz) * weight : m.amp * weight;
+    return { freqHz, tauSec, amp, phase: m.phase, index, weight };
   });
+}
+
+function envelopeAmp(card, mode, freqHz) {
+  const { hz, db } = card.envelope;
+  const at = (f) => {
+    if (f <= hz[0]) return db[0];
+    if (f >= hz[hz.length - 1]) return db[db.length - 1];
+    let i = 1; while (hz[i] < f) i++;
+    const t = Math.log(f / hz[i - 1]) / Math.log(hz[i] / hz[i - 1]);
+    return db[i - 1] + t * (db[i] - db[i - 1]);
+  };
+  // keep the card's own amplitude at the card's pitch; move along the envelope elsewhere
+  return mode.amp * Math.pow(10, (at(freqHz) - at(mode.freqHz)) / 20);
 }
