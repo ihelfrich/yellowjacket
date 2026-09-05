@@ -41,6 +41,7 @@ import { runBank } from '../js/instrument/excite/bank.js';
 import { strike } from '../js/instrument/excite/strike.js';
 import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
 import { retuneDelta, applyRetune, dissonanceCurve, relatedScale } from '../js/instrument/tuning.js';
+import { convolve, radiationFilter, applyBody } from '../js/instrument/body.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6135,6 +6136,17 @@ const instrumentCases = [
     }
     const curve = dissonanceCurve(modes);
     assert.ok(curve[0].roughness < curve[Math.round(curve.length * 0.05)].roughness, 'unison is smoother than a small interval');
+  },
+  function convolutionMatchesTheDirectSumAndTheBodyKeepsLength() {
+    const x = Float32Array.from({ length: 300 }, (_, i) => Math.sin(i * 0.3)), ir = Float32Array.from([1, 0.5, -0.25, 0.125]);
+    const y = convolve(x, ir);
+    assert.equal(y.length, x.length + ir.length - 1);
+    for (let i = 0; i < 20; i++) { let d = 0; for (let k = 0; k < ir.length; k++) if (i - k >= 0) d += x[i - k] * ir[k]; close(y[i], d, 1e-5, 'sample ' + i); }
+    const sr = 48000, tone = Float32Array.from({ length: sr }, (_, i) => Math.sin(2 * Math.PI * 440 * i / sr) * Math.exp(-i / sr / 0.3));
+    for (const kind of ['radiation', 'plate']) { const b = applyBody(tone, sr, { kind, family: 'bar' }); assert.equal(b.length, tone.length, kind + ' keeps length'); assert.ok(Math.max(...b) > 0.1, kind + ' sounds'); }
+    const bars = radiationFilter('bar', sr), skins = radiationFilter('membrane', sr);
+    const hf = (h) => { let s = 0; for (let i = 0; i < h.length; i++) s += h[i] * Math.cos(2 * Math.PI * 6000 * i / sr); return Math.abs(s); };
+    assert.ok(hf(bars) > hf(skins), 'bars radiate more at 6 kHz than skins');
   },
 ];
 
