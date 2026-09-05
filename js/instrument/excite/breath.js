@@ -20,10 +20,13 @@ export function breath(card, { pitchHz, pressure = 0.6, noise = 0.05, seconds = 
   const fbDrive = drive ?? 24 / Math.max(1e-3, amp0);
   const n = Math.round(seconds * sampleRate), out = new Float32Array(n);
   const print = card.residual ? residualSamples(card) : new Float32Array(1), printLen = print.length || 1;
+  // Gains are normalised by the FUNDAMENTAL's damping only, so every mode keeps
+  // its physical peak (amp × decay time) relative to the others and the
+  // fundamental wins the mode competition by its Q.
+  const r0 = Math.exp(-1 / ((modes.length ? modes[0].tauSec : 1) * sampleRate));
   const state = modes.map((m) => {
     const w = 2 * Math.PI * m.freqHz / sampleRate, r = Math.exp(-1 / (m.tauSec * sampleRate));
-    // g is normalised by the resonant gain 1/(1 − r): a fully driven mode sustains near its card amplitude
-    return { a1: 2 * r * Math.cos(w), r2: r * r, g: m.amp * Math.sin(w) * (1 - r), y1: 0, y2: 0 };
+    return { a1: 2 * r * Math.cos(w), r2: r * r, g: m.amp * Math.sin(w) * (1 - r0), y1: 0, y2: 0 };
   });
   const ramp = Math.max(1, Math.round(0.03 * sampleRate));
   // The jet feeds on the bank's VELOCITY, in phase with the force at resonance:

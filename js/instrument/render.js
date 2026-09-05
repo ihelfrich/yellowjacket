@@ -8,6 +8,7 @@ import { FFT } from '../fft.js';
 import { strike } from './excite/strike.js';
 import { pluck } from './excite/pluck.js';
 import { breath } from './excite/breath.js';
+import { bow, stableForceRange } from './excite/bow.js';
 import { applyBody } from './body.js';
 
 export const TRUTH_RATE = 96000;
@@ -54,9 +55,11 @@ const EXCITATIONS = {
   strike: (card, o) => strike(card, o),
   pluck: (card, o) => pluck(card, o),
   breath: (card, o) => breath(card, { ...o, pressure: (o.pressure ?? 0.6) * (o.dynamics ?? 1) }),
+  bow: (card, o) => bow(card, { ...o, force: (o.force ?? 0.3) * (o.dynamics ?? 1) }),
 };
+export { stableForceRange };
 // Driven excitations run the bank sample by sample and take the oversampled path.
-const DRIVEN = new Set(['breath']);
+const DRIVEN = new Set(['breath', 'bow']);
 
 /** Register another excitation; `driven` sends it through the oversampled bank path. */
 export function registerExcitation(name, fn, { driven = true } = {}) {

@@ -44,6 +44,7 @@ import { retuneDelta, applyRetune, dissonanceCurve, relatedScale } from '../js/i
 import { convolve, radiationFilter, applyBody } from '../js/instrument/body.js';
 import { renderVoice, voiceKey, clearCache, TRUTH_RATE } from '../js/instrument/render.js';
 import { breath } from '../js/instrument/excite/breath.js';
+import { bow, stableForceRange } from '../js/instrument/excite/bow.js';
 import { encodeWav, encodeWavWithStats } from '../js/export.js';
 import { bounceSampleRate } from '../js/studio/engine.js';
 import { Engine } from '../js/audio-engine.js';
@@ -6185,6 +6186,22 @@ const instrumentCases = [
     let rms = 0; for (const v of tail) rms += v * v; rms = Math.sqrt(rms / tail.length);
     assert.ok(rms > 0.02, 'it sustains: rms ' + rms.toFixed(3));
     const v = renderVoice({ card, pitchHz: 330, excitation: 'breath', seconds: 0.5 });
+    assert.equal(v.meta.used.path, 'bank-4x');
+  },
+  function theBowSustainsInItsStableRangeAndGrowsWithForce() {
+    const sr = 48000, card = buildCard(damped(sr, 1, [1, 2, 3, 4, 5, 6].map((n) => ({ f: 196 * n, tau: 0.8 / n, amp: 0.5 / n, phase: 0 }))), sr, { name: 'string' });
+    const range = stableForceRange(card, { pitchHz: 196 });
+    assert.ok(range.max > range.min && range.min >= 0, JSON.stringify(range));
+    const rmsOf = (y, a, b) => { let s = 0, c = 0; for (let i = Math.round(a * sr); i < Math.round(b * sr); i++) { s += y[i] * y[i]; c++; } return Math.sqrt(s / c); };
+    const mid = (range.min + range.max) / 2;
+    const y = bow(card, { pitchHz: 196, force: mid, seconds: 2, sampleRate: sr });
+    const r1 = rmsOf(y, 1.0, 1.5), r2 = rmsOf(y, 1.5, 2.0);
+    assert.ok(r1 > 0.01, 'it sounds: ' + r1.toFixed(4));
+    assert.ok(Math.abs(r1 - r2) / r1 < 0.1, `steady over the second half: ${r1.toFixed(4)} vs ${r2.toFixed(4)}`);
+    const louder = bow(card, { pitchHz: 196, force: range.min + 0.8 * (range.max - range.min), seconds: 2, sampleRate: sr });
+    const softer = bow(card, { pitchHz: 196, force: range.min + 0.2 * (range.max - range.min), seconds: 2, sampleRate: sr });
+    assert.ok(rmsOf(louder, 1, 2) > rmsOf(softer, 1, 2), 'more force, more sound');
+    const v = renderVoice({ card, pitchHz: 196, excitation: 'bow', seconds: 0.5 });
     assert.equal(v.meta.used.path, 'bank-4x');
   },
 ];
