@@ -4,6 +4,7 @@
 export const STUDIO_STEPS_PER_BAR = 16;
 export const STUDIO_MAX_BARS = 4;
 export const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+export const CARD_EXCITATIONS = Object.freeze(['strike', 'pluck', 'bow', 'breath']);
 export const STUDIO_SCALES = {
   minor: { name: 'MINOR', intervals: [0, 2, 3, 5, 7, 8, 10] },
   major: { name: 'MAJOR', intervals: [0, 2, 4, 5, 7, 9, 11] },
@@ -64,6 +65,10 @@ export function createStudioTrack(index = 0) {
     mute: false, solo: false, sendVerb: index === 2 ? 0.42 : 0.14,
     sendDelay: index === 3 ? 0.28 : 0.08, length: 64,
     synth: synthFromPreset(preset.id),
+    // A found-instrument card, when this part plays one: { card, excitation }.
+    // The synth block stays (transpose still applies) and comes back when a
+    // preset is chosen again.
+    card: null,
     steps: Array.from({ length: STUDIO_STEPS_PER_BAR * STUDIO_MAX_BARS }, () => null),
   };
 }
@@ -80,7 +85,23 @@ export function applyInstrumentPreset(track, id) {
   const preset = presetById(id);
   track.preset = preset.id;
   track.name = preset.name;
+  track.card = null;
   Object.assign(track.synth, synthFromPreset(preset.id));
+  return track;
+}
+
+/** A part name from a card: the source's name without its extension, upper-cased, sixteen characters. */
+export function cardInstrumentName(card) {
+  const raw = String((card && card.source && card.source.name) || 'CARD').split('/').pop().replace(/\.[a-z0-9]{2,5}$/i, '');
+  return (raw.replace(/[_-]+/g, ' ').trim().toUpperCase() || 'CARD').slice(0, 16);
+}
+
+/** Put a card on a part: it plays by the engine's physics under `excitation` until a preset replaces it. */
+export function applyCardInstrument(track, card, excitation = 'strike', name = null) {
+  if (!card || !Array.isArray(card.modes)) throw new Error('not a card');
+  track.card = { card, excitation: CARD_EXCITATIONS.includes(excitation) ? excitation : 'strike' };
+  track.preset = 'card';
+  track.name = String(name || cardInstrumentName(card)).toUpperCase().slice(0, 16);
   return track;
 }
 
@@ -202,8 +223,10 @@ export function normalizeStep(value) {
 function applyTrack(target, saved) {
   if (!saved || typeof saved !== 'object') return;
   if (typeof saved.name === 'string') target.name = saved.name.slice(0, 16);
-  if (saved.preset === 'custom') target.preset = 'custom';
-  else if (typeof saved.preset === 'string') target.preset = presetById(saved.preset).id;
+  const savedCard = saved.preset === 'card' && saved.card && saved.card.card && Array.isArray(saved.card.card.modes) ? saved.card : null;
+  if (savedCard) { target.preset = 'card'; target.card = { card: savedCard.card, excitation: CARD_EXCITATIONS.includes(savedCard.excitation) ? savedCard.excitation : 'strike' }; }
+  else if (saved.preset === 'custom') { target.preset = 'custom'; target.card = null; }
+  else if (typeof saved.preset === 'string') { target.preset = presetById(saved.preset).id; target.card = null; }
   target.gainDb = clamp(saved.gainDb, -48, 6, target.gainDb);
   target.pan = clamp(saved.pan, -1, 1, target.pan);
   target.sendVerb = clamp(saved.sendVerb, 0, 1, target.sendVerb);

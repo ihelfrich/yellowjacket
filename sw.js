@@ -3,7 +3,7 @@
 // Cross-origin requests (CDN transformers.js, HF model shards) are never intercepted;
 // they manage their own caching. Scope-relative URLs keep this working under
 // the /yellowjacket/ GitHub Pages subpath.
-const VERSION = 'yj-v73';
+const VERSION = 'yj-v74';
 
 const PRECACHE = [
   'js/app/persist.js',
@@ -35,6 +35,18 @@ const PRECACHE = [
   'js/compose/cyclic-synth.js',
   'js/export/opz-project.js',
   'js/app/cyclic-controller.js',
+  'docs/lab/cards/carillon-bell.json',
+  'docs/lab/cards/iowa-bells-plastic-ff-Cs5.json',
+  'docs/lab/cards/freesound-wineglass.json',
+  'docs/lab/cards/commons-bell-15cm.json',
+  'docs/lab/cards/opz-thud.json',
+  'docs/lab/cards/fdr-vowel.json',
+  'docs/lab/cards/hiawatha-vowel.json',
+  'docs/lab/cards/uvb76-buzz.json',
+  'docs/lab/cards/ory-chord.json',
+  'docs/lab/cards/wwv-tone.json',
+  'js/studio/found-cards.js',
+  'js/studio/card-voice.js',
   'js/dsp/resample.js',
   'js/audio-engine.js',
   'js/waveform.js',

@@ -78,3 +78,24 @@ Each of these was hit while verifying the panel, so each is a real user path.
   click, and a click may start the audio context; the engine does it itself.
 - **Carding reports progress.** "CARDING · 6 OF 12 HITS JUDGED" in the panel
   and status bar, with a paint between candidates, instead of a frozen button.
+
+## 6. Cards in STUDIO
+
+`js/studio/card-voice.js`. A STUDIO part may carry a card (`track.card =
+{ card, excitation }`, preset `card`). The engine schedules a card note as one
+render of the physics at that MIDI pitch and dynamic bucket (`renderVoice`,
+96 kHz, four velocity buckets, note length in quarter seconds for bow and
+breath), played once through the part's strip; a struck card rings as long as
+the physics says, a driven one is released at note-off. Renders are cached per
+key and warmed between paints whenever the notes change, so playback only
+starts buffers it already has; the stereo bounce goes through the same path
+offline. The chooser lists the part's card under each excitation, the synth
+presets, and the lab's found cards fetched from `docs/lab/cards/` on first use.
+The INSTRUMENT panel's → STUDIO puts the card just made on the selected part
+and previews its own pitch. Snapshots, undo and `.yjkt` projects carry the
+card. Verified in the bench: a Freesound wine glass carded on SIGNAL played
+part 1 in STUDIO within one click.
+
+The suite now imports every module under `js/`: a stray parenthesis in the
+studio controller had shipped a bench that loaded nothing while sixty groups
+stayed green, because the DOM-only modules were never imported by a test.

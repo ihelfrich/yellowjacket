@@ -1,7 +1,8 @@
 // Studio surface: six instrument channels, sound designer, note palette, and
 // a four-bar piano-roll-style step editor. Pure view; all edits are events.
 
-import { INSTRUMENT_PRESETS, KEY_NAMES, STUDIO_SCALES, noteName } from './model.js';
+import { INSTRUMENT_PRESETS, KEY_NAMES, STUDIO_SCALES, CARD_EXCITATIONS, noteName } from './model.js';
+import { FOUND_CARDS } from './found-cards.js';
 
 const STYLE = `
 .yj-studio { height:100%; min-height:0; display:flex; flex-direction:column; gap:10px; overflow:auto; }
@@ -132,9 +133,13 @@ export class StudioView extends EventTarget {
       const badge = document.createElement('span'); badge.className = 'yj-channel-index'; badge.textContent = index + 1;
       const name = document.createElement('span'); name.className = 'yj-channel-name'; name.textContent = track.name;
       pick.append(badge, name); pick.addEventListener('click', () => { this.selectedTrack = index; this.render(); });
+      // The chooser: this part's card under each of its excitations (when it
+      // plays one), the synth presets, then the lab's found cards.
       const presetOptions = INSTRUMENT_PRESETS.map((p) => [p.id, p.name]);
       if (track.preset === 'custom') presetOptions.unshift(['custom', 'CUSTOM']);
-      const preset = select(presetOptions, track.preset); preset.addEventListener('change', () => {
+      if (track.card) presetOptions.unshift(...CARD_EXCITATIONS.map((e) => ['card:' + e, track.name + ' · ' + e.toUpperCase()]));
+      presetOptions.push(...FOUND_CARDS.map((c) => ['found:' + c.id, '◇ ' + c.name]));
+      const preset = select(presetOptions, track.card ? 'card:' + track.card.excitation : track.preset); preset.addEventListener('change', () => {
         if (preset.value !== 'custom') this._emit('preset', { track: index, id: preset.value });
       });
       const level = this._miniRange('VOL', track.gainDb, -36, 6, 1, (v) => v + '', (value) => this._emit('track', { track: index, key: 'gainDb', value }));

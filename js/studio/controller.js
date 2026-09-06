@@ -1,6 +1,9 @@
 // Studio controller: document mutations, transport, and stereo bounce.
 
-import { applyInstrumentPreset, generateStudioIdea, normalizeStep, transformStudioBar } from './model.js';
+import { applyInstrumentPreset, applyCardInstrument, generateStudioIdea, normalizeStep, transformStudioBar, CARD_EXCITATIONS } from './model.js';
+import { warmCardTrack } from './card-voice.js';
+import { FOUND_CARDS, foundCardById, foundCardUrl } from './found-cards.js';
+import { cardPitchHz } from '../instrument/family.js';
 import { studioMidiFile } from './midi.js';
 import { parseSmf, smfToStudio } from '../midi/smf.js';
 import { bounceSampleRate } from './engine.js';
@@ -36,10 +39,74 @@ export function initStudioController(ctx) {
   });
   view.addEventListener('stop', () => studioEngine.stop());
   view.addEventListener('studio', (event) => edit('studio', (doc) => { doc[event.detail.key] = event.detail.value; }));
-  view.addEventListener('preset', (event) => edit('studio-sound', (doc) => {
+  // Cards: every note a card part will play is rendered ahead of playback,
+  // between paints, so the sequencer only ever starts buffers it already has.
+  const yieldToPaint = () => new Promise((resolve) => setTimeout(resolve, 0));
+  let warming = null;
+  function warmAll() {
+    if (warming) return warming;
+    warming = (async () => {
+      await yieldToPaint();
+      for (let i = 0; i < studio.tracks.length; i++) {
+        const track = studio.tracks[i];
+        if (!track.card) continue;
+        await warmCardTrack(studioEngine.cache, studio, track, {
+          yieldFn: yieldToPaint,
+          onProgress: (done, total) => status('STUDIO · RENDERING ' + track.name + ' · ' + done + '/' + total, done < total),
+        });
+      }
+      warming = null;
+      // The warm ran under whatever the bench was saying; hand the status back.
+      if (studioEngine.running) status('STUDIO PLAYING · ' + studio.bpm + ' BPM', true);
+    })();
+    return warming;
+  }
+  const cardFiles = new Map();
+  async function loadFoundCard(id) {
+    if (!cardFiles.has(id)) {
+      cardFiles.set(id, fetch(foundCardUrl(id, document.baseURI)).then((r) => { if (!r.ok) throw new Error('card ' + id + ' · HTTP ' + r.status); return r.json(); }));
+    }
+    return cardFiles.get(id);
+  }
+  function setCard(trackIndex, card, excitation, name) {
+    edit('studio-sound', (doc) => { applyCardInstrument(doc.tracks[trackIndex], card, excitation, name); });
+    const track = studio.tracks[trackIndex];
+    status('STUDIO · ' + track.name + ' ON PART ' + (trackIndex + 1) + ' · ' + track.card.excitation.toUpperCase());
+    warmAll();
+    return track;
+  }
+  ctx.api.studioSetCard = (card, excitation = 'strike', name = null, trackIndex = null) => {
+    const index = trackIndex === null ? view.selectedTrack : trackIndex;
+    const track = setCard(index, card, excitation, name);
+    if (ctx.api.jump) ctx.api.jump('studio');
+    const midi = Math.round(69 + 12 * Math.log2(cardPitchHz(card) / 440));
+    try { studioEngine.preview(index, Math.max(0, Math.min(127, midi))); } catch (_) { /* no audio yet */ }
+    return track;
+  };
+
+  view.addEventListener('preset', (event) => {
+    const id = String(event.detail.id || '');
+    if (id.startsWith('card:')) {
+      const excitation = id.slice(5);
+      edit('studio-sound', (doc) => { const t = doc.tracks[event.detail.track]; if (t.card && CARD_EXCITATIONS.includes(excitation)) t.card.excitation = excitation; });
+      warmAll();
+      return;
+    }
+    if (id.startsWith('found:')) {
+      const spec = foundCardById(id.slice(6));
+      if (!spec) return;
+      status('STUDIO · FETCHING ' + spec.name + '…', true);
+      loadFoundCard(spec.id)
+        .then((card) => setCard(event.detail.track, card, spec.excitation, spec.name))
+        .catch((err) => statusFault('STUDIO · ' + (err && err.message ? err.message : err)));
+      return;
+    }
+    presetChange(event);
+  });
+  const presetChange = (event) => edit('studio-sound', (doc) => {
     const track = doc.tracks[event.detail.track];
     if (track) applyInstrumentPreset(track, event.detail.id);
-  }));
+  });
   view.addEventListener('track', (event) => edit('studio-mix', (doc) => {
     const track = doc.tracks[event.detail.track];
     if (track) track[event.detail.key] = event.detail.value;
@@ -109,12 +176,14 @@ export function initStudioController(ctx) {
     status(event.detail.playing ? 'STUDIO PLAYING · ' + studio.bpm + ' BPM' : 'STUDIO STOPPED', event.detail.playing);
   });
   studioEngine.addEventListener('step', (event) => view.setStep(event.detail.step));
+  view.addEventListener('play', () => warmAll());
 
   // Undo, project import, and resume mutate the document behind this surface.
   store.addEventListener('change', (event) => {
-    if (String(event.detail.kind).startsWith('studio')) return;
+    if (String(event.detail.kind).startsWith('studio')) { if (event.detail.kind === 'studio-notes') warmAll(); return; }
     studioEngine.setStudio(studio);
     view.setStudio(studio);
+    warmAll();
   });
 
   // A .mid dropped on the bench fills STUDIO's parts. Only the parts the file

@@ -39,6 +39,9 @@ import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlin
 import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from '../js/instrument/family.js';
 import { highpass, findHits, bestHit } from '../js/instrument/hits.js';
 import { cardFromSource, cardRows, cardSummary, noteName as cardNoteName } from '../js/app/instrument-controller.js';
+import { CardVoiceCache, cardNoteKey, noteSeconds, dynamicsBucket, trackNotes, warmCardTrack } from '../js/studio/card-voice.js';
+import { applyCardInstrument, cardInstrumentName, applyStudioSnapshot as applyStudioSnapshotForCards, applyInstrumentPreset as applyPresetForCards } from '../js/studio/model.js';
+import { FOUND_CARDS } from '../js/studio/found-cards.js';
 import { runBank } from '../js/instrument/excite/bank.js';
 import { strike } from '../js/instrument/excite/strike.js';
 import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
@@ -115,7 +118,7 @@ import { captureBarDuration, capturedMidiGesture } from '../js/loom/capture.js';
 import {
   compileLoomWindow, compilePerformanceRender, compilePerformanceWindow,
 } from '../js/performance/compile.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 // The buffer-kind DSP modules construct AudioBuffers; node has none.
 if (typeof globalThis.AudioBuffer === 'undefined') {
@@ -6341,7 +6344,107 @@ const instrumentPanelCases = [
   },
 ];
 
+// --- cards in STUDIO ---------------------------------------------------------
+const bellCard = () => ({
+  version: 1, id: 'testbell00000000', source: { name: 'lab/test-bell.wav', sampleRate: 48000, seconds: 1, license: 'CC0', note: 'fit -20.0 dB.' },
+  modes: [{ freqHz: 600, tauSec: 0.6, amp: 0.5, phase: 0 }, { freqHz: 1938, tauSec: 0.3, amp: 0.3, phase: 0 }, { freqHz: 4194, tauSec: 0.2, amp: 0.15, phase: 0 }],
+  damping: { model: 'constant-q', q0: 1500, exponent: 0, r2: 0 }, family: { kind: 'bar', confidence: 0.9, inharmonicity: 0, arch: 1, ratios: [1, 3.23, 6.99] },
+  residual: { sampleRate: 48000, seconds: 0, samples: '' },
+});
+const studioCardCases = [
+  function notesAreKeyedByPitchDynamicBucketAndLength() {
+    const card = bellCard();
+    assert.equal(dynamicsBucket(0.1), 0.25); assert.equal(dynamicsBucket(0.5), 0.5); assert.equal(dynamicsBucket(0.51), 0.75); assert.equal(dynamicsBucket(1), 1);
+    assert.equal(noteSeconds('strike', 5), 2.5, 'a strike rings on its own length');
+    assert.equal(noteSeconds('bow', 0.3), 1, 'a bow renders the note plus a tail, in quarter seconds');
+    assert.equal(noteSeconds('breath', 9), 4, 'capped');
+    assert.equal(cardNoteKey(card, 'strike', 60, 0.8, 0.3), cardNoteKey(card, 'strike', 60, 0.9, 1.2), 'same bucket, same key');
+    assert.notEqual(cardNoteKey(card, 'strike', 60, 0.8, 0.3), cardNoteKey(card, 'strike', 61, 0.8, 0.3));
+  },
+  function theCacheRendersOnceAndHandsBackTheSameRender() {
+    const cache = new CardVoiceCache(4), card = bellCard();
+    const a = cache.render(card, 'strike', 72, 0.8, 0.25);
+    assert.equal(a.sampleRate, 96000); assert.ok(a.peak > 0.01 && a.peak <= 1, 'audible, unclipped: ' + a.peak);
+    assert.ok(Math.abs(a.seconds - 2.5) < 1e-6);
+    assert.strictEqual(cache.render(card, 'strike', 72, 0.9, 0.5), a, 'a hit returns the same object');
+    assert.ok(cache.has(card, 'strike', 72, 0.8, 0.25) && !cache.has(card, 'pluck', 72, 0.8, 0.25));
+    for (const m of [60, 62, 64, 65]) cache.render(card, 'strike', m, 0.8, 0.25);
+    assert.equal(cache.size, 4, 'bounded'); assert.ok(!cache.has(card, 'strike', 72, 0.8, 0.25), 'the oldest render is dropped');
+    let created = 0;
+    const ctx = { createBuffer: (ch, n, rate) => { created++; const data = new Float32Array(n); return { numberOfChannels: ch, length: n, sampleRate: rate, getChannelData: () => data }; } };
+    const r = cache.render(card, 'strike', 65, 0.8, 0.25);
+    const b1 = cache.buffer(ctx, r), b2 = cache.buffer(ctx, r);
+    assert.strictEqual(b1, b2); assert.equal(created, 1, 'one AudioBuffer per context per render'); assert.equal(b1.sampleRate, 96000);
+  },
+  async function aCardPartWarmsEveryDistinctNoteItWillPlay() {
+    const studio = createStudio(); const track = studio.tracks[0];
+    applyCardInstrument(track, bellCard(), 'strike', 'BELL');
+    track.steps[0] = { note: 60, chord: 'single', velocity: 0.8, gate: 0.5 };
+    track.steps[4] = { note: 60, chord: 'single', velocity: 0.85, gate: 0.9 };  // same bucket as step 0
+    track.steps[8] = { note: 64, chord: 'minor', velocity: 0.5, gate: 0.5 };   // three notes
+    track.steps[20] = { note: 72, chord: 'single', velocity: 1, gate: 0.5 };   // bar 2, but the studio has one bar
+    const notes = trackNotes(studio, track);
+    assert.equal(notes.length, 4, JSON.stringify(notes));
+    const cache = new CardVoiceCache(); const progress = []; let yields = 0;
+    const n = await warmCardTrack(cache, studio, track, { onProgress: (d, t) => progress.push([d, t]), yieldFn: async () => { yields++; } });
+    assert.equal(n, 4); assert.equal(cache.size, 4); assert.equal(yields, 3);
+    assert.deepEqual(progress, [[1, 4], [2, 4], [3, 4], [4, 4]]);
+    await warmCardTrack(cache, studio, track);
+    assert.equal(cache.size, 4, 'warming again renders nothing new');
+    assert.deepEqual(trackNotes(studio, studio.tracks[1]), [], 'a synth part has no card notes');
+  },
+  function aCardOnAPartSurvivesTheSnapshotAndAPresetReplacesIt() {
+    const studio = createStudio();
+    applyCardInstrument(studio.tracks[2], bellCard(), 'bow');
+    assert.equal(studio.tracks[2].preset, 'card'); assert.equal(studio.tracks[2].name, 'TEST BELL'); assert.equal(studio.tracks[2].card.excitation, 'bow');
+    assert.equal(cardInstrumentName({ source: { name: 'Iowa MIS plastic-ff C#5' } }), 'IOWA MIS PLASTIC');
+    assert.throws(() => applyCardInstrument(studio.tracks[0], { modes: null }), /not a card/);
+    const back = applyStudioSnapshotForCards(createStudio(), JSON.parse(JSON.stringify(studio)));
+    assert.equal(back.tracks[2].preset, 'card'); assert.equal(back.tracks[2].card.excitation, 'bow'); assert.equal(back.tracks[2].card.card.modes.length, 3);
+    assert.equal(back.tracks[0].card, null);
+    const broken = applyStudioSnapshotForCards(createStudio(), { tracks: [{ preset: 'card', name: 'X' }] });
+    assert.notEqual(broken.tracks[0].preset, 'card', 'a card preset without a card falls back'); assert.equal(broken.tracks[0].card, null);
+    applyPresetForCards(back.tracks[2], 'keys');
+    assert.equal(back.tracks[2].card, null); assert.equal(back.tracks[2].preset, 'keys');
+  },
+  function everyFoundCardExistsAndIsPlayable() {
+    for (const c of FOUND_CARDS) {
+      const path = new URL('../docs/lab/cards/' + c.id + '.json', import.meta.url);
+      assert.ok(existsSync(path), c.id + ' is on disk');
+      const card = JSON.parse(readFileSync(path, 'utf8'));
+      assert.ok(Array.isArray(card.modes) && card.modes.length >= 1, c.id + ' has modes');
+      assert.ok(['strike', 'pluck', 'bow', 'breath'].includes(c.excitation));
+      assert.ok(!/crystal-bowl/.test(c.id), 'the CC BY bowl stays in the lab');
+    }
+  },
+];
+
+// --- every module parses ------------------------------------------------------
+// The suite imports the pure modules; the DOM-only ones (views, controllers,
+// main) it never touched, so a stray parenthesis in a controller shipped a
+// bench that loaded nothing while 60 groups stayed green. Importing each
+// module here catches syntax and unresolved imports; a DOM reference at module
+// level is expected and passes.
+const modulesParseCases = [
+  async function everyModuleUnderJsImports() {
+    const { readdirSync, statSync } = await import('node:fs');
+    const root = new URL('../js/', import.meta.url);
+    const files = [];
+    const walk = (dir) => { for (const name of readdirSync(dir)) { const p = new URL(name + (statSync(new URL(name, dir)).isDirectory() ? '/' : ''), dir); if (name.endsWith('/') || statSync(p).isDirectory()) walk(p); else if (name.endsWith('.js')) files.push(p); } };
+    walk(root);
+    assert.ok(files.length > 100, files.length + ' modules');
+    const broken = [];
+    for (const f of files) {
+      try { await import(f.href); }
+      catch (e) { if (e instanceof SyntaxError || /Cannot find module|does not provide an export/.test(String(e.message))) broken.push(f.href.split('/js/')[1] + ': ' + e.message.split('\n')[0]); }
+    }
+    assert.deepEqual(broken, [], broken.join(' | '));
+  },
+];
+
 const groups = [
+  ['modules parse', modulesParseCases],
+  ['studio cards', studioCardCases],
   ['instrument panel', instrumentPanelCases],
   ['found instruments', instrumentCases],
   ['periodicities panel', cyclicPanelCases],

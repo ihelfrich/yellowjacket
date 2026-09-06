@@ -2,6 +2,7 @@
 // connects to Engine.master so the sampler and Studio share one trusted output.
 
 import { studioStepDuration, studioStepSeconds, chordNotes } from './model.js';
+import { CardVoiceCache, DRIVEN as CARD_DRIVEN } from './card-voice.js';
 
 // STUDIO_BOUNCE_DEFAULT is the source-free rate: with no recording loaded there
 // is no session rate to inherit, and 48 kHz is the right floor for synthesis.
@@ -96,7 +97,8 @@ function syncGraph(graph, studio, at = 0) {
   }
 }
 
-function scheduleVoice(ctx, destination, track, note, when, duration, velocity, voices = null) {
+function scheduleVoice(ctx, destination, track, note, when, duration, velocity, voices = null, cache = null) {
+  if (track.card && track.card.card && cache) return scheduleCardVoice(ctx, destination, track, note, when, duration, velocity, voices, cache);
   const synth = track.synth;
   const filter = ctx.createBiquadFilter();
   const amp = ctx.createGain();
@@ -145,6 +147,36 @@ function scheduleVoice(ctx, destination, track, note, when, duration, velocity, 
   }
 }
 
+// A card note is one render of the physics at this pitch and dynamic, played
+// once at its own level. A struck card rings for as long as the physics says;
+// a bowed or blown card is released at note-off.
+function scheduleCardVoice(ctx, destination, track, note, when, duration, velocity, voices, cache) {
+  const { card, excitation } = track.card;
+  const midi = note + (track.synth && Number.isFinite(track.synth.transpose) ? track.synth.transpose : 0);
+  const rendered = cache.render(card, excitation, midi, velocity, duration);
+  if (!(rendered.peak > 1e-6)) return;
+  const src = ctx.createBufferSource();
+  src.buffer = cache.buffer(ctx, rendered);
+  const amp = ctx.createGain();
+  const level = Math.min(1, 0.5 / rendered.peak) * Math.max(0.05, Math.min(1, velocity));
+  const noteOff = when + Math.max(0.025, duration);
+  let stopAt = when + rendered.seconds;
+  amp.gain.setValueAtTime(level, when);
+  if (CARD_DRIVEN.has(excitation)) {
+    amp.gain.setValueAtTime(level, noteOff);
+    amp.gain.exponentialRampToValueAtTime(0.0001, noteOff + 0.08);
+    stopAt = Math.min(stopAt, noteOff + 0.1);
+  }
+  src.connect(amp).connect(destination);
+  src.start(when);
+  src.stop(stopAt);
+  if (voices) {
+    const voice = { osc1: src, osc2: null, amp, stopAt };
+    voices.add(voice);
+    src.onended = () => voices.delete(voice);
+  }
+}
+
 export class StudioEngine extends EventTarget {
   constructor(engine) {
     super();
@@ -157,6 +189,8 @@ export class StudioEngine extends EventTarget {
     this._nextStep = 0;
     this._nextWhen = 0;
     this._voices = new Set();
+    // renders of card notes, shared by live playback, preview and the bounce
+    this.cache = new CardVoiceCache();
   }
 
   setStudio(studio) {
@@ -187,7 +221,7 @@ export class StudioEngine extends EventTarget {
     const now = this._ctx ? this._ctx.currentTime : 0;
     for (const voice of this._voices) {
       try { voice.amp.gain.cancelScheduledValues(now); voice.amp.gain.setTargetAtTime(0.0001, now, 0.01); } catch (e) { /* closed graph */ }
-      try { voice.osc1.stop(now + 0.05); voice.osc2.stop(now + 0.05); } catch (e) { /* already ended */ }
+      try { voice.osc1.stop(now + 0.05); if (voice.osc2) voice.osc2.stop(now + 0.05); } catch (e) { /* already ended */ }
     }
     this._voices.clear();
     this._graph = null;
@@ -212,7 +246,7 @@ export class StudioEngine extends EventTarget {
     const track = this.studio.tracks[trackIndex];
     if (!track) return;
     for (const pitch of chordNotes(note, chord)) {
-      scheduleVoice(ctx, this._graph.strips[trackIndex].input, track, pitch, ctx.currentTime, 0.32, velocity, this._voices);
+      scheduleVoice(ctx, this._graph.strips[trackIndex].input, track, pitch, ctx.currentTime, 0.32, velocity, this._voices, this.cache);
     }
   }
 
@@ -241,7 +275,7 @@ export class StudioEngine extends EventTarget {
       if (!event) continue;
       const duration = studioStepSeconds(this.studio.bpm) * event.gate;
       for (const note of chordNotes(event.note, event.chord)) {
-        scheduleVoice(this._ctx, this._graph.strips[i].input, track, note, when, duration, event.velocity, this._voices);
+        scheduleVoice(this._ctx, this._graph.strips[i].input, track, note, when, duration, event.velocity, this._voices, this.cache);
       }
     }
     if (this.studio.metronome && step % 4 === 0) this._click(when, step % 16 === 0);
@@ -277,7 +311,7 @@ export class StudioEngine extends EventTarget {
         if (!event) continue;
         const duration = studioStepSeconds(this.studio.bpm) * event.gate;
         for (const note of chordNotes(event.note, event.chord)) {
-          scheduleVoice(ctx, graph.strips[i].input, track, note, when, duration, event.velocity);
+          scheduleVoice(ctx, graph.strips[i].input, track, note, when, duration, event.velocity, null, this.cache);
         }
       }
       when += studioStepDuration(this.studio.bpm, this.studio.swing, step);

@@ -108,7 +108,9 @@
 <link rel="modulepreload" href="js/app/wire-controller.js">
 <link rel="modulepreload" href="js/app/persist.js">
 <link rel="modulepreload" href="js/app/persist-controller.js">
+<link rel="modulepreload" href="js/studio/found-cards.js">
 <link rel="modulepreload" href="js/studio/view.js">
+<link rel="modulepreload" href="js/studio/card-voice.js">
 <link rel="modulepreload" href="js/studio/engine.js">
 <link rel="modulepreload" href="js/studio/midi.js">
 <link rel="modulepreload" href="js/midi/smf.js">
@@ -304,6 +306,7 @@
             <select id="cardPitch" class="yj-select" aria-label="Pitch"></select>
             <button id="btnCardPlay" class="yj-btn" title="Hear the card played by the engine at this pitch: two and a half seconds rendered at 96 kHz from the modes, not from the recording.">HEAR</button>
             <button id="btnCardStop" class="yj-btn" hidden>STOP</button>
+            <button id="btnCardStudio" class="yj-btn" title="Put this card on the selected STUDIO part, with this excitation: every note it plays is rendered by the physics at that pitch.">→ STUDIO</button>
             <button id="btnCardKeep" class="yj-btn" title="Save the card as JSON: modes, damping law, family, residual print. The instrument, not the recording.">KEEP CARD</button>
           </div>
         </div>

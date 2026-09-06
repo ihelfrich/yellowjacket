@@ -98,7 +98,7 @@ export function initInstrumentController(ctx) {
   const btn = $('btnCard');
   if (!btn) return;
   const note = $('cardNote'), summary = $('cardSummary'), list = $('cardList'), actions = $('cardActions');
-  const exc = $('cardExcitation'), pitchSel = $('cardPitch'), play = $('btnCardPlay'), stop = $('btnCardStop'), keep = $('btnCardKeep');
+  const exc = $('cardExcitation'), pitchSel = $('cardPitch'), play = $('btnCardPlay'), stop = $('btnCardStop'), keep = $('btnCardKeep'), toStudio = $('btnCardStudio');
 
   let card = null;
   let source = null;
@@ -149,7 +149,7 @@ export function initInstrumentController(ctx) {
     await yieldToPaint();
     try {
       const r = await cardFromSource(mono, rate, {
-        name: (P && P.name) || 'source',
+        name: (P && (P.fileName || P.name)) || 'source',
         yieldFn: yieldToPaint,
         onProgress: (done, total) => { note.textContent = `CARDING · ${done} OF ${total} HITS JUDGED`; status(`CARDING · ${done}/${total}`, true); },
       });
@@ -201,6 +201,12 @@ export function initInstrumentController(ctx) {
     source.onended = () => { if (source) { source = null; play.hidden = false; stop.hidden = true; } };
   });
   stop.addEventListener('click', () => { stopPlayback(); status('STOPPED'); });
+
+  if (toStudio) toStudio.addEventListener('click', () => {
+    if (!card || !ctx.api.studioSetCard) return;
+    stopPlayback();
+    ctx.api.studioSetCard(card, exc.value, null);
+  });
 
   keep.addEventListener('click', () => {
     if (!card) return;
