@@ -142,6 +142,10 @@ export class Engine extends EventTarget {
     const channels = (Array.isArray(pcm) ? pcm : [pcm]).filter((c) => c && c.length);
     const rate = Math.round(Number(sampleRate));
     if (!channels.length || !(rate > 0)) return null;
+    // An audition is always a click: HEAR on a panel. That gesture is allowed
+    // to start the audio context, so no panel has to say "play the source
+    // once first" before it can make a sound.
+    if (!this._transport && !this._ctx && typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) this._ensureCtx();
     const T = this.transport;
     const device = this._ctx ? { ctx: this._ctx, master: this._master, rate: this._ctx.sampleRate } : null;
     let target = null;

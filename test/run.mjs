@@ -21,7 +21,7 @@ import {
   serializeProject, snapshotDoc, applySnapshot, hydrateSample, projectHasContent, FORMAT_VERSION,
 } from '../js/app/persist.js';
 import { ProjectStore, createSpace, createVoice } from '../js/app/project-store.js';
-import { DEMO_TRACK, sourceReplacementNeedsConfirmation } from '../js/app/source-controller.js';
+import { DEMO_TRACK, sourceReplacementNeedsConfirmation, linkLabel } from '../js/app/source-controller.js';
 import { FIELD_RECORDINGS, fieldLicenseUrl, SHELVES, variantFor } from '../js/app/field-library.js';
 import {
   sniffSampleRate, planDecodeRate, probeContainer, decodedFootprintBytes,
@@ -935,6 +935,12 @@ const lifecycleCases = [
     assert.equal(sourceReplacementNeedsConfirmation(null), false);
     assert.equal(sourceReplacementNeedsConfirmation({ buffer: null }), false);
     assert.equal(sourceReplacementNeedsConfirmation({ buffer: {} }), true);
+    // a ?url= link is named by its file and host at the top of the drop zone
+    assert.equal(linkLabel('https://cdn.freesound.org/previews/654/654156_13938177-hq.mp3'), '654156_13938177-HQ.MP3 · CDN.FREESOUND.ORG');
+    assert.equal(linkLabel('https://archive.org/download/some%20item/'), 'SOME ITEM · ARCHIVE.ORG');
+    assert.equal(linkLabel('https://example.org'), 'EXAMPLE.ORG · EXAMPLE.ORG');
+    assert.equal(linkLabel('not a url'), '');
+    assert.equal(linkLabel('ftp://host/file.wav'), '');
   },
   async function engineCanWakeWithoutLoadingASource() {
     const previousWindow = globalThis.window;
@@ -6302,12 +6308,17 @@ const instrumentCases = [
 
 // --- instrument panel -------------------------------------------------------
 const instrumentPanelCases = [
-  function aStruckSourceBecomesAModalCardWithReadableRows() {
+  async function aStruckSourceBecomesAModalCardWithReadableRows() {
     const sr = 48000, n = sr * 3, x = new Float32Array(n);
     for (let i = 0; i < n; i++) x[i] = 0.2 * Math.sin(2 * Math.PI * 3 * i / sr); // room rumble
     for (let i = 0; i < sr * 1.4; i++) { const t = i / sr; x[Math.round(1.2 * sr) + i] += 0.3 * Math.exp(-t / 0.5) * Math.sin(2 * Math.PI * 600 * t) + 0.2 * Math.exp(-t / 0.3) * Math.sin(2 * Math.PI * 600 * 3.23 * t) + 0.1 * Math.exp(-t / 0.2) * Math.sin(2 * Math.PI * 600 * 6.99 * t); }
-    const r = cardFromSource(x, sr, { name: 'bar' });
+    const progress = [];
+    let yields = 0;
+    const r = await cardFromSource(x, sr, { name: 'bar', onProgress: (done, total) => progress.push([done, total]), yieldFn: async () => { yields++; } });
     assert.equal(r.path, 'struck', r.how);
+    const total = progress[0][1];
+    assert.ok(total >= 1 && progress.every(([d, t], i) => d === i + 1 && t === total), 'progress counts every candidate: ' + JSON.stringify(progress));
+    assert.equal(yields, total - 1, 'the page gets a paint between candidates');
     assert.match(r.how, /^struck · hit at 1\.2\d s · \d candidates? judged$/);
     assert.ok(r.card.family.kind === 'bar' && r.card.family.arch > 0.7, JSON.stringify(r.card.family));
     const rows = cardRows(r.card);
@@ -6317,10 +6328,10 @@ const instrumentPanelCases = [
     assert.ok(rows.every((row) => /^Q \d+ · -?\d+ dB$/.test(row.detail)), JSON.stringify(rows.map((row) => row.detail)));
     assert.match(cardSummary(r.card), /^D5 · 600\.\d Hz · tuned bar \(\d+%\) · 3 modes · Q \d+–\d+$/);
   },
-  function aSustainedSourceBecomesASpectralCardAtItsOwnPitch() {
+  async function aSustainedSourceBecomesASpectralCardAtItsOwnPitch() {
     const sr = 48000, n = sr * 2, x = new Float32Array(n);
     for (let i = 0; i < n; i++) { const t = i / sr; let v = 0; for (let h = 1; h <= 8; h++) v += Math.sin(2 * Math.PI * h * 220 * t) / h; x[i] = 0.2 * v * Math.min(1, t / 0.05); }
-    const r = cardFromSource(x, sr, { name: 'tone' });
+    const r = await cardFromSource(x, sr, { name: 'tone' });
     assert.equal(r.path, 'sustained', r.how);
     assert.match(r.how, /^sustained · voiced (1\.\d|2\.0) s at 2(19|20|21)\.\d Hz from 0\.\d\d s$/);
     assert.ok(r.card.spectral && r.card.damping.assumed, 'a spectral card with assumed decays');

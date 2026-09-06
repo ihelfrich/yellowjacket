@@ -14,6 +14,17 @@ export function sourceReplacementNeedsConfirmation(runtime) {
   return !!(runtime && runtime.buffer);
 }
 
+/** What a ?url= link points at, for the panel: "FILE · HOST", or '' when it does not parse. */
+export function linkLabel(raw) {
+  let u;
+  try { u = new URL(String(raw || '').trim()); } catch (_) { return ''; }
+  if (!/^https?:$/.test(u.protocol)) return '';
+  const segments = u.pathname.split('/').filter(Boolean);
+  let name = segments.length ? segments[segments.length - 1] : u.hostname;
+  try { name = decodeURIComponent(name); } catch (_) { /* keep it encoded */ }
+  return `${name} · ${u.hostname}`.toUpperCase();
+}
+
 export function initSourceController(ctx) {
   const { store, engine, views, $, COPY, status, statusFault, fmtTime } = ctx;
   const { waveMini, waveMain, spec, sliceView } = views;
@@ -458,11 +469,29 @@ export function initSourceController(ctx) {
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && R.buffer) $('dropZone').classList.add('is-hidden');
   });
-  // ?url= prefills the field; fetching still takes a click. A page that auto-fetches
-  // whatever the query string says is a page that can be pointed at anything.
+  // ?url= prefills the field and raises a panel at the top of the drop zone
+  // naming the file and its host, with one button; fetching still takes that
+  // click. A page that auto-fetches whatever the query string says is a page
+  // that can be pointed at anything. The LOAD URL button reads as primary
+  // whenever the field holds something to load.
+  const markUrlButton = () => $('btnLoadUrl').classList.toggle('yj-btn-primary', !!$('urlInput').value.trim());
+  $('urlInput').addEventListener('input', markUrlButton);
   {
     const pre = new URLSearchParams(location.search).get('url');
-    if (pre) $('urlInput').value = pre;
+    if (pre) {
+      $('urlInput').value = pre;
+      const label = linkLabel(pre);
+      if (label) {
+        $('linkInfo').textContent = 'A LINK BROUGHT YOU HERE · ' + label;
+        $('linkPanel').hidden = false;
+        $('btnLoadLink').addEventListener('click', () => loadFromUrl(pre));
+        $('btnLoadLink').focus();
+        // Focus alone scrolls the button to the nearest edge; the panel reads
+        // whole when it sits mid-screen, after layout has settled.
+        requestAnimationFrame(() => $('linkPanel').scrollIntoView({ block: 'center' }));
+      }
+    }
+    markUrlButton();
   }
 
   ctx.api.loadArrayBuffer = loadArrayBuffer;

@@ -61,3 +61,20 @@ change (CORS and Range on their CDN, verified).
   right to be conservative there.
 - Iowa's terms are permissive but not CC0; the four cards here are derived
   instruments, and the recordings are not in the repo.
+
+## 5. UX, from driving the bench myself
+
+Each of these was hit while verifying the panel, so each is a real user path.
+
+- **A link brought you here.** `?url=` now raises a panel at the top of the
+  drop zone naming the file and its host with one LOAD IT button, focused on
+  arrival; LOAD URL reads as primary whenever its field holds something.
+  Fetching still takes the click.
+- **The overlay's top was unreachable.** The drop zone centred content taller
+  than the window with no scroll, so on a 720 px window the word, the link
+  panel and RESUME sat 240 px above the fold. It scrolls now; the panel keeps
+  its centre while it fits.
+- **HEAR no longer says "play the source once first."** An audition is a
+  click, and a click may start the audio context; the engine does it itself.
+- **Carding reports progress.** "CARDING · 6 OF 12 HITS JUDGED" in the panel
+  and status bar, with a paint between candidates, instead of a frozen button.

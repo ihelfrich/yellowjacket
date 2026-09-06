@@ -155,7 +155,8 @@ export function initPersistController(ctx) {
           bits.push(timeAgo(json.savedAt || Date.now()));
           $('resumeInfo').textContent = bits.join(' · ');
           $('resumePanel').hidden = false;
-          if (!R.buffer && $('btnResume')) $('btnResume').focus();
+          // A link's LOAD IT keeps focus when a link brought the visitor here.
+          if (!R.buffer && $('btnResume') && document.activeElement !== $('btnLoadLink')) $('btnResume').focus();
           // The browser took the tab away, not the user: bring the session
           // back without a click. Guarded to sessions whose source is modest
           // (a discard loop on a huge file would be worse than the panel) and

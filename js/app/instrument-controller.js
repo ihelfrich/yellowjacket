@@ -4,7 +4,7 @@
 // excitations at other pitches, and keep it. Nothing here touches the
 // recording; the card is the instrument, not the sound.
 
-import { highpass, bestHit } from '../instrument/hits.js';
+import { highpass, bestHitAsync } from '../instrument/hits.js';
 import { spectralCard } from '../instrument/spectral.js';
 import { trackPitch, voicedRuns } from '../analysis/pitch.js';
 import { modeQ } from '../instrument/card.js';
@@ -37,13 +37,14 @@ export function noteName(hz) {
 /**
  * Card the source. A ringing hit, if the physics finds one, becomes a modal
  * card; otherwise the longest steady voiced run becomes a spectral card at its
- * own f0; failing both, the loudest half second is read as peaks. Pure.
- * → { card, path: 'struck' | 'sustained', how }
+ * own f0; failing both, the loudest half second is read as peaks. Pure apart
+ * from the optional progress callback and yield between candidates.
+ * → Promise<{ card, path: 'struck' | 'sustained', how }>
  */
-export function cardFromSource(mono, sampleRate, { name = 'source', license = '', seconds = CARD_SECONDS } = {}) {
+export async function cardFromSource(mono, sampleRate, { name = 'source', license = '', seconds = CARD_SECONDS, onProgress = null, yieldFn = null } = {}) {
   const span = mono.subarray(0, Math.min(mono.length, Math.floor(seconds * sampleRate)));
   const hp = highpass(span, sampleRate);
-  const best = bestHit(hp, sampleRate, { tries: 12, name, license, note: 'from the bench.' });
+  const best = await bestHitAsync(hp, sampleRate, { tries: 12, name, license, note: 'from the bench.', onProgress, yieldFn });
   if (best && best.card.modes.length >= 2) {
     return { card: best.card, path: 'struck', how: `struck · hit at ${best.hit.start.toFixed(2)} s · ${best.tried.length} candidate${best.tried.length === 1 ? '' : 's'} judged` };
   }
@@ -147,7 +148,11 @@ export function initInstrumentController(ctx) {
     status('CARDING THE SOUND', true);
     await yieldToPaint();
     try {
-      const r = cardFromSource(mono, rate, { name: (P && P.name) || 'source' });
+      const r = await cardFromSource(mono, rate, {
+        name: (P && P.name) || 'source',
+        yieldFn: yieldToPaint,
+        onProgress: (done, total) => { note.textContent = `CARDING · ${done} OF ${total} HITS JUDGED`; status(`CARDING · ${done}/${total}`, true); },
+      });
       card = r.card; rendered.clear();
       summary.textContent = cardSummary(card);
       summary.hidden = false;

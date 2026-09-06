@@ -676,7 +676,12 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-drop {
   position: fixed; inset: 0;
   background: rgba(11, 10, 7, 0.96);
-  display: flex; align-items: center; justify-content: center;
+  /* Centred while it fits; when the panel is taller than the window (a link
+     panel, a saved session and the shelf together are 1200 px), the overlay
+     scrolls and the top stays reachable. `align-items: center` alone clips
+     the top of an overflowing child with no way to scroll to it. */
+  display: flex; align-items: flex-start; justify-content: center;
+  overflow-y: auto;
   z-index: 40;
 }
 .yj-drop.is-hidden { display: none; }
@@ -685,6 +690,7 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   border: 2px dashed var(--yj-line-hi);
   border-radius: 2px;
   padding: 56px 72px;
+  margin: auto;
   text-align: center;
   display: flex; flex-direction: column; gap: 18px; align-items: center;
 }

@@ -61,19 +61,43 @@ export function bestHit(mono, sampleRate, { tries = 12, maxSeconds = 2.5, name =
   let best = null;
   const tried = [];
   for (const h of hits) {
-    const end = Math.min(h.end, h.start + maxSeconds);
-    const slice = mono.subarray(Math.round(h.start * sampleRate), Math.round(end * sampleRate));
-    const card = buildCard(slice, sampleRate, { name, license, note: `${note ? note + ' ' : ''}from ${h.start.toFixed(3)}–${end.toFixed(3)} s.` });
-    const fitDb = cardFitDb(card);
-    // Modes within 2% of a lower one are one mode the fitter split (a beating
-    // pair or a noisy segment), so they count once here; a long ring counts for
-    // the object, since a bell partial that lasts a second outranks three
-    // 30 ms lines. The card itself keeps every fitted mode.
-    let distinct = 0, prev = 0, maxTau = 0;
-    for (const m of card.modes) { if (!prev || m.freqHz / prev > 1.02) distinct++; prev = m.freqHz; maxTau = Math.max(maxTau, m.tauSec); }
-    const rank = (distinct >= 3 ? 100 : 0) + distinct + 2 * Math.log10(1 + 10 * maxTau) - fitDb / 3;
-    tried.push({ start: h.start, end, modes: card.modes.length, distinct, maxTau, fitDb, kind: card.family.kind });
-    if (!best || rank > best.rank) best = { hit: { ...h, end }, card, rank };
+    const j = judge(mono, sampleRate, h, { maxSeconds, name, license, note });
+    tried.push(j.entry);
+    if (!best || j.rank > best.rank) best = j;
   }
   return { hit: best.hit, card: best.card, tried };
+}
+
+/**
+ * The same judge for a page that must stay responsive: `onProgress(done, total,
+ * entry)` after each candidate and `await yieldFn()` between them.
+ */
+export async function bestHitAsync(mono, sampleRate, { tries = 12, maxSeconds = 2.5, name = 'try', license = '', note = '', onProgress = null, yieldFn = null } = {}) {
+  const hits = findHits(mono, sampleRate).slice(0, tries);
+  if (!hits.length) return null;
+  let best = null;
+  const tried = [];
+  for (let i = 0; i < hits.length; i++) {
+    const j = judge(mono, sampleRate, hits[i], { maxSeconds, name, license, note });
+    tried.push(j.entry);
+    if (!best || j.rank > best.rank) best = j;
+    if (onProgress) onProgress(i + 1, hits.length, j.entry);
+    if (yieldFn && i + 1 < hits.length) await yieldFn();
+  }
+  return { hit: best.hit, card: best.card, tried };
+}
+
+function judge(mono, sampleRate, h, { maxSeconds, name, license, note }) {
+  const end = Math.min(h.end, h.start + maxSeconds);
+  const slice = mono.subarray(Math.round(h.start * sampleRate), Math.round(end * sampleRate));
+  const card = buildCard(slice, sampleRate, { name, license, note: `${note ? note + ' ' : ''}from ${h.start.toFixed(3)}–${end.toFixed(3)} s.` });
+  const fitDb = cardFitDb(card);
+  // Modes within 2% of a lower one are one mode the fitter split (a beating
+  // pair or a noisy segment), so they count once here; a long ring counts for
+  // the object, since a bell partial that lasts a second outranks three
+  // 30 ms lines. The card itself keeps every fitted mode.
+  let distinct = 0, prev = 0, maxTau = 0;
+  for (const m of card.modes) { if (!prev || m.freqHz / prev > 1.02) distinct++; prev = m.freqHz; maxTau = Math.max(maxTau, m.tauSec); }
+  const rank = (distinct >= 3 ? 100 : 0) + distinct + 2 * Math.log10(1 + 10 * maxTau) - fitDb / 3;
+  return { hit: { ...h, end }, card, rank, entry: { start: h.start, end, modes: card.modes.length, distinct, maxTau, fitDb, kind: card.family.kind } };
 }
