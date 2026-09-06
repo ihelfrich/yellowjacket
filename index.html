@@ -75,6 +75,20 @@
 <link rel="modulepreload" href="js/compose/cyclic-score.js">
 <link rel="modulepreload" href="js/compose/cyclic-synth.js">
 <link rel="modulepreload" href="js/app/cyclic-controller.js">
+<link rel="modulepreload" href="js/analysis/modal.js">
+<link rel="modulepreload" href="js/instrument/card.js">
+<link rel="modulepreload" href="js/instrument/hits.js">
+<link rel="modulepreload" href="js/instrument/spectral.js">
+<link rel="modulepreload" href="js/analysis/pitch.js">
+<link rel="modulepreload" href="js/instrument/family.js">
+<link rel="modulepreload" href="js/instrument/excite/bank.js">
+<link rel="modulepreload" href="js/instrument/excite/strike.js">
+<link rel="modulepreload" href="js/instrument/excite/pluck.js">
+<link rel="modulepreload" href="js/instrument/excite/breath.js">
+<link rel="modulepreload" href="js/instrument/excite/bow.js">
+<link rel="modulepreload" href="js/instrument/body.js">
+<link rel="modulepreload" href="js/instrument/render.js">
+<link rel="modulepreload" href="js/app/instrument-controller.js">
 <link rel="modulepreload" href="js/app/source-handle.js">
 <link rel="modulepreload" href="js/app/fingerprint.js">
 <link rel="modulepreload" href="js/app/source-controller.js">
@@ -85,7 +99,6 @@
 <link rel="modulepreload" href="js/app/project-bundle.js">
 <link rel="modulepreload" href="js/export/op1patch.js">
 <link rel="modulepreload" href="js/app/crate.js">
-<link rel="modulepreload" href="js/analysis/modal.js">
 <link rel="modulepreload" href="js/analysis/harvest.js">
 <link rel="modulepreload" href="js/machine/controller.js">
 <link rel="modulepreload" href="js/app/repair-panel.js">
@@ -279,6 +292,19 @@
             <button id="btnCyclicPlay" class="yj-btn" title="Hear the transcription on a stand-in instrument: noise for perc, sines for the rest.">HEAR</button>
             <button id="btnCyclicStop" class="yj-btn" hidden>STOP</button>
             <button id="btnCyclicMidi" class="yj-btn" title="Save the transcription as a Standard MIDI File: one track per channel, filter motion as CC 3.">MIDI</button>
+          </div>
+        </div>
+        <div class="yj-panel" data-label="INSTRUMENT">
+          <button id="btnCard" class="yj-btn yj-btn-primary" disabled title="Read the loaded sound as an instrument: find the hit, fit its modes and decays, name the family. A sustained sound is read as its spectrum instead.">CARD THIS SOUND</button>
+          <p class="yj-canvas-note" id="cardNote">Reads the loaded sound as an instrument: its modes, their decays, and the family the ratios belong to.</p>
+          <p class="yj-card-summary" id="cardSummary" hidden></p>
+          <ol class="yj-cyclic-list yj-card-list" id="cardList" hidden></ol>
+          <div class="yj-cyclic-actions yj-card-actions" id="cardActions" hidden>
+            <select id="cardExcitation" class="yj-select" aria-label="Excitation"></select>
+            <select id="cardPitch" class="yj-select" aria-label="Pitch"></select>
+            <button id="btnCardPlay" class="yj-btn" title="Hear the card played by the engine at this pitch: two and a half seconds rendered at 96 kHz from the modes, not from the recording.">HEAR</button>
+            <button id="btnCardStop" class="yj-btn" hidden>STOP</button>
+            <button id="btnCardKeep" class="yj-btn" title="Save the card as JSON: modes, damping law, family, residual print. The instrument, not the recording.">KEEP CARD</button>
           </div>
         </div>
       </aside>

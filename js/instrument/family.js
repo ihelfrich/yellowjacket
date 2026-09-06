@@ -1,11 +1,18 @@
 // One card, a whole family: the mode table at any pitch, struck anywhere,
 // with any mallet, by the object's own laws rather than by shifting audio.
 
-import { qAt } from './card.js';
+import { qAt, fundamentalMode } from './card.js';
 
-export function cardPitchHz(card) { return card.modes.length ? card.modes[0].freqHz : 440; }
+/** The card's pitch: its lowest mode that is within 40 dB of its strongest (a junk line at −60 dB is not the pitch). */
+export function cardPitchHz(card) { const f = fundamentalMode(card.modes); return f ? f.freqHz : 440; }
 
-/** Hertz contact time from hardness 0 (8 ms, felt) to 1 (0.2 ms, steel), log-mapped. */
+/**
+ * Hertz contact time from hardness 0 (8 ms, felt) to 1 (0.2 ms, steel), log-mapped.
+ * Measured against it (Iowa MIS bells, 2026-09-06): plastic and brass glockenspiel
+ * mallets both fit near 0.24 ms, hardness ≈ 0.95, so the hard end is where real
+ * hard mallets sit; the two differed by under 4 dB above 8 kHz, within the
+ * estimator's noise.
+ */
 export function contactTimeSec(hardness) {
   const h = Math.max(0, Math.min(1, hardness));
   return 0.008 * Math.pow(0.025, h);

@@ -127,6 +127,7 @@ export function initBenchController(ctx) {
     if (studioEngine && studioEngine.running) studioEngine.stop();
     if (auditioner && auditioner.playing) auditioner.stop();
     if (ctx.api.stopCyclic) ctx.api.stopCyclic();
+    if (ctx.api.stopInstrument) ctx.api.stopInstrument();
     refreshTransport();
   }
   // The header button and Space: stop whatever is sounding; otherwise play
