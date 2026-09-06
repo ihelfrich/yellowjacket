@@ -40,6 +40,9 @@ import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from 
 import { highpass, findHits, bestHit } from '../js/instrument/hits.js';
 import { cardFromSource, cardRows, cardSummary, noteName as cardNoteName } from '../js/app/instrument-controller.js';
 import { CardVoiceCache, cardNoteKey, noteSeconds, dynamicsBucket, trackNotes, warmCardTrack } from '../js/studio/card-voice.js';
+import { InstrumentPool } from '../js/instrument/pool.js';
+import { cardScale, cardScaleIntervals, scaleLine, cardDisplayName } from '../js/app/instrument-controller.js';
+import { scaleSpec, applyCustomScale, scaleNote as studioScaleNote, createStudio as createStudioForScales } from '../js/studio/model.js';
 import { applyCardInstrument, cardInstrumentName, applyStudioSnapshot as applyStudioSnapshotForCards, applyInstrumentPreset as applyPresetForCards } from '../js/studio/model.js';
 import { FOUND_CARDS } from '../js/studio/found-cards.js';
 import { runBank } from '../js/instrument/excite/bank.js';
@@ -6416,6 +6419,52 @@ const studioCardCases = [
       assert.ok(['strike', 'pluck', 'bow', 'breath'].includes(c.excitation));
       assert.ok(!/crystal-bowl/.test(c.id), 'the CC BY bowl stays in the lab');
     }
+  },
+  async function thePoolRendersAndCardsWithoutAWorkerExactlyAsInPlace() {
+    const pool = new InstrumentPool({ size: 2 });
+    assert.equal(pool.available, false, 'no Worker in node: the same functions run in place');
+    const card = bellCard();
+    const v = await pool.render({ card, pitchHz: 600, excitation: 'strike', seconds: 1 });
+    assert.equal(v.sampleRate, 96000); assert.ok(v.meta.peak > 0.01);
+    const cache = new CardVoiceCache();
+    const a = await cache.renderAsync(pool, card, 'strike', 72, 0.8, 0.25);
+    assert.strictEqual(cache.render(card, 'strike', 72, 0.8, 0.25), a, 'the pooled render is the cached one');
+    const studio = createStudioForScales(); const track = studio.tracks[0];
+    applyCardInstrument(track, card, 'strike', 'BELL');
+    for (const [i, n] of [[0, 60], [4, 62], [8, 64], [12, 65]]) track.steps[i] = { note: n, chord: 'single', velocity: 0.8, gate: 0.5 };
+    const progress = [];
+    await warmCardTrack(cache, studio, track, { pool, onProgress: (d, t) => progress.push([d, t]) });
+    assert.equal(progress.length, 4); assert.equal(progress[3][0], 4); assert.equal(cache.size, 5);
+    const sr = 48000, n = sr * 2, x = new Float32Array(n);
+    for (let i = 0; i < sr * 1.2; i++) { const t2 = i / sr; x[Math.round(0.5 * sr) + i] += 0.3 * Math.exp(-t2 / 0.5) * Math.sin(2 * Math.PI * 600 * t2) + 0.2 * Math.exp(-t2 / 0.3) * Math.sin(2 * Math.PI * 1938 * t2); }
+    const steps = [];
+    const r = await pool.card(x, sr, { name: 'pooled' }, (d, t) => steps.push([d, t]));
+    assert.equal(r.path, 'struck'); assert.ok(steps.length >= 1 && steps[steps.length - 1][0] === steps[steps.length - 1][1], 'progress reached the end');
+  },
+  function anObjectsOwnScaleReachesStudioSnappedToSemitones() {
+    const card = bellCard();
+    const cents = cardScale(card);
+    // three partials at 1 : 3.23 : 6.99 beat least at one ratio inside the octave
+    assert.ok(cents.length >= 1 && cents.every((c) => c > 0 && c <= 1200), JSON.stringify(cents));
+    const intervals = cardScaleIntervals(card);
+    assert.equal(intervals[0], 0); assert.ok(intervals.length >= 2 && intervals.every((v, i) => i === 0 || v > intervals[i - 1]), JSON.stringify(intervals));
+    assert.match(scaleLine(card), /^ITS OWN SCALE · \d+( · \d+)* cents · snaps to 0( \d+)+$/);
+    const rich = JSON.parse(readFileSync(new URL('../docs/lab/cards/iowa-bells-brass-Cs5.json', import.meta.url), 'utf8'));
+    assert.ok(cardScale(rich).length >= 2, 'five partials give several consonances: ' + JSON.stringify(cardScale(rich).map(Math.round)));
+    assert.deepEqual(cardScale({ modes: [{ freqHz: 200, amp: 1, tauSec: 1 }] }), [], 'one partial has no scale');
+    assert.equal(cardDisplayName(card, 'lab/carillon-bell.wav'), 'CARILLON BELL');
+    assert.equal(cardDisplayName(card, '654156_13938177-hq.mp3'), 'D5 TUNED BAR', 'a numeric file name yields the note and family');
+    assert.equal(cardDisplayName(card, ''), 'D5 TUNED BAR');
+    const studio = createStudioForScales();
+    applyCustomScale(studio, [7, 3, 3, 14, 0, 10], 'wine glass');
+    assert.equal(studio.scale, 'custom'); assert.deepEqual(studio.customScale, { name: 'WINE GLASS', intervals: [0, 3, 7, 10] });
+    assert.deepEqual(scaleSpec(studio).intervals, [0, 3, 7, 10]);
+    assert.equal(studioScaleNote(0, scaleSpec(studio), 1, 4), 60 + 3, 'degree 1 of the custom scale is its first interval');
+    const back = applyStudioSnapshotForCards(createStudioForScales(), JSON.parse(JSON.stringify(studio)));
+    assert.equal(back.scale, 'custom'); assert.deepEqual(back.customScale.intervals, [0, 3, 7, 10]);
+    const lost = applyStudioSnapshotForCards(createStudioForScales(), { scale: 'custom' });
+    assert.equal(lost.scale, 'minor', 'a custom scale without intervals falls back'); assert.equal(lost.customScale, null);
+    assert.equal(scaleSpec({ scale: 'dorian' }).name, 'DORIAN');
   },
 ];
 

@@ -12,6 +12,21 @@ export const STUDIO_SCALES = {
   pentatonic: { name: 'PENTATONIC', intervals: [0, 3, 5, 7, 10] },
 };
 
+/** The scale in force: a named one, or the studio's own `customScale` (an object's consonances, snapped to semitones) under the id 'custom'. */
+export function scaleSpec(studio) {
+  if (studio && studio.scale === 'custom' && studio.customScale && Array.isArray(studio.customScale.intervals) && studio.customScale.intervals.length) return studio.customScale;
+  return STUDIO_SCALES[studio && studio.scale] || STUDIO_SCALES.minor;
+}
+
+/** Set a custom scale from semitone intervals (0 always included, sorted, deduped). */
+export function applyCustomScale(studio, intervals, name = 'CARD') {
+  const set = new Set([0]);
+  for (const v of intervals || []) { const n = Math.round(Number(v)); if (Number.isFinite(n) && n > 0 && n < 12) set.add(n); }
+  studio.customScale = { name: String(name || 'CARD').toUpperCase().slice(0, 12), intervals: [...set].sort((a, b) => a - b) };
+  studio.scale = 'custom';
+  return studio;
+}
+
 export const INSTRUMENT_PRESETS = [
   { id: 'sub', name: 'SUB', wave1: 'sine', wave2: 'triangle', mix: 0.18, detune: -7, transpose: -12, cutoff: 520, resonance: 1.2, attack: 0.008, decay: 0.18, sustain: 0.82, release: 0.22 },
   { id: 'bass', name: 'BASS', wave1: 'sawtooth', wave2: 'square', mix: 0.22, detune: 5, transpose: -12, cutoff: 1250, resonance: 3.2, attack: 0.006, decay: 0.24, sustain: 0.54, release: 0.16 },
@@ -76,7 +91,7 @@ export function createStudioTrack(index = 0) {
 export function createStudio() {
   return {
     touched: false, bpm: 120, swing: 50, bars: 1, masterDb: -3,
-    metronome: false, keyRoot: 0, scale: 'minor', ideaSeed: 0x594a0001,
+    metronome: false, keyRoot: 0, scale: 'minor', customScale: null, ideaSeed: 0x594a0001,
     tracks: Array.from({ length: 6 }, (_, i) => createStudioTrack(i)),
   };
 }
@@ -117,7 +132,7 @@ export function noteName(midi) {
 }
 
 export function scaleNote(keyRoot, scale, degree, octave = 4) {
-  const spec = STUDIO_SCALES[scale] || STUDIO_SCALES.minor;
+  const spec = scale && typeof scale === 'object' ? scale : (STUDIO_SCALES[scale] || STUDIO_SCALES.minor);
   const count = spec.intervals.length;
   const rawDegree = Math.round(Number(degree) || 0);
   const octaves = Math.floor(rawDegree / count);
@@ -138,7 +153,7 @@ export function generateStudioIdea(studio, seed = null) {
   studio.ideaSeed = nextSeed;
   studio.bars = Math.max(2, Math.min(STUDIO_MAX_BARS, studio.bars || 2));
   const random = mulberry32(nextSeed);
-  const scale = STUDIO_SCALES[studio.scale] ? studio.scale : 'minor';
+  const scale = scaleSpec(studio);
   const chord = scale === 'major' ? 'major' : (scale === 'pentatonic' ? 'fifth' : 'minor');
   const progression = scale === 'major' ? [0, 4, 5, 3] : [0, 5, 3, 4];
   for (const track of studio.tracks) track.steps.fill(null);
@@ -261,7 +276,10 @@ export function applyStudioSnapshot(target, saved) {
   target.masterDb = clamp(saved.masterDb, -24, 3, target.masterDb);
   target.metronome = saved.metronome === true;
   target.keyRoot = Math.round(clamp(saved.keyRoot, 0, 11, target.keyRoot));
-  target.scale = typeof saved.scale === 'string' && STUDIO_SCALES[saved.scale] ? saved.scale : target.scale;
+  const custom = saved.customScale && Array.isArray(saved.customScale.intervals) ? saved.customScale : null;
+  if (custom) applyCustomScale(target, custom.intervals, custom.name);
+  else target.customScale = null;
+  target.scale = typeof saved.scale === 'string' && (STUDIO_SCALES[saved.scale] || (saved.scale === 'custom' && custom)) ? saved.scale : (STUDIO_SCALES[target.scale] ? target.scale : 'minor');
   target.ideaSeed = Number.isFinite(saved.ideaSeed) ? saved.ideaSeed >>> 0 : target.ideaSeed;
   if (Array.isArray(saved.tracks)) {
     for (let i = 0; i < Math.min(target.tracks.length, saved.tracks.length); i++) applyTrack(target.tracks[i], saved.tracks[i]);

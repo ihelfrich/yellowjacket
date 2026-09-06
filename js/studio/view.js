@@ -1,7 +1,7 @@
 // Studio surface: six instrument channels, sound designer, note palette, and
 // a four-bar piano-roll-style step editor. Pure view; all edits are events.
 
-import { INSTRUMENT_PRESETS, KEY_NAMES, STUDIO_SCALES, CARD_EXCITATIONS, noteName } from './model.js';
+import { INSTRUMENT_PRESETS, KEY_NAMES, STUDIO_SCALES, CARD_EXCITATIONS, noteName, scaleSpec } from './model.js';
 import { FOUND_CARDS } from './found-cards.js';
 
 const STYLE = `
@@ -110,7 +110,9 @@ export class StudioView extends EventTarget {
     const bpmLabel = document.createElement('span'); bpmLabel.className = 'yj-label'; bpmLabel.textContent = 'BPM';
     const bars = select([['1','1 BAR'],['2','2 BARS'],['3','3 BARS'],['4','4 BARS']], this.studio.bars); bars.style.width = '92px'; bars.addEventListener('change', () => this._emit('studio', { key: 'bars', value: Number(bars.value) }));
     const key = select(KEY_NAMES.map((name, index) => [String(index), name]), this.studio.keyRoot); key.title = 'Musical key'; key.style.width = '62px'; key.addEventListener('change', () => this._emit('studio', { key: 'keyRoot', value: Number(key.value) }));
-    const scale = select(Object.entries(STUDIO_SCALES).map(([id, spec]) => [id, spec.name]), this.studio.scale); scale.title = 'Scale used by IDEA'; scale.style.width = '110px'; scale.addEventListener('change', () => this._emit('studio', { key: 'scale', value: scale.value }));
+    const scaleOptions = Object.entries(STUDIO_SCALES).map(([id, spec]) => [id, spec.name]);
+    if (this.studio.customScale) scaleOptions.unshift(['custom', '◇ ' + this.studio.customScale.name]);
+    const scale = select(scaleOptions, this.studio.scale); scale.title = 'Scale used by IDEA'; scale.style.width = '110px'; scale.addEventListener('change', () => this._emit('studio', { key: 'scale', value: scale.value }));
     const metro = button('CLICK · ' + (this.studio.metronome ? 'ON' : 'OFF'), this.studio.metronome ? 'yj-btn is-active' : 'yj-btn'); metro.addEventListener('click', () => this._emit('studio', { key: 'metronome', value: !this.studio.metronome }));
     const idea = button('IDEA', 'yj-btn yj-btn-primary'); idea.id = 'btnStudioIdea'; idea.title = 'Write a fresh arrangement in the selected key and scale'; idea.addEventListener('click', () => this._emit('idea'));
     const midi = button('MIDI OUT', 'yj-btn'); midi.id = 'btnStudioMidi'; midi.title = 'Export all six instruments as a Standard MIDI File'; midi.addEventListener('click', () => this._emit('midiexport'));
@@ -118,7 +120,7 @@ export class StudioView extends EventTarget {
     midi.disabled = !hasNotes; bounce.disabled = !hasNotes;
     const swing = range('SWING', this.studio.swing, 50, 75, 1, (v) => v + '%', (value) => this._emit('studio', { key: 'swing', value }));
     const master = range('MASTER', this.studio.masterDb, -18, 3, 1, (v) => v + ' dB', (value) => this._emit('studio', { key: 'masterDb', value }));
-    const readout = document.createElement('div'); readout.className = 'yj-studio-readout'; readout.textContent = KEY_NAMES[this.studio.keyRoot] + ' ' + STUDIO_SCALES[this.studio.scale].name + ' · 6 PARTS';
+    const readout = document.createElement('div'); readout.className = 'yj-studio-readout'; readout.textContent = KEY_NAMES[this.studio.keyRoot] + ' ' + scaleSpec(this.studio).name + ' · 6 PARTS';
     row.append(play, stop, bpmLabel, bpm, bars, key, scale, idea, metro, midi, bounce, swing, master, readout);
     const progress = document.createElement('div'); progress.className = 'yj-studio-progress'; progress.style.setProperty('--steps', this.studio.bars * 16);
     for (let i = 0; i < this.studio.bars * 16; i++) { const dot = document.createElement('span'); dot.className = 'yj-studio-progress-step'; dot.dataset.progressStep = i; progress.appendChild(dot); }

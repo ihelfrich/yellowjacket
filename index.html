@@ -77,10 +77,12 @@
 <link rel="modulepreload" href="js/app/cyclic-controller.js">
 <link rel="modulepreload" href="js/analysis/modal.js">
 <link rel="modulepreload" href="js/instrument/card.js">
+<link rel="modulepreload" href="js/instrument/family.js">
+<link rel="modulepreload" href="js/instrument/tuning.js">
 <link rel="modulepreload" href="js/instrument/hits.js">
 <link rel="modulepreload" href="js/instrument/spectral.js">
 <link rel="modulepreload" href="js/analysis/pitch.js">
-<link rel="modulepreload" href="js/instrument/family.js">
+<link rel="modulepreload" href="js/instrument/from-source.js">
 <link rel="modulepreload" href="js/instrument/excite/bank.js">
 <link rel="modulepreload" href="js/instrument/excite/strike.js">
 <link rel="modulepreload" href="js/instrument/excite/pluck.js">
@@ -88,6 +90,7 @@
 <link rel="modulepreload" href="js/instrument/excite/bow.js">
 <link rel="modulepreload" href="js/instrument/body.js">
 <link rel="modulepreload" href="js/instrument/render.js">
+<link rel="modulepreload" href="js/instrument/pool.js">
 <link rel="modulepreload" href="js/app/instrument-controller.js">
 <link rel="modulepreload" href="js/app/source-handle.js">
 <link rel="modulepreload" href="js/app/fingerprint.js">
@@ -300,6 +303,7 @@
           <button id="btnCard" class="yj-btn yj-btn-primary" disabled title="Read the loaded sound as an instrument: find the hit, fit its modes and decays, name the family. A sustained sound is read as its spectrum instead.">CARD THIS SOUND</button>
           <p class="yj-canvas-note" id="cardNote">Reads the loaded sound as an instrument: its modes, their decays, and the family the ratios belong to.</p>
           <p class="yj-card-summary" id="cardSummary" hidden></p>
+          <p class="yj-canvas-note" id="cardScale" hidden></p>
           <ol class="yj-cyclic-list yj-card-list" id="cardList" hidden></ol>
           <div class="yj-cyclic-actions yj-card-actions" id="cardActions" hidden>
             <select id="cardExcitation" class="yj-select" aria-label="Excitation"></select>
@@ -307,6 +311,8 @@
             <button id="btnCardPlay" class="yj-btn" title="Hear the card played by the engine at this pitch: two and a half seconds rendered at 96 kHz from the modes, not from the recording.">HEAR</button>
             <button id="btnCardStop" class="yj-btn" hidden>STOP</button>
             <button id="btnCardStudio" class="yj-btn" title="Put this card on the selected STUDIO part, with this excitation: every note it plays is rendered by the physics at that pitch.">→ STUDIO</button>
+            <button id="btnCardPads" class="yj-btn" title="Render one note at the card's own pitch with this excitation and put it on the next free MACHINE track.">→ PADS</button>
+            <button id="btnCardScale" class="yj-btn" title="Give STUDIO this object's own scale: the ratios at which its partials beat least, snapped to semitones.">USE SCALE</button>
             <button id="btnCardKeep" class="yj-btn" title="Save the card as JSON: modes, damping law, family, residual print. The instrument, not the recording.">KEEP CARD</button>
           </div>
         </div>

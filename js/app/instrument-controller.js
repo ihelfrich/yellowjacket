@@ -4,15 +4,14 @@
 // excitations at other pitches, and keep it. Nothing here touches the
 // recording; the card is the instrument, not the sound.
 
-import { highpass, bestHitAsync } from '../instrument/hits.js';
-import { spectralCard } from '../instrument/spectral.js';
-import { trackPitch, voicedRuns } from '../analysis/pitch.js';
 import { modeQ } from '../instrument/card.js';
 import { cardPitchHz } from '../instrument/family.js';
-import { renderVoice } from '../instrument/render.js';
+import { relatedScale } from '../instrument/tuning.js';
+import { cardFromSource, CARD_SECONDS } from '../instrument/from-source.js';
+import { instrumentPool } from '../instrument/pool.js';
 import { download } from '../export.js';
 
-export const CARD_SECONDS = 60;
+export { cardFromSource, CARD_SECONDS };
 export const AUDITION_SECONDS = 2.5;
 export const PITCH_STEPS = [-12, -7, -5, 0, 4, 7, 12];
 export const EXCITATIONS = ['strike', 'pluck', 'bow', 'breath'];
@@ -34,33 +33,35 @@ export function noteName(hz) {
   return NAMES[((n % 12) + 12) % 12] + Math.floor(n / 12);
 }
 
+/** The object's own scale from its partials (Sethares): the dissonance minima within an octave, in cents. */
+export function cardScale(card) {
+  if (!card || !card.modes || card.modes.length < 2) return [];
+  return relatedScale(card.modes).map((s) => s.cents);
+}
+/** Those minima snapped to semitones for a twelve-tone STUDIO, 0 first, deduped. */
+export function cardScaleIntervals(card) {
+  const set = new Set([0]);
+  for (const c of cardScale(card)) { const n = Math.round(c / 100); if (n > 0 && n < 12) set.add(n); }
+  return [...set].sort((a, b) => a - b);
+}
+/** The scale line for the panel. */
+export function scaleLine(card) {
+  const cents = cardScale(card);
+  if (!cents.length) return '';
+  return 'ITS OWN SCALE · ' + cents.map((c) => Math.round(c)).join(' · ') + ' cents · snaps to ' + cardScaleIntervals(card).join(' ');
+}
+
 /**
- * Card the source. A ringing hit, if the physics finds one, becomes a modal
- * card; otherwise the longest steady voiced run becomes a spectral card at its
- * own f0; failing both, the loudest half second is read as peaks. Pure apart
- * from the optional progress callback and yield between candidates.
- * → Promise<{ card, path: 'struck' | 'sustained', how }>
+ * What to call a card elsewhere on the bench: the file's name when it has one
+ * (CARILLON, BOWL), else the note and family (C#5 TUNED BAR) — a Freesound
+ * preview is a number, and a number names nothing.
  */
-export async function cardFromSource(mono, sampleRate, { name = 'source', license = '', seconds = CARD_SECONDS, onProgress = null, yieldFn = null } = {}) {
-  const span = mono.subarray(0, Math.min(mono.length, Math.floor(seconds * sampleRate)));
-  const hp = highpass(span, sampleRate);
-  const best = await bestHitAsync(hp, sampleRate, { tries: 12, name, license, note: 'from the bench.', onProgress, yieldFn });
-  if (best && best.card.modes.length >= 2) {
-    return { card: best.card, path: 'struck', how: `struck · hit at ${best.hit.start.toFixed(2)} s · ${best.tried.length} candidate${best.tried.length === 1 ? '' : 's'} judged` };
-  }
-  const track = trackPitch(hp, sampleRate, { minHz: 50, maxHz: 1200 });
-  const runs = voicedRuns(track, { minSec: 0.25 }).sort((a, b) => (b.endSec - b.startSec) - (a.endSec - a.startSec));
-  if (runs.length) {
-    const run = runs[0];
-    const s = Math.floor(run.startSec * sampleRate), e = Math.min(hp.length, Math.floor(Math.min(run.endSec, run.startSec + 1) * sampleRate));
-    const card = spectralCard(hp.subarray(s, e), sampleRate, { name, license, f0Hz: run.meanHz, note: 'from the bench.' });
-    return { card, path: 'sustained', how: `sustained · voiced ${(run.endSec - run.startSec).toFixed(1)} s at ${run.meanHz.toFixed(1)} Hz from ${run.startSec.toFixed(2)} s` };
-  }
-  const win = Math.floor(0.5 * sampleRate);
-  let at = 0, most = -1;
-  for (let i = 0; i + win <= hp.length; i += win >> 1) { let en = 0; for (let k = i; k < i + win; k++) en += hp[k] * hp[k]; if (en > most) { most = en; at = i; } }
-  const card = spectralCard(hp.subarray(at, Math.min(hp.length, at + win)), sampleRate, { name, license, note: 'from the bench.' });
-  return { card, path: 'sustained', how: `sustained · loudest half second at ${(at / sampleRate).toFixed(2)} s, read as peaks` };
+export function cardDisplayName(card, fileName = '') {
+  const base = String(fileName || '').split('/').pop().replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[_-]+/g, ' ').trim();
+  const letters = (base.match(/[a-z]/gi) || []).length;
+  if (letters >= 3) return base.toUpperCase().slice(0, 16);
+  const f1 = cardPitchHz(card);
+  return `${noteName(f1)} ${familyLabel(card.family)}`.toUpperCase().slice(0, 16);
 }
 
 /** One list row per mode; pure so it can be tested without a DOM. */
@@ -99,6 +100,7 @@ export function initInstrumentController(ctx) {
   if (!btn) return;
   const note = $('cardNote'), summary = $('cardSummary'), list = $('cardList'), actions = $('cardActions');
   const exc = $('cardExcitation'), pitchSel = $('cardPitch'), play = $('btnCardPlay'), stop = $('btnCardStop'), keep = $('btnCardKeep'), toStudio = $('btnCardStudio');
+  const toPads = $('btnCardPads'), useScale = $('btnCardScale'), scaleNote = $('cardScale');
 
   let card = null;
   let source = null;
@@ -130,6 +132,7 @@ export function initInstrumentController(ctx) {
     card = null; rendered.clear();
     list.hidden = true; list.innerHTML = '';
     summary.hidden = true; actions.hidden = true;
+    if (scaleNote) scaleNote.hidden = true;
     note.textContent = IDLE;
     btn.disabled = !(R.mono && R.mono.length);
   }
@@ -148,11 +151,9 @@ export function initInstrumentController(ctx) {
     status('CARDING THE SOUND', true);
     await yieldToPaint();
     try {
-      const r = await cardFromSource(mono, rate, {
-        name: (P && (P.fileName || P.name)) || 'source',
-        yieldFn: yieldToPaint,
-        onProgress: (done, total) => { note.textContent = `CARDING · ${done} OF ${total} HITS JUDGED`; status(`CARDING · ${done}/${total}`, true); },
-      });
+      // The carding runs in the instrument worker; the page only hears progress.
+      const r = await instrumentPool.card(mono, rate, { name: (P && (P.fileName || P.name)) || 'source' },
+        (done, total) => { note.textContent = `CARDING · ${done} OF ${total} HITS JUDGED`; status(`CARDING · ${done}/${total}`, true); });
       card = r.card; rendered.clear();
       summary.textContent = cardSummary(card);
       summary.hidden = false;
@@ -167,6 +168,7 @@ export function initInstrumentController(ctx) {
       }
       list.hidden = !rows.length;
       note.textContent = r.how + (card.damping.assumed ? ' · decays assumed, not measured' : '');
+      if (scaleNote) { const line = scaleLine(card); scaleNote.textContent = line; scaleNote.hidden = !line; }
       if (card.modes.length) fillPitches();
       actions.hidden = !card.modes.length;
       status(card.modes.length ? `CARDED · ${card.modes.length} MODES · ${familyLabel(card.family).toUpperCase()}` : 'NOTHING TO CARD');
@@ -187,7 +189,7 @@ export function initInstrumentController(ctx) {
     if (!v) {
       status('RENDERING ' + excitation.toUpperCase(), true);
       await yieldToPaint();
-      try { v = renderVoice({ card, pitchHz, excitation, seconds: AUDITION_SECONDS }); }
+      try { v = await instrumentPool.render({ card, pitchHz, excitation, seconds: AUDITION_SECONDS }); }
       catch (err) { statusFault ? statusFault('RENDER FAILED · ' + (err && err.message ? err.message : err)) : status('RENDER FAILED'); return; }
       rendered.set(key, v);
     }
@@ -202,10 +204,36 @@ export function initInstrumentController(ctx) {
   });
   stop.addEventListener('click', () => { stopPlayback(); status('STOPPED'); });
 
+  if (toPads) toPads.addEventListener('click', async () => {
+    if (!card || !ctx.api.machineAddSample) return;
+    stopPlayback();
+    const excitation = exc.value;
+    status('RENDERING ' + excitation.toUpperCase() + ' FOR THE PADS', true);
+    try {
+      const v = await instrumentPool.render({ card, pitchHz: cardPitchHz(card), excitation, seconds: AUDITION_SECONDS });
+      const peak = v.meta.peak || 0;
+      if (peak < 1e-4) { status(`SILENT · THIS CARD DOES NOT SPEAK UNDER ${excitation.toUpperCase()}`); return; }
+      const pcm = new Float32Array(v.samples.length);
+      const g = Math.min(1, 0.5 / peak);
+      for (let i = 0; i < pcm.length; i++) pcm[i] = v.samples[i] * g;
+      const label = cardDisplayName(card, P && (P.fileName || P.name)).slice(0, 12) + ' ' + excitation.toUpperCase();
+      const slot = ctx.api.machineAddSample({ pcm, sampleRate: v.sampleRate, label, role: 'TONE', kind: 'card', meta: { cardId: card.id, excitation, pitchHz: cardPitchHz(card) } });
+      if (slot >= 0 && ctx.api.jump) ctx.api.jump('machine');
+    } catch (err) { statusFault ? statusFault('PADS · ' + (err && err.message ? err.message : err)) : status('PADS FAILED'); }
+  });
+
+  if (useScale) useScale.addEventListener('click', () => {
+    if (!card || !ctx.api.studioSetScale) return;
+    const intervals = cardScaleIntervals(card);
+    if (intervals.length < 2) { status('NO SCALE · THIS CARD HAS ONE PARTIAL'); return; }
+    ctx.api.studioSetScale(intervals, cardDisplayName(card, P && (P.fileName || P.name)).slice(0, 12));
+    if (ctx.api.jump) ctx.api.jump('studio');
+  });
+
   if (toStudio) toStudio.addEventListener('click', () => {
     if (!card || !ctx.api.studioSetCard) return;
     stopPlayback();
-    ctx.api.studioSetCard(card, exc.value, null);
+    ctx.api.studioSetCard(card, exc.value, cardDisplayName(card, P && (P.fileName || P.name)));
   });
 
   keep.addEventListener('click', () => {

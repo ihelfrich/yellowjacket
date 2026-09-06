@@ -186,7 +186,7 @@ while MIDI OUT sends the tempo, swing, chords, velocities, gates, and six channe
 DAW. MIDI also comes back the other way: drop a Standard MIDI File and its tempo and notes
 land on the grid, quantized to sixteenths, filling only the parts the file actually
 carries and reporting anything that fell outside the four-bar window. Studio edits participate in undo, autosave, and portable `.yjkt` projects without
-needing a recording loaded first. Any part can also play a **card** — a found instrument read from a recording on the SIGNAL bench's INSTRUMENT panel, or one of the lab's own (a carillon, Iowa's orchestral bells, a wine glass, FDR's vowel, the UVB-76 buzzer) from the chooser's ◇ list: every note is rendered by the physics at that pitch and dynamic, struck, plucked, bowed or blown, never a sample shifted up and down, and the bounce renders the same notes offline.
+needing a recording loaded first. Any part can also play a **card** — a found instrument read from a recording on the SIGNAL bench's INSTRUMENT panel, or one of the lab's own (a carillon, Iowa's orchestral bells, a wine glass, FDR's vowel, the UVB-76 buzzer) from the chooser's ◇ list: every note is rendered by the physics at that pitch and dynamic, struck, plucked, bowed or blown, never a sample shifted up and down, and the bounce renders the same notes offline. Renders run in a worker pool; the keyboard plays the selected part (A to ; from C, Z and X for octaves); USE SCALE on the INSTRUMENT panel hands STUDIO the object's own consonances as a custom scale.
 
 **LOOM** is the semantic performance layer. Select kept transcript words and **WEAVE
 WORDS** opens them as real source material in one action; a real audio span works too.

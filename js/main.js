@@ -307,6 +307,7 @@ function showTab(name) {
   if ($('pipelineHost')) $('pipelineHost').hidden = name === 'studio' || name === 'loom';
   if (name === 'loom' && ctx.api.refreshLoom) ctx.api.refreshLoom();
   ctx.api.setKeybedEnabled(name === 'machine');
+  if (ctx.api.setStudioKeysEnabled) ctx.api.setStudioKeysEnabled(name === 'studio');
   // canvases need a size pass when they become visible
   // Hidden canvases measure 0, so anything revealed here needs a size pass.
   // Guarded per view: a view that failed to construct is null, not a reason

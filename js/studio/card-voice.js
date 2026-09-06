@@ -38,6 +38,18 @@ export class CardVoiceCache {
     if (this.map.size > this.limit) this.map.delete(this.map.keys().next().value);
     return out;
   }
+  /** The same render through a pool (a worker), stored under the same key; a sync render already present wins. */
+  async renderAsync(pool, card, excitation, midi, velocity, duration) {
+    const key = cardNoteKey(card, excitation, midi, velocity, duration);
+    if (this.map.has(key)) return this.map.get(key);
+    const exc = CARD_EXCITATIONS.includes(excitation) ? excitation : 'strike';
+    const v = await pool.render({ card, pitchHz: midiHz(midi), excitation: exc, dynamics: dynamicsBucket(velocity), seconds: noteSeconds(exc, duration) });
+    if (this.map.has(key)) return this.map.get(key);
+    const out = { samples: v.samples, sampleRate: v.sampleRate, peak: v.meta.peak, seconds: v.samples.length / v.sampleRate };
+    this.map.set(key, out);
+    if (this.map.size > this.limit) this.map.delete(this.map.keys().next().value);
+    return out;
+  }
   /** An AudioBuffer of a render for this context; the context resamples 96 kHz on playback. */
   buffer(ctx, rendered) {
     let per = this.buffers.get(ctx);
@@ -70,15 +82,29 @@ export function trackNotes(studio, track) {
   return [...seen.values()];
 }
 
-/** Render every note a card track will play, yielding between renders. → count */
-export async function warmCardTrack(cache, studio, track, { yieldFn = null, onProgress = null } = {}) {
+/**
+ * Render every note a card track will play. With a `pool` the renders run in
+ * its workers, `pool.size` at a time; without one they run here, yielding
+ * between notes. → count
+ */
+export async function warmCardTrack(cache, studio, track, { pool = null, yieldFn = null, onProgress = null } = {}) {
   const notes = trackNotes(studio, track);
   const { card, excitation } = track.card;
-  for (let i = 0; i < notes.length; i++) {
-    const n = notes[i];
-    if (!cache.has(card, excitation, n.midi, n.velocity, n.duration)) cache.render(card, excitation, n.midi, n.velocity, n.duration);
-    if (onProgress) onProgress(i + 1, notes.length);
-    if (yieldFn && i + 1 < notes.length) await yieldFn();
+  const todo = notes.filter((n) => !cache.has(card, excitation, n.midi, n.velocity, n.duration));
+  let done = notes.length - todo.length;
+  if (pool) {
+    const width = Math.max(1, pool.size || 1);
+    for (let i = 0; i < todo.length; i += width) {
+      await Promise.all(todo.slice(i, i + width).map((n) => cache.renderAsync(pool, card, excitation, n.midi, n.velocity, n.duration).then(() => { done++; if (onProgress) onProgress(done, notes.length); })));
+    }
+    return notes.length;
+  }
+  for (let i = 0; i < todo.length; i++) {
+    const n = todo[i];
+    cache.render(card, excitation, n.midi, n.velocity, n.duration);
+    done++;
+    if (onProgress) onProgress(done, notes.length);
+    if (yieldFn && i + 1 < todo.length) await yieldFn();
   }
   return notes.length;
 }

@@ -99,3 +99,28 @@ part 1 in STUDIO within one click.
 The suite now imports every module under `js/`: a stray parenthesis in the
 studio controller had shipped a bench that loaded nothing while sixty groups
 stayed green, because the DOM-only modules were never imported by a test.
+
+## 7. Off the main thread; the object's scale; the keyboard; the pads
+
+- **Worker pool.** `workers/instrument-worker.js` + `js/instrument/pool.js`:
+  renders and the carding itself run in up to four module workers; replies
+  come back by job id, progress streams for the long jobs. Without Worker
+  (node, the tests) the same pure functions run in place, so the two paths
+  cannot disagree. Carding a 49 s recording that took twelve seconds of
+  yielded main-thread time now returns in about two, with the page free.
+  STUDIO warms card notes `pool.size` at a time; the INSTRUMENT panel's HEAR
+  renders there too. `cardFromSource` moved to `js/instrument/from-source.js`
+  so the worker can import it.
+- **The object's own scale.** The panel prints the Sethares dissonance minima
+  of the card's partials in cents (the wine glass: 234 · 338 · 696 · 866 ·
+  1007 · 1203) and USE SCALE hands them to STUDIO snapped to semitones as a
+  custom scale (`studio.customScale`, id `custom`, carried by snapshots and
+  projects; IDEA writes in it).
+- **Keys.** While STUDIO is up, A W S E D F T G Y H U J play the selected
+  part from C, K O L P ; carry on, Z and X move the octave. A card part
+  renders the note it lacks in a worker and plays it when it lands, and the
+  octave around it warms behind.
+- **→ PADS.** One render at the card's own pitch under the chosen excitation
+  becomes a MACHINE track (`ctx.api.machineAddSample`, asset kind `card`).
+- Names: a card is called after its file when the file has a name, else by
+  its note and family (D5 TUNED BAR), because a Freesound preview is a number.

@@ -1386,6 +1386,25 @@ export function initMachineController(ctx) {
     });
   }
 
+  // A rendered voice from elsewhere on the bench (a card at its own pitch)
+  // becomes a track: the same path the modal and synth panels take.
+  ctx.api.machineAddSample = ({ pcm, sampleRate, label, role = 'TONE', kind = 'card', meta = {} }) => {
+    if (!pcm || !pcm.length || !(sampleRate > 0)) return -1;
+    const tracks = P.machine.tracks;
+    let slot = tracks.findIndex((t) => !t.sample);
+    if (slot < 0) slot = tracks.length - 1;
+    store.update('assets', (p) => {
+      const id = registerAsset(p, { kind, label, sampleRate, frames: pcm.length, role, ...meta });
+      const track = p.machine.tracks[slot];
+      track.sampleId = id;
+      track.sample = { channels: [pcm], sampleRate, label, role };
+    });
+    sequencer.bumpTrack(slot);
+    patternView.setMachine(P.machine);
+    if (pads) pads.setTracks(P.machine.tracks);
+    status(String(kind).toUpperCase() + ' · ' + label + ' → TRACK ' + (slot + 1));
+    return slot;
+  };
   ctx.api.machineReset = resetForSource;
   ctx.api.updateClipReadout = refreshClips;
   ctx.api.songRefresh = refreshSong;

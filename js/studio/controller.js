@@ -1,7 +1,8 @@
 // Studio controller: document mutations, transport, and stereo bounce.
 
-import { applyInstrumentPreset, applyCardInstrument, generateStudioIdea, normalizeStep, transformStudioBar, CARD_EXCITATIONS } from './model.js';
+import { applyInstrumentPreset, applyCardInstrument, applyCustomScale, generateStudioIdea, normalizeStep, transformStudioBar, CARD_EXCITATIONS } from './model.js';
 import { warmCardTrack } from './card-voice.js';
+import { instrumentPool } from '../instrument/pool.js';
 import { FOUND_CARDS, foundCardById, foundCardUrl } from './found-cards.js';
 import { cardPitchHz } from '../instrument/family.js';
 import { studioMidiFile } from './midi.js';
@@ -51,6 +52,7 @@ export function initStudioController(ctx) {
         const track = studio.tracks[i];
         if (!track.card) continue;
         await warmCardTrack(studioEngine.cache, studio, track, {
+          pool: instrumentPool,
           yieldFn: yieldToPaint,
           onProgress: (done, total) => status('STUDIO · RENDERING ' + track.name + ' · ' + done + '/' + total, done < total),
         });
@@ -75,6 +77,41 @@ export function initStudioController(ctx) {
     warmAll();
     return track;
   }
+  ctx.api.studioSetScale = (intervals, name = 'CARD') => {
+    edit('studio', (doc) => { applyCustomScale(doc, intervals, name); });
+    status('STUDIO · SCALE ' + studio.customScale.name + ' · ' + studio.customScale.intervals.join(' '));
+  };
+
+  // The keyboard plays the selected part chromatically while STUDIO is up:
+  // A W S E D F T G Y H U J from C, K O L P ; on into the next octave, Z and X
+  // move the octave. A card part renders the note it does not have yet in a
+  // worker and plays it when it lands; the octave around it warms behind.
+  const KEY_SEMITONE = Object.assign(Object.create(null), { KeyA: 0, KeyW: 1, KeyS: 2, KeyE: 3, KeyD: 4, KeyF: 5, KeyT: 6, KeyG: 7, KeyY: 8, KeyH: 9, KeyU: 10, KeyJ: 11, KeyK: 12, KeyO: 13, KeyL: 14, KeyP: 15, Semicolon: 16 });
+  let keysEnabled = false, keyOctave = 4;
+  async function playKey(midi) {
+    const index = view.selectedTrack, track = studio.tracks[index];
+    if (!track) return;
+    if (track.card) {
+      const { card, excitation } = track.card;
+      const cache = studioEngine.cache;
+      if (!cache.has(card, excitation, midi + (track.synth.transpose || 0), 0.85, 0.32)) await cache.renderAsync(instrumentPool, card, excitation, midi + (track.synth.transpose || 0), 0.85, 0.32);
+      for (let m = midi - 5; m <= midi + 6; m++) if (!cache.has(card, excitation, m + (track.synth.transpose || 0), 0.85, 0.32)) cache.renderAsync(instrumentPool, card, excitation, m + (track.synth.transpose || 0), 0.85, 0.32).catch(() => {});
+    }
+    studioEngine.preview(index, midi, 'single', 0.85);
+    status('STUDIO · PART ' + (index + 1) + ' · ' + track.name + ' · NOTE ' + midi + ' · Z/X OCTAVE ' + keyOctave);
+  }
+  window.addEventListener('keydown', (e) => {
+    if (!keysEnabled || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target && e.target.closest && e.target.closest('input, select, textarea, [contenteditable], button')) return;
+    if (e.code === 'KeyZ') { keyOctave = Math.max(1, keyOctave - 1); status('STUDIO · OCTAVE ' + keyOctave); e.preventDefault(); return; }
+    if (e.code === 'KeyX') { keyOctave = Math.min(7, keyOctave + 1); status('STUDIO · OCTAVE ' + keyOctave); e.preventDefault(); return; }
+    const semi = KEY_SEMITONE[e.code];
+    if (semi === undefined) return;
+    e.preventDefault();
+    playKey(12 * (keyOctave + 1) + semi).catch(() => {});
+  });
+  ctx.api.setStudioKeysEnabled = (on) => { keysEnabled = !!on; if (on) status('STUDIO · KEYS A–; PLAY PART ' + (view.selectedTrack + 1) + ' · Z/X OCTAVE'); };
+
   ctx.api.studioSetCard = (card, excitation = 'strike', name = null, trackIndex = null) => {
     const index = trackIndex === null ? view.selectedTrack : trackIndex;
     const track = setCard(index, card, excitation, name);
