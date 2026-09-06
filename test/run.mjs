@@ -35,8 +35,10 @@ import {
 import { composeCyclic, scoreEvents, scoreToSmf, describeScore, scoreFidelity, bandOf, motionOf, foldNote, hzToMidi } from '../js/compose/cyclic-score.js';
 import { renderScore } from '../js/compose/cyclic-synth.js';
 import { peakRows, scoreSummary } from '../js/app/cyclic-controller.js';
-import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlinearity } from '../js/instrument/card.js';
+import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlinearity, fundamentalMode } from '../js/instrument/card.js';
 import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from '../js/instrument/family.js';
+import { highpass, findHits, bestHit } from '../js/instrument/hits.js';
+import { cardFromSource, cardRows, cardSummary, noteName as cardNoteName } from '../js/app/instrument-controller.js';
 import { runBank } from '../js/instrument/excite/bank.js';
 import { strike } from '../js/instrument/excite/strike.js';
 import { pluck, pluckWeights } from '../js/instrument/excite/pluck.js';
@@ -6240,9 +6242,96 @@ const instrumentCases = [
     const loudDown = down.slice().sort((a, b) => b.amp - a.amp)[0];
     assert.ok(loudDown.freqHz >= 380 && loudDown.freqHz <= 620, 'at 100 Hz a harmonic under the formant leads, not the fundamental: ' + loudDown.freqHz.toFixed(0));
   },
+  function aTunedBarIsNotAStringWithMissingHarmonics() {
+    // Iowa MIS orchestral bells, brass mallet, C#5: 557 · 1822 · 3961 · 6134 · 8973 Hz
+    const iowa = classifyFamily([557, 1822, 3961, 6134, 8973].map((f) => ({ freqHz: f, tauSec: 1, amp: 1, phase: 0 })));
+    assert.equal(iowa.kind, 'bar', JSON.stringify(iowa));
+    assert.ok(iowa.arch > 0.8 && iowa.arch < 1.2, 'arch near the measured set: ' + iowa.arch);
+    assert.ok(iowa.confidence > 0.5, 'confidence ' + iowa.confidence.toFixed(2));
+    // the same card missing its second partial (plastic ff C#5 read 557 · 3955 · 6134 · 8968) still is one
+    const gap = classifyFamily([557, 3955, 6134, 8968].map((f) => ({ freqHz: f, tauSec: 1, amp: 1, phase: 0 })));
+    assert.equal(gap.kind, 'bar', JSON.stringify(gap));
+    assert.ok(gap.confidence < iowa.confidence && gap.confidence >= 0.4, 'a skipped reference slot costs confidence, not the label: ' + gap.confidence.toFixed(2));
+    // A5 on the same instrument (885 · 2806 · 5690 · 7813) sits between the free bar and C#5's arch
+    const a5 = classifyFamily([885, 2806, 5690, 7813].map((f) => ({ freqHz: f, tauSec: 1, amp: 1, phase: 0 })));
+    assert.equal(a5.kind, 'bar', JSON.stringify(a5));
+    assert.ok(a5.arch > 0.4 && a5.arch < 0.95, 'a shorter bar, a shallower arch: ' + a5.arch);
+    // the preamp's −55 dB second harmonic and a −60 dB junk line do not vote
+    const junky = classifyFamily([{ freqHz: 1053, amp: 0.001 }, { freqHz: 557, amp: 0.3 }, { freqHz: 1115, amp: 0.002 }, { freqHz: 3959, amp: 1 }, { freqHz: 6134, amp: 0.8 }, { freqHz: 8972, amp: 0.5 }].map((m) => ({ ...m, tauSec: 1, phase: 0 })));
+    assert.equal(junky.kind, 'bar', JSON.stringify(junky));
+    assert.ok(junky.ratios.length === 4 && Math.abs(junky.ratios[0] - 1) < 1e-9, 'the gated lowest mode is the reference: ' + junky.ratios.map((r) => r.toFixed(2)).join(' '));
+    // a wine glass over a table: the 33 ms thump at 350 Hz (Q 36, −27 dB) is not the pitch, the ringing 568 Hz mode is
+    const glass = [{ freqHz: 349.9, amp: 0.045, tauSec: 0.033 }, { freqHz: 568.5, amp: 0.63, tauSec: 0.99 }, { freqHz: 5609, amp: 0.18, tauSec: 0.082 }, { freqHz: 9250, amp: 1, tauSec: 0.015 }].map((m) => ({ ...m, phase: 0 }));
+    assert.ok(Math.abs(fundamentalMode(glass).freqHz - 568.5) < 1e-9, 'pitch is the ringing mode');
+    assert.ok(Math.abs(classifyFamily(glass).ratios[0] - 1) < 1e-9 && classifyFamily(glass).ratios.length === 3, 'and the thump does not vote: ' + classifyFamily(glass).ratios.map((r) => r.toFixed(2)).join(' '));
+    // a real string plucked at a third loses its third and sixth and stays a string
+    const plucked = classifyFamily([1, 2, 4, 5, 7].map((n) => ({ freqHz: 220 * n, tauSec: 1, amp: 1, phase: 0 })));
+    assert.equal(plucked.kind, 'string', JSON.stringify(plucked));
+    // the free bar is still the free bar
+    const free = classifyFamily(FAMILY_RATIOS.bar.map((r) => ({ freqHz: 300 * r, tauSec: 1, amp: 1, phase: 0 })));
+    assert.equal(free.kind, 'bar', JSON.stringify(free));
+    assert.ok(Math.abs(free.arch) < 0.05, 'no arch on the free bar: ' + free.arch);
+  },
+  function aLawThatMovesThePitchLessThanTwelveCentsIsTrackerDrift() {
+    const sr = 48000, f0 = 300, tau = 0.4, seconds = 1.2, n = sr * seconds;
+    const make = (k) => { const x = new Float32Array(n); let phase = 0; for (let i = 0; i < n; i++) { const A = 0.5 * Math.exp(-i / sr / tau); x[i] = A * Math.sin(phase); phase += 2 * Math.PI * (f0 + k * A) / sr; } return x; };
+    const small = fitNonlinearity(make(2), sr, [{ freqHz: f0 + 0.5, tauSec: tau, amp: 0.5, phase: 0 }]);
+    assert.equal(small.length, 0, '2 Hz per unit amplitude moves 300 Hz by 5 cents over the hit: no law');
+    const large = fitNonlinearity(make(40), sr, [{ freqHz: f0 + 10, tauSec: tau, amp: 0.5, phase: 0 }]);
+    assert.equal(large.length, 1, '40 Hz per unit amplitude moves it by a semitone: a law');
+    assert.ok(large[0].cents > 60, 'implied shift recorded: ' + large[0].cents.toFixed(0) + ' cents');
+  },
+  function theHitFinderKeepsTheRingingOneAndTheHighPassDropsRumble() {
+    const sr = 48000, seconds = 3, n = sr * seconds, x = new Float32Array(n);
+    // a 4 Hz rumble as loud as the notes, a short click at 0.5 s, a ringing bar hit at 1.5 s
+    for (let i = 0; i < n; i++) x[i] = 0.3 * Math.sin(2 * Math.PI * 4 * i / sr);
+    for (let i = 0; i < sr * 0.03; i++) x[Math.round(0.5 * sr) + i] += 0.3 * Math.exp(-i / sr / 0.005) * Math.sin(2 * Math.PI * 900 * i / sr);
+    for (let i = 0; i < sr * 1.4; i++) { const t = i / sr; x[Math.round(1.5 * sr) + i] += 0.3 * Math.exp(-t / 0.5) * Math.sin(2 * Math.PI * 600 * t) + 0.2 * Math.exp(-t / 0.3) * Math.sin(2 * Math.PI * 600 * 3.23 * t) + 0.1 * Math.exp(-t / 0.2) * Math.sin(2 * Math.PI * 600 * 6.99 * t); }
+    const hp = highpass(x, sr);
+    let rumble = 0, kept = 0; for (let i = sr; i < sr * 1.4; i++) rumble = Math.max(rumble, Math.abs(hp[i])); for (let i = Math.round(1.5 * sr); i < Math.round(1.6 * sr); i++) kept = Math.max(kept, Math.abs(hp[i]));
+    assert.ok(rumble < 0.01 && kept > 0.4, `rumble ${rumble.toFixed(3)} kept ${kept.toFixed(2)}`);
+    const hits = findHits(hp, sr);
+    assert.ok(hits.length >= 1 && Math.abs(hits[0].start - 1.5) < 0.02, 'the ringing hit ranks first: ' + JSON.stringify(hits.slice(0, 2)));
+    assert.ok(hits[0].ring > 0.8, 'its ring is read as long: ' + hits[0].ring.toFixed(2));
+    const best = bestHit(hp, sr, { tries: 4, name: 'synthetic' });
+    assert.ok(best && Math.abs(best.hit.start - 1.5) < 0.02, 'the physics judge picks the same hit');
+    assert.ok(best.card.family.kind === 'bar' && best.card.family.arch > 0.7, 'and cards it as a tuned bar: ' + JSON.stringify(best.card.family));
+    assert.equal(bestHit(new Float32Array(sr), sr), null, 'silence has no hit');
+  },
+];
+
+// --- instrument panel -------------------------------------------------------
+const instrumentPanelCases = [
+  function aStruckSourceBecomesAModalCardWithReadableRows() {
+    const sr = 48000, n = sr * 3, x = new Float32Array(n);
+    for (let i = 0; i < n; i++) x[i] = 0.2 * Math.sin(2 * Math.PI * 3 * i / sr); // room rumble
+    for (let i = 0; i < sr * 1.4; i++) { const t = i / sr; x[Math.round(1.2 * sr) + i] += 0.3 * Math.exp(-t / 0.5) * Math.sin(2 * Math.PI * 600 * t) + 0.2 * Math.exp(-t / 0.3) * Math.sin(2 * Math.PI * 600 * 3.23 * t) + 0.1 * Math.exp(-t / 0.2) * Math.sin(2 * Math.PI * 600 * 6.99 * t); }
+    const r = cardFromSource(x, sr, { name: 'bar' });
+    assert.equal(r.path, 'struck', r.how);
+    assert.match(r.how, /^struck · hit at 1\.2\d s · \d candidates? judged$/);
+    assert.ok(r.card.family.kind === 'bar' && r.card.family.arch > 0.7, JSON.stringify(r.card.family));
+    const rows = cardRows(r.card);
+    assert.equal(rows.length, r.card.modes.length);
+    assert.match(rows[0].text, /^600\.\d Hz · 1\.00×$/);
+    assert.match(rows[1].text, /^19\d\d Hz · 3\.2\d×$/);
+    assert.ok(rows.every((row) => /^Q \d+ · -?\d+ dB$/.test(row.detail)), JSON.stringify(rows.map((row) => row.detail)));
+    assert.match(cardSummary(r.card), /^D5 · 600\.\d Hz · tuned bar \(\d+%\) · 3 modes · Q \d+–\d+$/);
+  },
+  function aSustainedSourceBecomesASpectralCardAtItsOwnPitch() {
+    const sr = 48000, n = sr * 2, x = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const t = i / sr; let v = 0; for (let h = 1; h <= 8; h++) v += Math.sin(2 * Math.PI * h * 220 * t) / h; x[i] = 0.2 * v * Math.min(1, t / 0.05); }
+    const r = cardFromSource(x, sr, { name: 'tone' });
+    assert.equal(r.path, 'sustained', r.how);
+    assert.match(r.how, /^sustained · voiced (1\.\d|2\.0) s at 2(19|20|21)\.\d Hz from 0\.\d\d s$/);
+    assert.ok(r.card.spectral && r.card.damping.assumed, 'a spectral card with assumed decays');
+    const summary = cardSummary(r.card);
+    assert.match(summary, /^A3 · 2(19|20|21)\.\d Hz · .* · \d+ modes · Q 150 assumed$/, summary);
+    assert.equal(cardNoteName(440), 'A4'); assert.equal(cardNoteName(261.63), 'C4'); assert.equal(cardNoteName(0), '—');
+  },
 ];
 
 const groups = [
+  ['instrument panel', instrumentPanelCases],
   ['found instruments', instrumentCases],
   ['periodicities panel', cyclicPanelCases],
   ['cyclic transcription', cyclicScoreCases],

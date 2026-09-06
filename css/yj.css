@@ -909,3 +909,5 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-cyclic-list li span:last-child { color: var(--yj-ink-dim); text-align: right; }
 .yj-cyclic-list li.is-harmonic { color: var(--yj-ink-dim); }
 .yj-cyclic-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.yj-card-summary { font-family: var(--f-mono); font-size: 10px; color: var(--yj-yellow); margin: 6px 0 0; line-height: 1.5; }
+.yj-card-actions .yj-select { font-size: 10px; max-width: 46%; }

@@ -32,6 +32,7 @@ import { PipelineView, deriveStages } from './app/pipeline-ui.js';
 import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
 import { initCyclicController } from './app/cyclic-controller.js';
+import { initInstrumentController } from './app/instrument-controller.js';
 import { initSourceController } from './app/source-controller.js';
 import { initFieldLibrary } from './app/field-library.js';
 import { initMachineController } from './machine/controller.js';
@@ -242,6 +243,7 @@ ctx.api.beginJob = beginJob;
 const CONTROLLERS = [
   ['bench', initBenchController],
   ['cyclic', initCyclicController],
+  ['instrument', initInstrumentController],
   ['machine', initMachineController],
   ['repair', initRepairController],
   ['wire', initWireController],
@@ -384,6 +386,7 @@ const commandDefs = [
   { id: 'transcribe', group: 'SOURCE', label: 'TRANSCRIBE', note: 'Run Whisper locally on the loaded source', keywords: 'speech words captions ai', button: 'btnTranscribe', reason: 'LOAD AUDIO FIRST', run: () => { jump('transcript'); $('btnTranscribe').click(); } },
   { id: 'measure', group: 'TOOLS', label: 'MEASURE LOUDNESS', note: 'Run the BS.1770 measurement stack', keywords: 'lufs true peak rms crest', button: 'btnMeasure', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnMeasure').click(); } },
   { id: 'cyclic', group: 'TOOLS', label: 'READ PERIODICITIES', note: 'What repeats, at what rate, on which carrier — then transcribe it at those exact rates', keywords: 'cyclic modulation alpha rhythm tempo transcription periodicity', button: 'btnCyclic', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnCyclic').click(); } },
+  { id: 'card', group: 'TOOLS', label: 'CARD THIS SOUND', note: 'Read the loaded sound as an instrument — modes, decays, family — then hear it played at other pitches', keywords: 'instrument card modes modal bell bar string glass bowl strike pluck bow breath found sound physical synthesis', button: 'btnCard', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnCard').click(); } },
   { id: 'harvest', group: 'TOOLS', label: 'HARVEST AUTO-KIT', note: 'Mine the source for a diverse labeled kit', keywords: 'kick snare hat bass vocal chops', button: 'btnHarvest', reason: 'WAIT FOR THE BEATMAP', run: () => { jump('machine', 'slice'); $('btnHarvest').click(); } },
   { id: 'render-rack', group: 'OUTPUT', label: 'RENDER RACK', note: 'Print the active repair and mastering chain', keywords: 'process bounce effects', button: 'btnRender', reason: 'LOAD AUDIO FIRST', run: () => { jump('rack'); $('btnRender').click(); } },
   { id: 'export-wav24', group: 'OUTPUT', label: 'EXPORT WAV · 24 BIT', note: 'Export the fresh render or edited original', keywords: 'download audio high resolution', button: 'btnWav24', reason: 'LOAD AUDIO FIRST', run: () => $('btnWav24').click() },

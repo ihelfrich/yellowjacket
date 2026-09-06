@@ -17,6 +17,18 @@ A card is one analysed object at one size. JSON, versioned, editable.
 
 ## Reference ratio sets (`FAMILY_RATIOS`)
 
+`tunedBar` (1 : 3.23 : 6.99 : 10.51 : 15.75) is measured, not derived:
+University of Iowa MIS orchestral bells C5–B5, anechoic, 24 cards over two
+mallets, 2026-09-06. It is not a family of its own: `bar` is fitted with one
+parameter, `family.arch`, interpolating log-ratios from the free bar (0) to
+this set (1) on the first two overtones. Only modes within 40 dB of the
+strongest vote on the family (`RATIO_GATE_DB`), and `cardPitchHz` is the
+lowest of those. A string hypothesis needs at least half its comb present.
+Confidence is scaled by the share of reference slots a measured mode fills.
+`nonlinearity[].cents` records the pitch shift a law implies over the hit's
+own amplitude range; laws under 12 cents are dropped as tracker drift.
+
+
 Ratios of the lowest modes to the lowest, from N. H. Fletcher and T. D.
 Rossing, *The Physics of Musical Instruments*, 2nd ed. (Springer, 1998):
 free–free bar (ch. 2, Euler–Bernoulli: 1 : 2.756 : 5.404 : 8.933 : 13.34 : 18.64);
