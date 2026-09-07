@@ -43,6 +43,8 @@ import { CardVoiceCache, cardNoteKey, noteSeconds, dynamicsBucket, trackNotes, w
 import { InstrumentPool } from '../js/instrument/pool.js';
 import { cardScale, cardScaleIntervals, scaleLine, cardDisplayName } from '../js/app/instrument-controller.js';
 import { paragraphsOf, confirmAct } from '../js/app/confirm.js';
+import { createScore, addPart, addNote, addMarker, scoreSeconds, scoreStats, scoreFromSmf, hzOfCents, midiOfHz } from '../js/score/model.js';
+import { renderScore as renderFoundScore, renderSeconds, panGains, soundingRmsDb, ScoreRenderCache } from '../js/score/render.js';
 import { scaleSpec, applyCustomScale, scaleNote as studioScaleNote, createStudio as createStudioForScales } from '../js/studio/model.js';
 import { applyCardInstrument, cardInstrumentName, applyStudioSnapshot as applyStudioSnapshotForCards, applyInstrumentPreset as applyPresetForCards } from '../js/studio/model.js';
 import { FOUND_CARDS } from '../js/studio/found-cards.js';
@@ -6608,7 +6610,80 @@ const reviewFixCases = [
   },
 ];
 
+// --- score model + offline renderer -------------------------------------------
+const scoreCases = [
+  function aScoreHoldsPartsAndNotesInHertz() {
+    const s = createScore({ title: 't' });
+    const p = addPart(s, { id: 'bell', card: bellCard(), excitation: 'strike', pan: -0.5, rmsDb: -18 });
+    const n = addNote(p, { t: 1, midi: 69, velocity: 0.9, seconds: 0.5 });
+    assert.ok(Math.abs(n.hz - 440) < 1e-9); assert.equal(n.velocity, 0.9);
+    addNote(p, { t: 2, hz: hzOfCents(440, 702), seconds: 1 });
+    assert.ok(Math.abs(p.notes[1].hz - 660.0) < 0.1, 'a just fifth of 440 in cents: ' + p.notes[1].hz.toFixed(2));
+    assert.ok(Math.abs(midiOfHz(880) - 81) < 1e-9);
+    addMarker(s, 4, 'B'); addMarker(s, 0, 'A');
+    assert.deepEqual(s.markers.map((m) => m.label), ['A', 'B']);
+    assert.equal(scoreSeconds(s), 3 + 4);
+    const st = scoreStats(s);
+    assert.equal(st.notes, 2); assert.equal(st.parts[0].id, 'bell'); assert.ok(st.parts[0].highHz > st.parts[0].lowHz);
+    assert.throws(() => addPart(s, { card: null }), /needs a card/);
+    assert.throws(() => addNote(p, { t: -1, midi: 60 }), /needs t/);
+    assert.equal(addPart(s, { card: bellCard(), excitation: 'nope' }).excitation, 'strike');
+  },
+  function aMidiFileBecomesAScoreWithAssignedCards() {
+    const song = { division: 480, usPerQuarter: 500000, tracks: [
+      { name: 'bells', notes: [{ note: 69, channel: 0, velocity: 127, startTicks: 480, durationTicks: 240 }, { note: 72, channel: 0, velocity: 64, startTicks: 960, durationTicks: 480 }] },
+      { name: 'empty', notes: [] },
+      { name: 'buzz', notes: [{ note: 52, channel: 3, velocity: 100, startTicks: 0, durationTicks: 1920 }] },
+      { name: 'lost', notes: [{ note: 60, channel: 9, velocity: 100, startTicks: 0, durationTicks: 480 }] },
+    ] };
+    const { score, skipped } = scoreFromSmf(song, { 0: { card: bellCard(), excitation: 'strike', pan: -0.3 }, ch3: { card: bellCard(), excitation: 'bow', rmsDb: -24 } });
+    assert.equal(score.parts.length, 2); assert.deepEqual(skipped.map((s) => s.track), [3]);
+    const bells = score.parts[0];
+    assert.equal(bells.id, 'bells'); assert.equal(bells.pan, -0.3);
+    assert.ok(Math.abs(bells.notes[0].t - 0.5) < 1e-9 && Math.abs(bells.notes[0].seconds - 0.25) < 1e-9, 'ticks become seconds at the file tempo');
+    assert.equal(bells.notes[0].velocity, 1); assert.ok(Math.abs(bells.notes[1].velocity - 64 / 127) < 1e-9);
+    assert.equal(score.parts[1].excitation, 'bow'); assert.equal(score.parts[1].rmsDb, -24);
+  },
+  function renderLengthsAndPanFollowTheRules() {
+    const card = bellCard();
+    assert.equal(renderSeconds(card, 'strike', 9), 2, 'three times the 0.6 s ring');
+    assert.equal(renderSeconds(card, 'bow', 0.3), 1); assert.equal(renderSeconds(card, 'breath', 30), 16, 'driven notes cap at 16 s');
+    const c = panGains(0); assert.ok(Math.abs(c.left - c.right) < 1e-9 && Math.abs(c.left * c.left + c.right * c.right - 1) < 1e-9, 'equal power');
+    assert.ok(panGains(-1).left > 0.999 && panGains(1).right > 0.999);
+    assert.equal(soundingRmsDb(new Float32Array(100)), -Infinity);
+  },
+  async function theRendererPlacesLevelsNormalisesAndReleases() {
+    const card = bellCard();
+    const s = createScore({ title: 'smoke', sampleRate: 48000 });
+    const bell = addPart(s, { id: 'bell', card, excitation: 'strike', pan: 0, rmsDb: -20 });
+    addNote(bell, { t: 0.5, midi: 69, velocity: 1, seconds: 0.25 });
+    addNote(bell, { t: 1.5, midi: 76, velocity: 0.5, seconds: 0.25 });
+    const buzz = addPart(s, { id: 'buzz', card, excitation: 'bow', pan: 0.6, rmsDb: -26 });
+    addNote(buzz, { t: 1, midi: 57, velocity: 0.8, seconds: 1 });
+    const seen = [];
+    const out = await renderFoundScore(s, { onProgress: (d, a, id) => seen.push([d, a, id]), tail: 1 });
+    assert.equal(out.sampleRate, 48000); assert.equal(out.left.length, Math.ceil((2 + 1) * 96000) / 2, 'length = last note-off + tail, resampled');
+    assert.equal(seen.length, 3); assert.deepEqual(seen[2], [3, 3, 'buzz']);
+    let nan = 0, peak = 0; for (let i = 0; i < out.left.length; i++) { if (Number.isNaN(out.left[i]) || Number.isNaN(out.right[i])) nan++; peak = Math.max(peak, Math.abs(out.left[i]), Math.abs(out.right[i])); }
+    assert.equal(nan, 0); assert.ok(peak > 0.01 && peak < 4, 'audible: ' + peak.toFixed(3));
+    assert.ok(out.parts.every((p) => Number.isFinite(p.rmsDb) && p.gain > 0), JSON.stringify(out.parts));
+    // a lone bowed part at −26 dB lands at −26 dB (−3 dB per side from the centre pan law, here pan 0.6)
+    const solo = createScore({ sampleRate: 96000 }); const sp = addPart(solo, { id: 'solo', card, excitation: 'bow', pan: 0, rmsDb: -26 }); addNote(sp, { t: 0.2, midi: 57, velocity: 0.8, seconds: 1 });
+    const r = await renderFoundScore(solo, { tail: 0.5 });
+    const lr = soundingRmsDb(r.left);
+    assert.ok(Math.abs(lr - (-26 + 20 * Math.log10(panGains(0).left))) < 0.6, 'normalised: ' + lr.toFixed(2));
+    // the driven note is released at note-off: 0.3 s after it, nothing but the tail of the release
+    const after = r.left.subarray(Math.round(1.6 * 96000), Math.round(1.7 * 96000));
+    let ap = 0; for (const v of after) ap = Math.max(ap, Math.abs(v));
+    assert.ok(ap < 0.01, 'released: ' + ap.toFixed(4));
+    const cache = new ScoreRenderCache();
+    const a = await cache.get(card, 'strike', 440, 0.9, 0.25); const b = await cache.get(card, 'strike', 440, 0.8, 5);
+    assert.strictEqual(a, b, 'same dynamic bucket and ring → one render');
+  },
+];
+
 const groups = [
+  ['score', scoreCases],
   ['review fixes', reviewFixCases],
   ['modules parse', modulesParseCases],
   ['studio cards', studioCardCases],
