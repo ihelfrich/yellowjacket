@@ -45,6 +45,10 @@ import { cardScale, cardScaleIntervals, scaleLine, cardDisplayName } from '../js
 import { paragraphsOf, confirmAct } from '../js/app/confirm.js';
 import { createScore, addPart, addNote, addMarker, scoreSeconds, scoreStats, scoreFromSmf, hzOfCents, midiOfHz, cardsForStudio } from '../js/score/model.js';
 import { renderScore as renderFoundScore, renderSeconds, panGains, soundingRmsDb, ScoreRenderCache } from '../js/score/render.js';
+import * as movement1 from '../js/score/symphony/movement-1.js';
+import * as movement2 from '../js/score/symphony/movement-2.js';
+import * as movement3 from '../js/score/symphony/movement-3.js';
+import * as movement4 from '../js/score/symphony/movement-4.js';
 import { scaleSpec, applyCustomScale, scaleNote as studioScaleNote, createStudio as createStudioForScales } from '../js/studio/model.js';
 import { applyCardInstrument, cardInstrumentName, applyStudioSnapshot as applyStudioSnapshotForCards, applyInstrumentPreset as applyPresetForCards } from '../js/studio/model.js';
 import { FOUND_CARDS } from '../js/studio/found-cards.js';
@@ -6654,6 +6658,35 @@ const scoreCases = [
     assert.equal(cards[0].excitation, 'strike'); assert.equal(cards[0].pan, -0.5); assert.equal(cards[0].rmsDb, -20 - 3 + 7);
     assert.equal(cards[3].excitation, 'bow');
     assert.deepEqual(skipped.map((s) => [s.track, s.part, s.notes]), [[2, 2, 2]], 'the synth part is skipped by track and part');
+  },
+  function thirteenCardsIsDeterministicAndMatchesItsOwnFacts() {
+    const ids = ['iowa-bells-brass-Cs5', 'iowa-bells-plastic-ff-Cs5', 'iowa-bells-plastic-ff-E5', 'iowa-bells-plastic-ff-A5', 'carillon-bell', 'freesound-wineglass', 'hiawatha-vowel', 'fdr-vowel', 'opz-thud', 'commons-bell-15cm', 'uvb76-buzz', 'wwv-tone', 'ory-chord'];
+    const cards = {};
+    for (const id of ids) cards[id] = JSON.parse(readFileSync(new URL('../docs/lab/cards/' + id + '.json', import.meta.url), 'utf8'));
+    const design = JSON.parse(readFileSync(new URL('../docs/lab/symphony/design.json', import.meta.url), 'utf8'));
+    let total = 0;
+    for (const [i, mod] of [movement1, movement2, movement3, movement4].entries()) {
+      const d = design.movements[i];
+      assert.equal(mod.SECONDS, d.seconds, 'movement ' + (i + 1) + ' length as designed');
+      assert.ok(d.title.startsWith(mod.TITLE), 'title ' + mod.TITLE + ' opens the design\'s ' + d.title);
+      const a = mod.movement({ cards }), b = mod.movement({ cards });
+      assert.deepEqual(scoreStats(a), scoreStats(b), 'deterministic');
+      const st = scoreStats(a);
+      assert.equal(st.parts.length, mod.FACTS.parts, 'parts as the builder measured');
+      const factNotes = typeof mod.FACTS.notes === 'number' ? mod.FACTS.notes : Object.values(mod.FACTS.notes).reduce((s, v) => s + v, 0);
+      assert.equal(st.notes, factNotes, 'notes as the builder measured');
+      if (typeof mod.FACTS.notes === 'object') for (const p of st.parts) if (p.id in mod.FACTS.notes) assert.equal(p.notes, mod.FACTS.notes[p.id], p.id + ' count');
+      let last = 0, bad = 0;
+      for (const p of a.parts) {
+        assert.ok(ids.includes(Object.keys(cards).find((k) => cards[k] === p.card)), 'a design card on every part');
+        for (const n of p.notes) { last = Math.max(last, n.t); if (!(n.t >= 0) || !(n.hz > 20) || !(n.hz < 20000) || !(n.seconds > 0) || Number.isNaN(n.velocity)) bad++; }
+      }
+      assert.equal(bad, 0, 'every note well formed');
+      assert.ok(Math.abs(last - mod.FACTS.lastOnsetSec) < 0.01, 'last onset ' + last + ' as the builder measured');
+      assert.ok(last < mod.SECONDS, 'no onset after the movement ends');
+      total += mod.SECONDS;
+    }
+    assert.equal(total, 780, 'thirteen minutes');
   },
   function renderLengthsAndPanFollowTheRules() {
     const card = bellCard();
