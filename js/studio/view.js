@@ -81,10 +81,13 @@ function range(label, value, min, max, step, format, onChange) {
 
 export class StudioView extends EventTarget {
   constructor(host) {
-    super(); injectStyle(); this.host = host; this.studio = null; this.selectedTrack = 0;
+    super(); injectStyle(); this.host = host; this.studio = null; this.selectedTrack = 0; this.importedName = null;
     this.page = 0; this.note = 48; this.chord = 'single'; this.velocity = 0.82; this.gate = 0.9;
     this.keyboardBase = 48; this.playing = false; this.activeStep = -1;
   }
+
+  /** The name of the MIDI file last dropped on the bench, for RENDER FILE. */
+  setImported(name) { this.importedName = name || null; if (this.studio) this.render(); }
 
   setStudio(studio) { this.studio = studio; this.page = Math.min(this.page, Math.max(0, studio.bars - 1)); this.render(); }
   setPlaying(playing) { this.playing = !!playing; this._paintTransport(); }
@@ -117,11 +120,14 @@ export class StudioView extends EventTarget {
     const idea = button('IDEA', 'yj-btn yj-btn-primary'); idea.id = 'btnStudioIdea'; idea.title = 'Write a fresh arrangement in the selected key and scale'; idea.addEventListener('click', () => this._emit('idea'));
     const midi = button('MIDI OUT', 'yj-btn'); midi.id = 'btnStudioMidi'; midi.title = 'Export all six instruments as a Standard MIDI File'; midi.addEventListener('click', () => this._emit('midiexport'));
     const bounce = button('BOUNCE WAV', 'yj-btn'); bounce.id = 'btnStudioBounce'; bounce.addEventListener('click', () => this._emit('bounce'));
+    const renderFile = button('RENDER FILE', 'yj-btn'); renderFile.id = 'btnStudioRenderFile';
+    renderFile.title = this.importedName ? 'Render every bar of “' + this.importedName + '” offline with the cards on these parts (synth parts are skipped).' : 'Drop a .mid on the bench first: RENDER FILE plays the whole file, not just four bars, with the cards on these parts.';
+    renderFile.disabled = !this.importedName; renderFile.addEventListener('click', () => this._emit('renderfile'));
     midi.disabled = !hasNotes; bounce.disabled = !hasNotes;
     const swing = range('SWING', this.studio.swing, 50, 75, 1, (v) => v + '%', (value) => this._emit('studio', { key: 'swing', value }));
     const master = range('MASTER', this.studio.masterDb, -18, 3, 1, (v) => v + ' dB', (value) => this._emit('studio', { key: 'masterDb', value }));
     const readout = document.createElement('div'); readout.className = 'yj-studio-readout'; readout.textContent = KEY_NAMES[this.studio.keyRoot] + ' ' + scaleSpec(this.studio).name + ' · 6 PARTS';
-    row.append(play, stop, bpmLabel, bpm, bars, key, scale, idea, metro, midi, bounce, swing, master, readout);
+    row.append(play, stop, bpmLabel, bpm, bars, key, scale, idea, metro, midi, bounce, renderFile, swing, master, readout);
     const progress = document.createElement('div'); progress.className = 'yj-studio-progress'; progress.style.setProperty('--steps', this.studio.bars * 16);
     for (let i = 0; i < this.studio.bars * 16; i++) { const dot = document.createElement('span'); dot.className = 'yj-studio-progress-step'; dot.dataset.progressStep = i; progress.appendChild(dot); }
     wrap.append(row, progress); return wrap;

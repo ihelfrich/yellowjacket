@@ -8,6 +8,8 @@ import { FOUND_CARDS, foundCardById, foundCardUrl } from './found-cards.js';
 import { cardPitchHz } from '../instrument/family.js';
 import { studioMidiFile } from './midi.js';
 import { parseSmf, smfToStudio } from '../midi/smf.js';
+import { cardsForStudio, scoreFromSmf, scoreStats } from '../score/model.js';
+import { renderScore, ScoreRenderCache } from '../score/render.js';
 import { bounceSampleRate } from './engine.js';
 import { encodeWav, download } from '../export.js';
 
@@ -243,10 +245,14 @@ export function initStudioController(ctx) {
   // A .mid dropped on the bench fills STUDIO's parts. Only the parts the file
   // actually carries are overwritten: importing a two-part sketch should not
   // silently erase four parts of existing work, and UNDO covers the rest.
+  let lastMidi = null; // the whole file, for RENDER FILE
   ctx.api.importMidiFile = async (file) => {
     let imported;
     try {
-      imported = smfToStudio(parseSmf(new Uint8Array(await file.arrayBuffer())));
+      const song = parseSmf(new Uint8Array(await file.arrayBuffer()));
+      imported = smfToStudio(song);
+      lastMidi = { song, name: file.name };
+      view.setImported(file.name);
     } catch (error) {
       statusFault('MIDI FAULT · ' + (error && error.message ? error.message : 'unreadable file'));
       return;
@@ -270,8 +276,34 @@ export function initStudioController(ctx) {
     const parts = imported.tracks.length;
     status('MIDI IN · ' + parts + (parts === 1 ? ' PART' : ' PARTS')
       + ' · ' + Math.round(imported.bpm) + ' BPM'
-      + (imported.dropped ? ' · ' + imported.dropped + ' NOTES PAST 4 BARS DROPPED' : ''));
+      + (imported.dropped ? ' · ' + imported.dropped + ' NOTES PAST 4 BARS · RENDER FILE PLAYS ALL OF IT' : ''));
   };
+
+  // The whole MIDI file, every bar, rendered offline by the physics with the
+  // cards on STUDIO's parts. Synth parts have no offline renderer yet and are
+  // skipped, by name, in the status.
+  let rendering = false;
+  view.addEventListener('renderfile', async () => {
+    if (!lastMidi || rendering) return;
+    const { cards, skipped } = cardsForStudio(lastMidi.song, studio.tracks);
+    if (!Object.keys(cards).length) { statusFault('RENDER FILE · put a card on a part first (a ◇ found card, or → STUDIO from the INSTRUMENT panel)'); return; }
+    const { score } = scoreFromSmf(lastMidi.song, cards, { title: lastMidi.name, sampleRate: store.runtime.sampleRate || 48000 });
+    const stats = scoreStats(score);
+    rendering = true;
+    status('RENDER FILE · ' + stats.notes + ' NOTES · ' + stats.seconds.toFixed(0) + ' s', true);
+    try {
+      const cache = new ScoreRenderCache((inputs) => instrumentPool.render(inputs));
+      let shown = 0;
+      const out = await renderScore(score, { cache, onProgress: (done, all, id) => { if (done - shown >= Math.max(1, Math.floor(all / 50)) || done === all) { shown = done; status('RENDER FILE · ' + done + '/' + all + ' · ' + id, done < all); } } });
+      const buffer = { numberOfChannels: 2, sampleRate: out.sampleRate, length: out.left.length, duration: out.left.length / out.sampleRate, getChannelData: (i) => (i ? out.right : out.left) };
+      const base = String(lastMidi.name).replace(/\.[^.]+$/, '').replace(/[^a-z0-9_-]+/gi, '-');
+      download(encodeWav(buffer, 24), base + '.score.wav', 'audio/wav');
+      status('RENDER FILE · ' + buffer.duration.toFixed(1) + ' s · 24-BIT · ' + Math.round(out.sampleRate / 1000) + ' kHz · ' + Object.keys(cards).length + ' CARD PART' + (Object.keys(cards).length === 1 ? '' : 'S')
+        + (skipped.length ? ' · SKIPPED ' + skipped.map((s) => s.name).join(', ') + ' (SYNTH)' : '') + ' · UNMASTERED, THE RACK CAN');
+    } catch (error) {
+      statusFault('RENDER FILE FAULT · ' + (error && error.message ? error.message : error));
+    } finally { rendering = false; }
+  });
 
   ctx.api.toggleStudio = () => studioEngine.toggle();
   ctx.api.stopStudio = () => studioEngine.stop();

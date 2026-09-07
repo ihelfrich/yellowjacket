@@ -57,6 +57,26 @@ export function scoreStats(score) {
 }
 
 /**
+ * STUDIO's six parts against a parsed MIDI file, the way smfToStudio folds it:
+ * the k-th track that carries notes plays on part k. Parts that carry a card
+ * become card specs keyed by the track's index in `song.tracks`; synth parts
+ * are reported in `skipped` (the offline renderer plays cards only).
+ * → { cards, skipped: [{ track, part, name, notes }] }
+ */
+export function cardsForStudio(song, studioTracks, { rmsDb = -20 } = {}) {
+  const cards = {}, skipped = [];
+  let k = 0;
+  (song.tracks || []).forEach((track, index) => {
+    if (!track.notes || !track.notes.length) return;
+    const part = studioTracks[k++];
+    if (!part) return;
+    if (part.card && part.card.card) cards[index] = { card: part.card.card, excitation: part.card.excitation, pan: part.pan || 0, rmsDb: rmsDb + (part.gainDb || 0) + 7 };
+    else skipped.push({ track: index, part: k, name: part.name, notes: track.notes.length });
+  });
+  return { cards, skipped };
+}
+
+/**
  * A parsed Standard MIDI File (js/midi/smf.js parseSmf) becomes a score, one
  * part per MIDI track or channel that carries notes, each played by the card
  * assigned in `cards` ({ [trackIndexOrChannel]: { card, excitation, pan, rmsDb } }).

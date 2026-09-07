@@ -43,7 +43,7 @@ import { CardVoiceCache, cardNoteKey, noteSeconds, dynamicsBucket, trackNotes, w
 import { InstrumentPool } from '../js/instrument/pool.js';
 import { cardScale, cardScaleIntervals, scaleLine, cardDisplayName } from '../js/app/instrument-controller.js';
 import { paragraphsOf, confirmAct } from '../js/app/confirm.js';
-import { createScore, addPart, addNote, addMarker, scoreSeconds, scoreStats, scoreFromSmf, hzOfCents, midiOfHz } from '../js/score/model.js';
+import { createScore, addPart, addNote, addMarker, scoreSeconds, scoreStats, scoreFromSmf, hzOfCents, midiOfHz, cardsForStudio } from '../js/score/model.js';
 import { renderScore as renderFoundScore, renderSeconds, panGains, soundingRmsDb, ScoreRenderCache } from '../js/score/render.js';
 import { scaleSpec, applyCustomScale, scaleNote as studioScaleNote, createStudio as createStudioForScales } from '../js/studio/model.js';
 import { applyCardInstrument, cardInstrumentName, applyStudioSnapshot as applyStudioSnapshotForCards, applyInstrumentPreset as applyPresetForCards } from '../js/studio/model.js';
@@ -6643,6 +6643,17 @@ const scoreCases = [
     assert.ok(Math.abs(bells.notes[0].t - 0.5) < 1e-9 && Math.abs(bells.notes[0].seconds - 0.25) < 1e-9, 'ticks become seconds at the file tempo');
     assert.equal(bells.notes[0].velocity, 1); assert.ok(Math.abs(bells.notes[1].velocity - 64 / 127) < 1e-9);
     assert.equal(score.parts[1].excitation, 'bow'); assert.equal(score.parts[1].rmsDb, -24);
+  },
+  function studioPartsMapOntoTheTracksOfAFile() {
+    const song = { tracks: [{ name: 'a', notes: [{ note: 60 }] }, { name: 'meta', notes: [] }, { name: 'b', notes: [{ note: 62 }, { note: 64 }] }, { name: 'c', notes: [{ note: 65 }] }] };
+    const studio = createStudioForScales();
+    applyCardInstrument(studio.tracks[0], bellCard(), 'strike', 'BELL'); studio.tracks[0].pan = -0.5; studio.tracks[0].gainDb = -3;
+    applyCardInstrument(studio.tracks[2], bellCard(), 'bow', 'BOW');
+    const { cards, skipped } = cardsForStudio(song, studio.tracks);
+    assert.deepEqual(Object.keys(cards), ['0', '3'], 'the k-th track with notes plays on part k, keyed by track index');
+    assert.equal(cards[0].excitation, 'strike'); assert.equal(cards[0].pan, -0.5); assert.equal(cards[0].rmsDb, -20 - 3 + 7);
+    assert.equal(cards[3].excitation, 'bow');
+    assert.deepEqual(skipped.map((s) => [s.track, s.part, s.notes]), [[2, 2, 2]], 'the synth part is skipped by track and part');
   },
   function renderLengthsAndPanFollowTheRules() {
     const card = bellCard();
