@@ -37,6 +37,14 @@ for (const n of which) {
   const t0 = Date.now();
   let shown = 0;
   const out = await renderScore(score, { tail: Math.max(0, mod.SECONDS - stats.seconds), onProgress: (d, a, id) => { if (d - shown >= Math.max(1, Math.floor(a / 10)) || d === a) { shown = d; process.stdout.write(`  ${d}/${a} ${id}\n`); } } });
+  // The sum of RMS-normalised parts can pass full scale; a 24-bit file would
+  // clamp it before the limiter ever saw it. The raw file leaves 3 dB of
+  // headroom (a pure gain; the master re-levels).
+  let peak = 0;
+  for (const c of [out.left, out.right]) for (let i = 0; i < c.length; i++) { const v = Math.abs(c[i]); if (v > peak) peak = v; }
+  const headroom = peak > 0 ? Math.min(1, Math.pow(10, -3 / 20) / peak) : 1;
+  if (headroom < 1) for (const c of [out.left, out.right]) for (let i = 0; i < c.length; i++) c[i] *= headroom;
+  console.log(`  raw peak ${(20 * Math.log10(Math.max(1e-9, peak))).toFixed(1)} dBFS → ${headroom < 1 ? 'scaled by ' + (20 * Math.log10(headroom)).toFixed(1) + ' dB to −3 dBFS' : 'left as is'}`);
   const raw = resolve(outDir, `movement-${n}.wav`);
   writeWav24(raw, [out.left, out.right], out.sampleRate);
   writeFileSync(resolve(outDir, `movement-${n}.json`), JSON.stringify({ title: mod.TITLE, designSeconds: mod.SECONDS, stats, parts: out.parts, renderSeconds: (Date.now() - t0) / 1000 }, null, 1));
