@@ -1,0 +1,539 @@
+{
+ "title": "Thirteen Cards",
+ "premise": "A symphony in the classical four-movement plan, each movement tuned by one measured object and the finale tuned by the only card that was itself an orchestra: the 1921 Kid Ory chord, whose dissonance minima sit within 12 cents of 12-TET at eleven of twelve degrees, so every earlier movement's own-scale motif can be projected onto it by one nearest-degree rule. The four Iowa/glass bars are the strings, the two vowels the winds, the buzzer and the sine the brass, the OP-Z kick the one fixed point at 182.0 Hz. Three grafts from the rival designs are built in: YIELD (a card struck at its own measured pitch, then at the nearest host degree, used only where the disagreement exceeds 50 cents: carillon 160, E5 129, buzzer 100), CLIMB stopping at BEAT (the buzzer walks its own scale to its 976-cent degree, 588.7 Hz, and meets the WWV sine at 587.3 Hz beating at 1.4 Hz in III; the President at 206.5 Hz meets the band at 207.8 Hz beating at 1.3 Hz to end IV), and excitation-by-decay with explicit level offsets for sub-0.1 s strikers. Total 780 s (13:00): 240 + 180 + 150 + 210. No seeded randomness remains: every event is a closed-form function of bar and beat.",
+ "movements": [
+  {
+   "number": 1,
+   "title": "Two Metals (Allegro, sonata)",
+   "seconds": 240,
+   "tempoBpm": 96,
+   "meter": "4/4 (beat 0.625 s, bar 2.5 s, 96 bars)",
+   "tonalCenterHz": 557.3,
+   "scale": {
+    "sourceCardId": "iowa-bells-brass-Cs5",
+    "cents": [
+     0,
+     429,
+     758,
+     812,
+     1098
+    ],
+    "note": "The brass bell's own dissonance minima; octave period 1200 is assumed (the card certifies minima within one octave, not octave equivalence). The bar law keeps partial ratios under transposition, so this scale is consonant with THIS bell at every root; the plastic-Cs5 card is the same bell (arch 1.06, minima 387/659/758/1100 share 758 and 1098) so it carries the canon; E5 and A5 (different arches) are restricted to octave doublings, tonic/octave punctuations and YIELD entries. The 758-cent degree is the dominant: exposition S2 at root 863.4 Hz = 557.3*2^(758/1200); recap S2 at 557.3. Tempo 96: four beats = 2.5 s, the brass tau 2.62 s, so the bell always rings one bar."
+   },
+   "parts": [
+    {
+     "role": "first subject lead; development statements and climb",
+     "cardId": "iowa-bells-brass-Cs5",
+     "excitation": "strike",
+     "lowHz": 525,
+     "highHz": 1727,
+     "pan": -0.35,
+     "dynamics": "velocity 1.0 on beat 1, 0.75 on beat 3, 0.5 elsewhere; seconds 4 (rings by physics, tau 2.62 s); rmsDb -18"
+    },
+    {
+     "role": "first subject answer (retrograde), 1-beat canon, development inversion and climb",
+     "cardId": "iowa-bells-plastic-ff-Cs5",
+     "excitation": "strike",
+     "lowHz": 414,
+     "highHz": 1727,
+     "pan": 0.35,
+     "dynamics": "same beat rule; climb entries 0.75 first note then 0.5; rmsDb -19"
+    },
+    {
+     "role": "octave doubling of the brass line (fold rule keeps it under 2100 Hz); YIELD 662.8 -> 714.0; block punctuation",
+     "cardId": "iowa-bells-plastic-ff-E5",
+     "excitation": "strike",
+     "lowHz": 557,
+     "highHz": 2100,
+     "pan": 0.6,
+     "dynamics": "0.5 when doubling; 0.75 on the yield; 1.0 on punctuations and coda beat 1 then 0.75/0.5/0.25; rmsDb -21"
+    },
+    {
+     "role": "block-root punctuation; coda chord top at hz(5) = 1114.6",
+     "cardId": "iowa-bells-plastic-ff-A5",
+     "excitation": "strike",
+     "lowHz": 518,
+     "highHz": 1115,
+     "pan": -0.6,
+     "dynamics": "1.0 on punctuations; coda 1.0/0.75/0.5/0.25; rmsDb -21"
+    },
+    {
+     "role": "transition and retransition bell; YIELD 787.1 -> 863.4 (+160 cents) opens each transition",
+     "cardId": "carillon-bell",
+     "excitation": "strike",
+     "lowHz": 557,
+     "highHz": 1727,
+     "pan": -0.7,
+     "dynamics": "velocity 1.0 on beat 1, 0.75 on beat 3; yield strikes 0.75; rmsDb -20"
+    },
+    {
+     "role": "second subject, bowed; Motif B in augmentation under the development",
+     "cardId": "freesound-wineglass",
+     "excitation": "bow",
+     "lowHz": 259,
+     "highHz": 814,
+     "pan": 0.5,
+     "dynamics": "velocity 0.5 (0.75 in the augmented S2 statement); seconds = beats*0.625 + 0.2 overlap; rmsDb -22"
+    },
+    {
+     "role": "second subject double (octave below in exposition, unison in recap with fold under 494 Hz); dominant pedal 334.5 Hz in the retransition",
+     "cardId": "hiawatha-vowel",
+     "excitation": "breath",
+     "lowHz": 139,
+     "highHz": 494,
+     "pan": 0.2,
+     "dynamics": "velocity 0.5; pedal 0.75; rmsDb -23"
+    },
+    {
+     "role": "quiet root under S2; dominant pedal 167.25 Hz in the retransition",
+     "cardId": "fdr-vowel",
+     "excitation": "breath",
+     "lowHz": 139,
+     "highHz": 216,
+     "pan": -0.2,
+     "dynamics": "velocity 0.25 (S2), 0.75 (retransition); rmsDb -24"
+    },
+    {
+     "role": "pulse: transition, codetta, block punctuations, retransition crescendo, final stroke",
+     "cardId": "opz-thud",
+     "excitation": "strike",
+     "lowHz": 182,
+     "highHz": 182,
+     "pan": 0,
+     "dynamics": "0.5 pulse; punctuations 0.75; retransition 0.25 -> 1.0 by bar; final stroke 1.0; rmsDb -20 (a 0.09 s striker: 4 dB under the ringing strikes so per-part RMS over sounding samples cannot promote it)"
+    },
+    {
+     "role": "coda tick, 3 x four-times-tonic",
+     "cardId": "commons-bell-15cm",
+     "excitation": "strike",
+     "lowHz": 2229.2,
+     "highHz": 2229.2,
+     "pan": 0.8,
+     "dynamics": "velocity 0.25; rmsDb -30"
+    }
+   ],
+   "form": "Exposition 0-80 s: S1 bars 1-12 (0-30 s: Motif A and retrograde alternating brass/plastic-Cs5 with offsets [0,2,0,-1], then 1-beat canon with E5 octave doubling); transition bars 13-16 (30-40 s: thud pulse; carillon YIELD 787.1 -> 863.4 in bar 13, then walks degrees 1, 2, 7 to the dominant octave 1726.8); S2 bars 17-28 (40-70 s: bowed glass Motif B at root 431.7 with hiawatha an octave below one beat late, then augmentation, glass and hiawatha holding bars 27-28, fdr entering at 60 s); codetta bars 29-32 (70-80 s: Motif A / A' at the dominant 863.4). Development 80-140 s: three 8-bar blocks (bars 33-40, 41-48, 49-56) at roots 863.4, 668.9, 518.2 (one, two, three dominants), each block: statement and inversion of fragment A3 (bar 1), a YIELD entry (bar 2: E5 in block 1, carillon in block 2, both in block 3), a CLIMB stretto of A3 rising one degree per entry every two beats (bars 3-4), Motif A / A' (bars 5-6), 1-beat canon (bar 7), a tonic-and-octave punctuation with the thud (bar 8); glass bows Motif B augmented at half the block root under bars 1-4 of each block. Retransition bars 57-60 (140-150 s): thud eighth-notes crescendo, carillon dominant pedal 1726.8, both voices holding 758-cent degrees (fdr 167.25, hiawatha 334.5). Recapitulation 150-220 s: S1 bars 61-72 (150-180 s) in the full canon texture from the first bar; transition bars 73-76 (180-190 s: carillon YIELD again, then degrees 2, 1, 0, arriving on the tonic); S2 bars 77-88 (190-220 s) at the tonic, glass root 278.65, hiawatha in unison (folded under 494 Hz), fdr at 139.3 from 210 s. Coda 220-240 s: four tonic chords dying by velocity (bars 89, 91, 93, 95), commons-bell ticks at 2229.2 between them, thud alone at 237.5 s.",
+   "motifs": "Motif A (S1 head): degrees [0,1,2,4,2] = cents [0,429,758,1098,758] relative to its root, beats [1,0.5,0.5,1,1]; non-palindromic, so its retrograde A' = [2,4,2,1,0] is a real answer. Motif B (S2): degrees [4,3,2,0], beats [2,2,1,3], bowed; its identity is the bow's rise in pressure on the long last note, an excitation property that survives transposition. Fragment A3 = [0,1,2], beats [1,0.5,0.5]; its inversion A3inv = [0,-1,-2], same beats. YIELD: a card struck at its own measured pitch on beat 1 and at the nearest scale degree on beat 3 of the same bar (carillon 787.1 -> 863.4, +160 cents; E5 662.8 -> 714.0, +129 cents); the A5, glass and commons cards are never yielded because their disagreements (11, 34, 24 cents) are under the 50-cent audibility floor. CLIMB: A3 entered every two beats at offsets 0, 1, 2, 3 (one scale degree per entry).",
+   "rules": [
+    "Tempo 96 bpm, 4/4: beat = 0.625 s, bar = 2.5 s; bar b (1-based) starts at (b-1)*2.5 s; 96 bars = 240 s. No randomness anywhere in this movement.",
+    "Scale S = [0,429,758,812,1098], period 1200. hz(k, root) = root * 2^((1200*floor(k/5) + S[k mod 5]) / 1200), with k mod 5 taken non-negative. Roots: 557.3 (tonic); 863.4 = 557.3*2^(758/1200) (dominant); 668.9 = 557.3*2^(316/1200); 518.2 = 557.3*2^(1074/1200)/2. Named pitches at 557.3: hz(1) = 714.0, hz(2) = 863.4, hz(3) = 890.7, hz(4) = 1050.8, hz(5) = 1114.6, hz(7) = 1726.8.",
+    "Motif A = degrees [0,1,2,4,2], beats [1,0.5,0.5,1,1] (one bar). A' = [2,4,2,1,0], same beats. Motif B = degrees [4,3,2,0], beats [2,2,1,3] (two bars); B augmented = beats [4,4,2,6] (four bars). A3 = [0,1,2], beats [1,0.5,0.5]; A3inv = [0,-1,-2], same beats. A motif at offset o and root R plays hz(degree+o, R).",
+    "Strike velocity by onset position unless overridden: beat 1 -> 1.0, beat 3 -> 0.75, any other onset -> 0.5. Every struck note has seconds = 4. Bowed/breath notes: seconds = beats*0.625 + 0.2 (0.2 s overlap with the next note of the same part); a stated hold of N seconds is one note of N seconds.",
+    "S1 bars 1-8: for i = 0..3, bar 2i+1 brass plays Motif A with offset r_i = [0,2,0,-1][i] at root 557.3; bar 2i+2 plastic-Cs5 plays A' with the same offset. Bars 9-12: brass plays Motif A (offset 0) every bar; plastic-Cs5 plays the same notes 1 beat later; plastic-E5 doubles each brass note at hz(k+5, 557.3) with velocity 0.5.",
+    "E5 doubling fold rule (everywhere E5 doubles): pitch = hz(k+5, 557.3) if that is <= 2100 Hz, else hz(k, 557.3).",
+    "Transition bars 13-16: thud strikes every beat at 182.0 Hz velocity 0.5. Carillon bar 13: beat 1 at 787.1 Hz (own pitch), beat 3 at 863.4 Hz (YIELD, +160 cents), both velocity 0.75. Bars 14, 15, 16: carillon on beats 1 and 3 at hz(k, 557.3) with k = [1,2,7][bar-14] (714.0, 863.4, 1726.8), beat-rule velocities. All other parts silent.",
+    "S2 bars 17-22: wineglass bows Motif B at root 431.7 (= 863.4/2) starting bars 17, 19, 21, velocity 0.5. hiawatha breath plays the same degrees at root 215.85 starting 1 beat after each glass onset, velocity 0.5. Bars 23-26: glass plays B augmented at 431.7, velocity 0.75; hiawatha holds 215.85 Hz for 10 s from bar 23 beat 1. Bars 27-28: glass holds 431.7 Hz for 5 s velocity 0.5; hiawatha holds 334.5 Hz (= hz(2, 215.85)) for 5 s velocity 0.5. fdr breath enters bar 25 beat 1 holding 215.85 Hz for 10 s (through bar 28), velocity 0.25.",
+    "Codetta bars 29-32: brass plays Motif A at root 863.4 on bars 29 and 31; plastic-Cs5 plays A' at 863.4 on bars 30 and 32; thud on beats 1 and 3 velocity 0.5.",
+    "Development: block j = 0,1,2 starts at bar B_j = 33, 41, 49 with root R_j = 863.4, 668.9, 518.2; bar m = 1..8 within the block is bar B_j + m - 1. m=1: brass A3 offset 0 at R_j on beats 1-2; plastic-Cs5 A3inv offset 0 at R_j on beats 3-4. m=2 (YIELD, velocity 0.75): j=0: E5 beat 1 at 662.8 Hz, beat 3 at 714.0 Hz; j=1: carillon beat 1 at 787.1, beat 3 at 863.4; j=2: both cards together (E5 662.8 + carillon 787.1 on beat 1; 714.0 + 863.4 on beat 3). m=3,4 (CLIMB): A3 entries at bar m=3 beat 1, m=3 beat 3, m=4 beat 1, m=4 beat 3 with offsets 0, 1, 2, 3 at root R_j, cards brass, plastic-Cs5, brass, plastic-Cs5; first note of each entry 0.75, the others 0.5. m=5: brass Motif A offset 0 at R_j. m=6: plastic-Cs5 A' offset 0 at R_j. m=7: brass Motif A at R_j with offset o_j = [-2,0,2][j], plastic-Cs5 the same notes 1 beat later. m=8: beat 1 only: E5 strikes hz(5, R_j) (1726.8 / 1337.8 / 1036.4) and A5 strikes hz(0, R_j) (863.4 / 668.9 / 518.2), velocity 1.0; thud on beats 1 and 3 velocity 0.75; nothing else in bar m=8.",
+    "Development glass: wineglass bows B augmented at root R_j/2 (431.7, 334.45, 259.1) starting bar B_j (occupying bars m=1-4), velocity 0.5; silent bars m=5-8.",
+    "Retransition bars 57-60: thud strikes every eighth (every 0.3125 s) with velocity [0.25,0.5,0.75,1.0][bar-57]. Carillon strikes 1726.8 Hz (= hz(7, 557.3)) on beat 1 of each bar, velocity 1.0. fdr holds 167.25 Hz and hiawatha holds 334.5 Hz (both the 758-cent degree of 215.85 / 107.9) as single 10 s notes from bar 57 beat 1, velocity 0.75.",
+    "Recapitulation bars 61-68: for i = 0..3, bar 61+2i brass plays Motif A and bar 62+2i brass plays A', both with offset r_i = [0,2,0,-1][i] at 557.3; in every bar plastic-Cs5 plays the brass notes 1 beat later and E5 doubles by the fold rule at velocity 0.5. Bars 69-72 exactly as bars 9-12.",
+    "Bars 73-76: thud every beat 0.5. Carillon bar 73: beat 1 at 787.1, beat 3 at 863.4 (YIELD), velocity 0.75. Bars 74, 75, 76: beats 1 and 3 at hz(k, 557.3) with k = [2,1,0][bar-74] (863.4, 714.0, 557.3).",
+    "Bars 77-88 as bars 17-28 with glass root 278.65 (= 557.3/2); hiawatha at the same root and degrees as the glass (unison, still 1 beat late) with the fold: any hiawatha pitch above 494 Hz is dropped one octave (hz(4, 278.65) = 525.3 becomes 262.7). Bars 83-86: hiawatha holds 278.65 for 10 s. Bars 87-88: glass holds 278.65 for 5 s velocity 0.5; hiawatha holds 431.7 (= hz(2, 278.65)) for 5 s. fdr from bar 85 beat 1 holds 139.3 Hz (= 278.65/2) for 10 s, velocity 0.25.",
+    "Coda bars 89-96: on beat 1 of bars 89, 91, 93, 95 brass, plastic-Cs5 and plastic-E5 strike 557.3 Hz and plastic-A5 strikes 1114.6 Hz, all with velocity [1.0,0.75,0.5,0.25][(bar-89)/2]. Commons-bell strikes 2229.2 Hz (= 4*557.3) on beat 3 of bars 90, 92, 94, velocity 0.25. Thud alone on beat 1 of bar 96 (237.5 s), velocity 1.0. No onset after 237.5 s; the movement ends at 240.0 s."
+   ]
+  },
+  {
+   "number": 2,
+   "title": "Fireside (Adagio)",
+   "seconds": 180,
+   "tempoBpm": 48,
+   "meter": "3/4 (beat 1.25 s, bar 3.75 s, 48 bars)",
+   "tonalCenterHz": 250.5,
+   "scale": {
+    "sourceCardId": "hiawatha-vowel",
+    "cents": [
+     0,
+     501,
+     603,
+     706,
+     882,
+     1176
+    ],
+    "note": "The reader's own minima are near-just (501 ~ 4:3, 706 ~ 3:2, 882 ~ 5:3); 12-TET would lose the measured 24-cent lift 1176 -> 1200 (494.1 -> 501.0 Hz) that the chorale uses as its leading tone. Tonal centre is the hiawatha card's 250.5 Hz; the FDR card is transposed onto it (formants stay at 404/778/2410). Cut from 210 to 180 s and from twelve statements of Motif C to eight plus a fragment, because velocity is timbre under normalisation and the sine at 0.25 cannot carry a fourth minute."
+   },
+   "parts": [
+    {
+     "role": "soprano cantus (sine)",
+     "cardId": "wwv-tone",
+     "excitation": "bow",
+     "lowHz": 334,
+     "highHz": 754,
+     "pan": 0,
+     "dynamics": "velocity 0.25 throughout; seconds = beats*1.25 + 0.3 overlap; rmsDb -26"
+    },
+    {
+     "role": "alto (soprano degree - 2, folded down until <= 501 Hz, i.e. at or under its F1 494 within 24 cents)",
+     "cardId": "hiawatha-vowel",
+     "excitation": "breath",
+     "lowHz": 247,
+     "highHz": 501,
+     "pan": 0.3,
+     "dynamics": "velocity 0.5; coda 0.5 then 0.25; rmsDb -22"
+    },
+    {
+     "role": "bass (soprano degree - 3, folded down until <= 265 Hz); B-section ostinato one octave under the degree",
+     "cardId": "fdr-vowel",
+     "excitation": "breath",
+     "lowHz": 123,
+     "highHz": 209,
+     "pan": -0.3,
+     "dynamics": "velocity 0.5; coda 0.5 then 0.25; rmsDb -22"
+    },
+    {
+     "role": "B-section drone on the tonic; coda fifth",
+     "cardId": "freesound-wineglass",
+     "excitation": "bow",
+     "lowHz": 250.5,
+     "highHz": 376.6,
+     "pan": -0.6,
+     "dynamics": "velocity 0.75 (B), 0.5 then 0.25 (coda); 15 s notes; rmsDb -24"
+    },
+    {
+     "role": "A' doubling of the cantus one octave up, struck",
+     "cardId": "carillon-bell",
+     "excitation": "strike",
+     "lowHz": 669,
+     "highHz": 1507,
+     "pan": -0.5,
+     "dynamics": "velocity 0.25; seconds 4; rmsDb -28"
+    },
+    {
+     "role": "heartbeat (lub-dub) from B onward",
+     "cardId": "opz-thud",
+     "excitation": "strike",
+     "lowHz": 182,
+     "highHz": 182,
+     "pan": 0,
+     "dynamics": "beat 1 velocity 0.5, +0.625 s velocity 0.25; rmsDb -22"
+    },
+    {
+     "role": "the minute: one tick at 0, 60, 120 s",
+     "cardId": "commons-bell-15cm",
+     "excitation": "strike",
+     "lowHz": 2004,
+     "highHz": 2004,
+     "pan": 0.8,
+     "dynamics": "velocity 0.25; rmsDb -32"
+    }
+   ],
+   "form": "A 0-60 s (bars 1-16): four-voice chorale, four phrases of Motif C (15 s each) at bars 1, 5, 9, 13, phrase 3 transposed up 706 cents; sine soprano, vowel alto and bass by the voicing rule, no percussion; the minute-bell at 0 s. B 60-105 s (bars 17-28): the voices thin to a glass drone on 250.5 Hz and an FDR ostinato an octave under its degrees; the soprano sings Motif C once in augmentation (bars 17-24, 30 s), then the cadence fragment [3,5,6] lifted one degree (bars 25-28); the heartbeat begins at 60 s. A' 105-150 s (bars 29-40): three phrases of the chorale (offsets 0, 3, 0) with the carillon striking every soprano onset an octave up; heartbeat under it. Coda 150-180 s (bars 41-48): tonic chord held in two 15 s breaths (fdr 125.25, hiawatha 250.5, wwv 501.0, glass 376.6), pressure 0.5 -> 0.25; heartbeat stops after bar 46 (last lub-dub at 168.75 s); the last 11.25 s are the voices alone at 0.25.",
+   "motifs": "Motif C (chorale soprano): degrees [6,4,3,1,3,5,6] = cents [1200,882,706,501,706,1176,1200], beats [2,2,2,2,1,1,2] (12 beats = 4 bars = 15 s). The 1176 -> 1200 close is a measured 24-cent lift (494.1 -> 501.0 Hz), the movement's leading tone. Voicing rule (alto = -2 degrees, bass = -3 degrees, folded down by octaves) makes the harmony a function of the melody. Cadence fragment C3 = degrees [3,5,6], used once at offset +1 in B. B-section ostinato: bass degrees [0,3,1,3] one per bar, sounded one octave below the degree. Heartbeat: two thud strikes 0.625 s apart at velocities 0.5/0.25, once per bar.",
+   "rules": [
+    "Tempo 48 bpm, 3/4: beat = 1.25 s, bar = 3.75 s; bar b starts at (b-1)*3.75 s; 48 bars = 180 s. No randomness.",
+    "Scale H = [0,501,603,706,882,1176], period 1200. hz(k) = 250.5 * 2^((1200*floor(k/6) + H[k mod 6]) / 1200), k mod 6 non-negative. Named: hz(-5) = 167.3, hz(-4) = 177.4, hz(-3) = 188.3, hz(-2) = 208.4, hz(-1) = 247.0, hz(0) = 250.5, hz(1) = 334.5, hz(2) = 354.9, hz(3) = 376.6, hz(4) = 416.9, hz(5) = 494.1, hz(6) = 501.0, hz(7) = 669.0, hz(8) = 709.8, hz(9) = 753.2.",
+    "Motif C = degrees [6,4,3,1,3,5,6], beats [2,2,2,2,1,1,2]; onsets fall on bar 1 beat 1, bar 1 beat 3, bar 2 beat 2, bar 3 beat 1, bar 3 beat 3, bar 4 beat 1, bar 4 beat 2 of its 4-bar span. Sustained notes: seconds = beats*1.25 + 0.3 (0.3 s overlap); default velocity 0.5, wwv 0.25.",
+    "Voicing: at each soprano onset with degree k_s that falls on beat 1 of a bar (notes 1, 4 and 6 of every phrase): alto (hiawatha) plays k_a = k_s - 2, subtracting 6 until hz(k_a) <= 501; bass (fdr) plays k_b = k_s - 3, subtracting 6 until hz(k_b) <= 265; alto and bass hold (one note each) until the next beat-1 soprano onset, where they are re-attacked; the final hold of a chorale section ends at the section's last bar end (A: 60.0 s; A': 150.0 s). Soprano onsets on beats 2 or 3 do not move alto or bass. Longest hold is 6 beats = 7.5 s.",
+    "A bars 1-16: wwv bows Motif C starting bars 1, 5, 9, 13 with degree offsets [0,0,3,0] (offset 3 = +706 cents); alto and bass per the voicing rule. No thud, no glass, no carillon.",
+    "Commons-bell strikes 2004.0 Hz (= 8*250.5) at t = 0, 60, 120 s, velocity 0.25.",
+    "B bars 17-28: wwv bows Motif C in augmentation x2 (beats [4,4,4,4,2,2,4] = 8 bars) starting bar 17 at offset 0; then bars 25-28 wwv bows C3 = degrees [3,5,6] at offset +1 (= degrees [4,6,7] = 416.9, 501.0, 669.0 Hz) with beats [4,2,6]. Wineglass bows 250.5 Hz in 15 s notes starting bars 17, 21, 25, velocity 0.75. fdr breath plays the ostinato: bar b in 17..28 sounds hz([0,3,1,3][(b-17) mod 4]) / 2 = 125.25, 188.3, 167.3, 188.3 Hz, one 3.75 s + 0.3 s note per bar, velocity 0.5. hiawatha silent in B.",
+    "Heartbeat: for every bar 17..46 inclusive, thud strikes 182.0 Hz at beat 1 (velocity 0.5) and at beat 1 + 0.625 s (velocity 0.25); last lub-dub at 168.75 s / 169.375 s.",
+    "A' bars 29-40: wwv bows Motif C starting bars 29, 33, 37 with offsets [0,3,0]; alto and bass per the voicing rule (terminus 150.0 s). Carillon strikes 2*hz(k_s) at every soprano onset (range 669-1506.4 Hz), velocity 0.25, seconds 4. Glass silent; heartbeat continues.",
+    "Coda bars 41-48: fdr 125.25 Hz, hiawatha 250.5 Hz, wwv 501.0 Hz, wineglass hz(3) = 376.6 Hz, each as two 15 s notes starting bars 41 (150 s) and 45 (165 s); velocity 0.5 for the first note, 0.25 for the second. No onset after 168.75 s except those two chords; ends at 180.0 s."
+   ]
+  },
+  {
+   "number": 3,
+   "title": "Buzzer (Scherzo and Trio)",
+   "seconds": 150,
+   "tempoBpm": 168,
+   "meter": "3/4 (beat 0.357143 s, bar 1.071429 s, 140 bars); the b-section is a hemiola with onsets every 2 beats",
+   "tonalCenterHz": 442.5,
+   "scale": {
+    "sourceCardId": "iowa-bells-plastic-ff-A5",
+    "cents": [
+     0,
+     362,
+     549,
+     818,
+     971
+    ],
+    "note": "The plastic-mallet A5 bell's own minima: a septimal pentatonic (971 ~ 7:4, 818 ~ 8:5, 362 a neutral third). At 168 bpm the bell's 2.14 s ring spans 6 beats = one full Motif D, so each note is heard against its predecessors and the bell's own scale guarantees the consonance. Centre 442.5 = the card's 885.0 Hz one octave down. The E5 and Cs5 bells (different arches) take only the tonic/octave degrees 0 and 5 in the hemiola and the Stamp chord, so the septimal degrees are played only by the card that owns them. The buzzer's second scale in this movement is its OWN: 335.0 * 2^(c/1200) for c in [0,307,530,704,849,976] = 335.0, 400.0, 455.0, 503.1, 547.1, 588.7 Hz (the CLIMB), the last 1.4 Hz from the WWV tone."
+   },
+   "parts": [
+    {
+     "role": "scherzo lead; all septimal degrees of the hemiola; pre-echo in the retransition",
+     "cardId": "iowa-bells-plastic-ff-A5",
+     "excitation": "strike",
+     "lowHz": 221,
+     "highHz": 1770,
+     "pan": 0.4,
+     "dynamics": "lilt: beat 1 -> 1.0, beat 2 -> 0.5, beat 3 -> 0.75; hemiola 0.75; seconds 4; rmsDb -18"
+    },
+    {
+     "role": "canon voice one bar behind, one octave down; hemiola tonic/octave only; Stamp bass",
+     "cardId": "iowa-bells-plastic-ff-E5",
+     "excitation": "strike",
+     "lowHz": 221,
+     "highHz": 885,
+     "pan": -0.4,
+     "dynamics": "same lilt; hemiola 0.75; stamp 1.0; rmsDb -19"
+    },
+    {
+     "role": "hemiola octave degree; Stamp third",
+     "cardId": "iowa-bells-plastic-ff-Cs5",
+     "excitation": "strike",
+     "lowHz": 442,
+     "highHz": 1770,
+     "pan": 0,
+     "dynamics": "0.75; stamp 1.0; rmsDb -19"
+    },
+    {
+     "role": "scherzo stabs (0.21 s ring: a pizzicato); YIELD 335.0 -> 354.9 at the first stab",
+     "cardId": "uvb76-buzz",
+     "excitation": "strike",
+     "lowHz": 335,
+     "highHz": 354.9,
+     "pan": -0.2,
+     "dynamics": "velocity 0.5, stamp 1.0; rmsDb -24 (a 0.21 s striker: held under the ringing bells so normalisation cannot promote it)"
+    },
+    {
+     "role": "trio drone bursting at the buzzer's cadence; CLIMB up its own scale to 588.7 Hz in the retransition",
+     "cardId": "uvb76-buzz",
+     "excitation": "breath",
+     "lowHz": 335,
+     "highHz": 588.7,
+     "pan": -0.2,
+     "dynamics": "velocity 0.5; 5-beat notes (1.786 s) with 1-beat rests, period 2.143 s; rmsDb -24"
+    },
+    {
+     "role": "trio melody; da capo countermelody",
+     "cardId": "fdr-vowel",
+     "excitation": "breath",
+     "lowHz": 194,
+     "highHz": 388,
+     "pan": -0.3,
+     "dynamics": "velocity 0.5; overlap 0.05 s; rmsDb -22"
+    },
+    {
+     "role": "trio melody in true parallel neutral thirds (every note = fdr * 1.2325, +362 cents)",
+     "cardId": "hiawatha-vowel",
+     "excitation": "breath",
+     "lowHz": 239,
+     "highHz": 478,
+     "pan": 0.3,
+     "dynamics": "velocity 0.5; rmsDb -23"
+    },
+    {
+     "role": "trio second pass: sine doubling two octaves up; BEAT partner at 587.3 Hz in the retransition",
+     "cardId": "wwv-tone",
+     "excitation": "bow",
+     "lowHz": 587,
+     "highHz": 1551,
+     "pan": 0,
+     "dynamics": "velocity 0.25; rmsDb -28"
+    },
+    {
+     "role": "drum: downbeats, stamp, retransition",
+     "cardId": "opz-thud",
+     "excitation": "strike",
+     "lowHz": 182,
+     "highHz": 182,
+     "pan": 0,
+     "dynamics": "0.5; stamp 1.0; coda 1.0/0.75/0.5; rmsDb -20"
+    },
+    {
+     "role": "triangle: last stroke of each stamp, final tick",
+     "cardId": "commons-bell-15cm",
+     "excitation": "strike",
+     "lowHz": 3540,
+     "highHz": 3540,
+     "pan": 0.7,
+     "dynamics": "0.5; final 0.25; rmsDb -32"
+    }
+   ],
+   "form": "Scherzo 0-51.43 s (bars 1-48): a (bars 1-16, 0-17.1 s) Motif D on the lead bell, then in canon with the E5 bell an octave down; b (bars 17-32, 17.1-34.3 s) hemiola: 24 notes every two beats, septimal degrees on the A5 bell, tonic/octave degrees on E5 and Cs5, thud keeping three, buzzer stabbing beat 3 (first stab at its own 335.0, YIELD to 354.9 from bar 18); a' (bars 33-48, 34.3-51.4 s) as a, closing with the Stamp. Trio 51.43-102.86 s (bars 49-96): buzzer breath drone bursting every 2.143 s, vowels in parallel neutral thirds singing Motif E (four 4-bar phrases, 51.4-68.6 s), repeated with the sine two octaves up (68.6-85.7 s), then the retransition (85.7-102.9 s): the bursts shorten 5 -> 2 beats while the buzzer CLIMBs its own scale from its host pitch 354.9 through its own 335.0, 400.0, 455.0, 503.1, 547.1 to 588.7 Hz, where it stops bursting and holds; the WWV sine enters on 587.3 Hz and the two BEAT at 1.4 Hz for 4.29 s (bars 93-96) while the drum re-enters at 94.3 s and the lead bell pre-echoes Motif D. Scherzo da capo 102.86-150 s (bars 97-140): a repeated with the trio vowels laid over it as countermelody (102.9-120.0 s), b repeated (120.0-137.1 s), coda (137.1-150 s): four Stamps two bars apart, three solo drum strokes, one triangle tick at 148.9 s.",
+   "motifs": "Motif D (scherzo): degrees [0,2,4,5,4,2] = cents [0,549,971,1200,971,549], one beat each (2 bars); an arch to the octave and back whose harmonic seventh (971) is the bell's own. Lilt: velocities 1.0 / 0.5 / 0.75 on beats 1/2/3. Hemiola row D8 = [0,4,2,5,3,1,4,2] at 2-beat spacing against the drum's 3. Stamp: three strokes (beats 1, 2, then next beat 1) of the whole battery on {0, -5, 2 degrees} + drum + buzzer stab, triangle on the third. Motif E (trio): degrees [0,1,2,1,0,-1,0], beats [2,2,2,2,1,1,2] (4 bars), the second vowel a fixed 362 cents above. CLIMB -> BEAT: the buzzer walks its own consonant scale in single degrees, one per burst, and stops exactly where it meets the clock (588.7 vs 587.3 Hz, 1.4 Hz). YIELD: the buzzer's first stab at its own 335.0 Hz, then the host degree 354.9 (+100 cents).",
+   "rules": [
+    "Tempo 168 bpm, 3/4: beat = 0.357143 s, bar = 1.071429 s; bar b starts at (b-1)*1.071429 s; 140 bars = 150.0 s. No randomness.",
+    "Scale P = [0,362,549,818,971], period 1200. hz(k) = 442.5 * 2^((1200*floor(k/5) + P[k mod 5]) / 1200). Named pitches: hz(-5) = 221.25, hz(-2) = 354.9, hz(0) = 442.5, hz(2) = 607.6, hz(5) = 885.0, hz(10) = 1770.0. Buzzer own scale: own(c) = 335.0 * 2^(c/1200): own(0) = 335.0, own(307) = 400.0, own(530) = 455.0, own(704) = 503.1, own(849) = 547.1, own(976) = 588.7.",
+    "Motif D = degrees [0,2,4,5,4,2], beats [1,1,1,1,1,1]. Strike lilt velocity by beat: 1 -> 1.0, 2 -> 0.5, 3 -> 0.75; every struck note seconds = 4. Motif E = degrees [0,1,2,1,0,-1,0], beats [2,2,2,2,1,1,2]; hz_E(k) = 221.25 * 2^((1200*floor(k/5) + P[k mod 5]) / 1200). Breath notes: seconds = beats*0.357143 + 0.05 overlap.",
+    "Stamp(bar x) = strokes at bar x beat 1, bar x beat 2, bar x+1 beat 1: plastic-A5 hz(0) = 442.5, plastic-E5 hz(-5) = 221.25, plastic-Cs5 hz(2) = 607.6, thud 182.0, uvb76 strike 354.9, all velocity 1.0; commons-bell 3540.0 Hz (= 8*442.5) velocity 0.5 on the third stroke only.",
+    "a (bars 1-16): plastic-A5 plays Motif D starting bars 1, 3, 5, 7 with degree offsets [0,0,2,4]; bars 9, 11, 13, 15 repeat that pattern on plastic-A5 with plastic-E5 playing the same notes one bar later (bars 10, 12, 14, 16) at offset -5. Thud on beat 1 of every bar, velocity 0.5.",
+    "b (bars 17-32): note n = 0..23, onset = bar 17 beat 1 + 2n beats; degree d = D8[n mod 8] + 5*(floor(n/8) - 1) with D8 = [0,4,2,5,3,1,4,2]; card = plastic-E5 if n mod 8 == 0, plastic-Cs5 if n mod 8 == 3, else plastic-A5; pitch hz(d); velocity 0.75. Thud beat 1 every bar 0.5. uvb76 strike on beat 3 of every bar, velocity 0.5: bar 17 at 335.0 Hz (own pitch), bars 18-32 at 354.9 Hz.",
+    "a' (bars 33-48): bars 33-46 = bars 1-14 verbatim; Stamp(47).",
+    "Trio bars 49-80: uvb76 breath at 354.9 Hz: a 5-beat note (1.786 s) starting beat 1 of every odd bar from 49 to 79, velocity 0.5. fdr breath sings Motif E at hz_E starting bars 49, 53, 57, 61 with offsets [0,1,2,0], velocity 0.5; hiawatha breath sounds every fdr note at fdr_hz * 1.2325 (+362 cents) with the same onsets and lengths, velocity 0.5 (range 238.9-477.7 Hz, under its F1 494). Bars 65-80: repeat bars 49-64 with wwv bowing fdr's line at 4x the pitch (root 885.0, range 775-1551), velocity 0.25. Thud silent bars 49-88.",
+    "Retransition bars 81-96: voices silent. uvb76 breath bursts starting beat 1 of bars 81, 83, 85, 87, 89, 91 with pitch [354.9, 335.0, 400.0, 455.0, 503.1, 547.1] and length [5,4,4,3,3,2] beats, velocity 0.5; then one continuous note at 588.7 Hz from bar 93 beat 1 for 12 beats (4.286 s), velocity 0.5. wwv bows 587.3 Hz from bar 93 beat 1 for 12 beats, velocity 0.25 (BEAT 1.4 Hz, six cycles); both release at bar 97 beat 1. Thud on beat 1 of bars 89-96, velocity 0.5. plastic-A5 plays Motif D's first three notes (degrees [0,2,4]) on beats 1-3 of bars 93 and 95, velocity 0.5.",
+    "Da capo: bars 97-112 = bars 1-16, plus fdr breath Motif E at hz_E starting bars 97, 101, 105, 109 with offsets [0,1,2,0], velocity 0.5, and hiawatha at fdr_hz * 1.2325. Bars 113-128 = bars 17-32 with the uvb76 stab at 354.9 Hz in every bar (no second yield).",
+    "Coda bars 129-140: Stamp(129), Stamp(131), Stamp(133), Stamp(135). Thud alone on beat 1 of bars 137, 138, 139 with velocity 1.0, 0.75, 0.5. Commons-bell 3540.0 Hz on beat 1 of bar 140 (148.93 s), velocity 0.25, alone. Ends at 150.0 s."
+   ]
+  },
+  {
+   "number": 4,
+   "title": "Sunshine (Rondo-finale)",
+   "seconds": 210,
+   "tempoBpm": 120,
+   "meter": "4/4 (beat 0.5 s, bar 2 s, 105 bars)",
+   "tonalCenterHz": 207.8,
+   "scale": {
+    "sourceCardId": "ory-chord",
+    "cents": [
+     0,
+     296,
+     408,
+     503,
+     611,
+     700,
+     800,
+     808,
+     905,
+     967,
+     996,
+     1102
+    ],
+    "note": "The Ory chord's own minima, with the card's 1201-cent minimum (one cent from an octave) used as the period. This is 12-TET as a 1921 band actually played it: eleven of twelve degrees within 12 cents of equal temperament, a harmonic seventh (967) beside the minor seventh (996), and no degree near 200, so the finale's tunes have no whole steps. Chosen because it is the only card that was an ensemble and because a near-equal gamut is the one grid onto which I's bar scale, II's just scale and III's septimal scale can all be quantised by a single nearest-degree rule. Tonal centre 207.8 Hz = the card's measured G#3, 1.3 Hz above the President's measured 206.5 Hz: the piece ends on that beat."
+   },
+   "parts": [
+    {
+     "role": "harmonic bed (the chord card, one minor triad per root); BEAT partner at 207.8 in the coda",
+     "cardId": "ory-chord",
+     "excitation": "breath",
+     "lowHz": 207.8,
+     "highHz": 330,
+     "pan": 0,
+     "dynamics": "velocity 0.5; 4 s notes overlapping 0.1 s; coda 8 s note 0.25; rmsDb -27"
+    },
+    {
+     "role": "refrain melody (Motif F) at M = 415.6 Hz; episode 1 lead; stretto at M",
+     "cardId": "iowa-bells-brass-Cs5",
+     "excitation": "strike",
+     "lowHz": 415,
+     "highHz": 1180,
+     "pan": -0.3,
+     "dynamics": "beat 1 -> 1.0, other on-beats 0.75, off-beats 0.5; seconds 4; rmsDb -18"
+    },
+    {
+     "role": "refrain double at 2M; stretto entry at 2M",
+     "cardId": "iowa-bells-plastic-ff-E5",
+     "excitation": "strike",
+     "lowHz": 831,
+     "highHz": 1455,
+     "pan": 0.3,
+     "dynamics": "same rule; rmsDb -20"
+    },
+    {
+     "role": "episode 1 canon; episode 3 hemiola partner; stretto at 622.6",
+     "cardId": "iowa-bells-plastic-ff-Cs5",
+     "excitation": "strike",
+     "lowHz": 415,
+     "highHz": 1665,
+     "pan": 0.5,
+     "dynamics": "0.75; refrain 0.5; rmsDb -20"
+    },
+    {
+     "role": "episode 3 hemiola lead at 2M (up to 1663.4 Hz); stretto at 311.3",
+     "cardId": "iowa-bells-plastic-ff-A5",
+     "excitation": "strike",
+     "lowHz": 311,
+     "highHz": 1665,
+     "pan": -0.5,
+     "dynamics": "0.75; rmsDb -20"
+    },
+    {
+     "role": "first-movement head (A_f) as countermelody; stretto top at 1245.2",
+     "cardId": "carillon-bell",
+     "excitation": "strike",
+     "lowHz": 831,
+     "highHz": 2180,
+     "pan": -0.7,
+     "dynamics": "0.75; stretto 1.0; rmsDb -22"
+    },
+    {
+     "role": "episode 2 cantus (C_f) at root M",
+     "cardId": "wwv-tone",
+     "excitation": "bow",
+     "lowHz": 555,
+     "highHz": 832,
+     "pan": 0,
+     "dynamics": "velocity 0.25; rmsDb -27"
+    },
+    {
+     "role": "episode 2 alto (C_f at root 207.8)",
+     "cardId": "hiawatha-vowel",
+     "excitation": "breath",
+     "lowHz": 278,
+     "highHz": 416,
+     "pan": 0.3,
+     "dynamics": "velocity 0.5; rmsDb -23"
+    },
+    {
+     "role": "episode 2 bass (bed root one octave down); coda: the President's own 206.5 Hz beating against the band",
+     "cardId": "fdr-vowel",
+     "excitation": "breath",
+     "lowHz": 103.9,
+     "highHz": 206.5,
+     "pan": -0.3,
+     "dynamics": "velocity 0.5; coda 0.25; rmsDb -23"
+    },
+    {
+     "role": "episode 2 close: bowed crescendo on M",
+     "cardId": "freesound-wineglass",
+     "excitation": "bow",
+     "lowHz": 415.6,
+     "highHz": 415.6,
+     "pan": 0.6,
+     "dynamics": "0.5 then 0.75; rmsDb -24"
+    },
+    {
+     "role": "intro and R4 dominant drone (311.3 Hz)",
+     "cardId": "uvb76-buzz",
+     "excitation": "breath",
+     "lowHz": 311.3,
+     "highHz": 311.3,
+     "pan": -0.2,
+     "dynamics": "velocity 0.5; 8 s notes; rmsDb -26"
+    },
+    {
+     "role": "episode 3 pizzicato dominant (155.7 Hz) on beats 1 and 3",
+     "cardId": "uvb76-buzz",
+     "excitation": "pluck",
+     "lowHz": 155.7,
+     "highHz": 155.7,
+     "pan": -0.2,
+     "dynamics": "velocity 0.5; rmsDb -24"
+    },
+    {
+     "role": "drum: refrain backbeat, heartbeat in episode 2 and coda, every beat in episode 3, stamps, last stroke",
+     "cardId": "opz-thud",
+     "excitation": "strike",
+     "lowHz": 182,
+     "highHz": 182,
+     "pan": 0,
+     "dynamics": "0.75 / 0.5; lub-dub 0.5/0.25; last 1.0; rmsDb -20"
+    },
+    {
+     "role": "clock: 1662.4 Hz at the start of each refrain, the stamps, and the last bar",
+     "cardId": "commons-bell-15cm",
+     "excitation": "strike",
+     "lowHz": 1662.4,
+     "highHz": 1662.4,
+     "pan": 0.8,
+     "dynamics": "0.5; last 0.25; rmsDb -32"
+    }
+   ],
+   "form": "Intro 0-16 s (bars 1-8): clock tick, buzzer drone on the dominant 311.3 Hz, thud on 1 and 3, bed enters at 8 s on G# minor. Refrain R1 16-40 s (bars 9-20): Motif F on the brass bell, once at the dominant, then doubled an octave up with the carillon playing the first movement's head (A_f) against it. Episode 1 (movement I recalled) 40-64 s (bars 21-32): A_f in 1-beat canon between the two C#5 bells over changing roots, no bed, closing with two Stamps. R2 64-80 s (bars 33-40). Episode 2 (movement II recalled) 80-112 s (bars 41-56): the chorale melody C_f in augmentation on the sine and the hiawatha vowel, FDR on the bed roots an octave down, heartbeat lub-dub from movement II, ending with a bowed glass crescendo on M. R3 112-128 s (bars 57-64): three bells. Episode 3 (movement III recalled) 128-160 s (bars 65-80): D_f on the plastic bells at 3-beat spacing against 4/4, buzzer plucks on 1 and 3, thud on every beat, two Stamps. R4 + stretto + coda 160-210 s (bars 81-105): refrain with countermelody and buzzer drone (160-176 s); stretto of Motif F entering every 2 beats over five bells at M, 622.6, 2M, 311.3, 1245.2 Hz (176-192 s); four bars of Stamps on every beat with the clock (192-200 s); the BEAT: the band's G# (ory 207.8) and the President's G# (fdr 206.5) alone with the heartbeat, at 0.25, beating at 1.3 Hz for 8 s (200-208 s); one thud and one clock tick at 208 s.",
+   "motifs": "Motif F (finale's own): cents [0,408,700,967,700,408,0,700], beats [1,0.5,0.5,1,1,0.5,0.5,3] (two bars): a major-triad-plus-harmonic-seventh arpeggio sung over the chord card's minor third, a blue-note clash by construction. Recalled motifs, each produced by one fixed quantisation rule: A_f = [0,408,800,1102,800] (from I); C_f = [1201,905,700,503,700,1102,1201] (from II: the 24-cent lift becomes a semitone by the collapse rule); D_f = [0,503,967,1201,967,503] (from III: the harmonic seventh survives, 971 -> 967). Stamp: brass 0, plastic-Cs5 408, plastic-E5 700, plastic-A5 967 at root M plus thud, velocity 1. BEAT: two measured G#3s, 206.5 and 207.8 Hz, sustained together; a multi-partial shimmer at 1.3 Hz on the fundamental (the clean single-partial version was III's 587.3/588.7).",
+   "rules": [
+    "Tempo 120 bpm, 4/4: beat = 0.5 s, bar = 2 s; bar b starts at (b-1)*2 s; 105 bars = 210 s. No randomness.",
+    "Scale O = [0,296,408,503,611,700,800,808,905,967,996,1102], period 1201. hz(k, root) = root * 2^((1201*floor(k/12) + O[k mod 12]) / 1200); default root 207.8. Melody root M = 415.6; 2M = 831.2; dominant roots 311.3 (= 207.8*2^(700/1200)), 622.6 (= 2*311.3), 1245.2 (= 4*311.3); bass 103.9 (= 207.8/2); 155.7 (= 311.3/2).",
+    "Recall quantisation: given a motif as cents relative to its root, map each value to the nearest member of O union {1201} (mod period; ties to the lower); if two adjacent notes collapse to one value while their sources differed, the earlier note takes the next member below. Fixed outputs: A_f = [0,408,800,1102,800], beats [1,0.5,0.5,1,1]; C_f = [1201,905,700,503,700,1102,1201], beats [4,4,4,4,2,2,4]; D_f = [0,503,967,1201,967,503], one note per 3 beats. A note of a motif at root r sounds at r*2^(cents/1200).",
+    "Motif F = cents [0,408,700,967,700,408,0,700], beats [1,0.5,0.5,1,1,0.5,0.5,3] (two bars). Strike velocity: beat 1 -> 1.0, other on-beats -> 0.75, off-beats -> 0.5, unless stated; every struck note seconds = 4. Sustained notes: seconds = beats*0.5 + 0.1 overlap, unless a length is stated.",
+    "Stamp(bar x, beat y) = brass at M = 415.6, plastic-Cs5 at M*2^(408/1200) = 526.1, plastic-E5 at M*2^(700/1200) = 622.6, plastic-A5 at M*2^(967/1200) = 726.5, thud 182.0, all velocity 1.0 (or the velocity stated), on that beat. A Stamp's thud stroke is the only thud in its beat (it replaces, never doubles, the thud rule).",
+    "Bed: ory-chord breath, one 4 s note per 2-bar unit at hz(c, 207.8), c taken in order from the section's chord list; velocity 0.5. Chord lists: R1 bars 9-20 [0,0,5,0,3,0]; R2, R3, R4 [0,0,5,0]; episode 2 bars 41-56 [0,3,5,0,6,3,5,0]; stretto bars 89-96 two 8 s notes at c = 0; bars 97-100 two 4 s notes at c = 0; bars 101-104 one 8 s note at c = 0 velocity 0.25. Silent in the intro before bar 5, in episode 1 and in episode 3.",
+    "Thud: intro (bars 1-8) and refrains (9-20, 33-40, 57-64, 81-88) -> beat 1 velocity 0.75, beat 3 velocity 0.5; episode 1 (21-30) -> beat 1 only, 0.5; episode 2 (41-56) and bars 101-104 -> beat 1 velocity 0.5 and beat 1 + 0.25 s velocity 0.25 (lub-dub); episode 3 (65-78) -> every beat 0.5; stretto bars 89-96 -> beats 1 and 3 at 1.0 and 0.75; bars 31-32, 79-80 and 97-100 -> Stamp strokes only; bar 105 beat 1 -> 1.0 alone.",
+    "Intro bars 1-8: commons-bell 1662.4 Hz (= 8*207.8) on bar 1 beat 1 velocity 0.5; uvb76 breath 311.3 Hz as two 8 s notes starting bars 1 and 5, velocity 0.5; bed enters bar 5 at c = 0.",
+    "R1 bars 9-20: brass plays Motif F at root M starting bars 9, 11; at root 622.6 starting bar 13; at M starting bar 15; at M starting bars 17 and 19 with plastic-E5 doubling at 2M; carillon plays A_f at root 2M starting beat 1 of each of bars 17-20, velocity 0.75. Commons-bell 1662.4 on beat 1 of bars 9, 33, 57, 81 velocity 0.5 (each refrain start).",
+    "Episode 1 bars 21-30: brass plays A_f once per bar at root M*2^(c/1200) with c per 2-bar unit = [0,700,0,408,700]; plastic-Cs5 plays the same notes one beat later. Bars 31-32: Stamp(31, beat 1) velocity 1.0 and Stamp(32, beat 1) velocity 0.5. No bed.",
+    "R2 bars 33-40: brass Motif F at M starting bars 33, 35, 37, 39; plastic-E5 doubles at 2M throughout; bed [0,0,5,0]; thud refrain rule.",
+    "Episode 2 bars 41-56: wwv bows C_f at root M starting bars 41 and 47 (6 bars each), velocity 0.25; hiawatha breath sings C_f at root 207.8 with the same timing, velocity 0.5 (range 277.9-415.8 Hz). fdr breath, bars 41-52 only: holds hz(c, 103.9) for each bed unit's c (4 s notes + 0.1 overlap: 103.9, 138.9, 155.7, 103.9, 164.9, 138.9), velocity 0.5. Bars 53-56: wineglass bows 415.6 Hz as two 4 s notes, velocity 0.5 then 0.75; hiawatha holds 415.6 Hz and fdr holds 103.9 Hz as single 8 s notes from bar 53 beat 1, velocity 0.5 (this hold replaces the bed-root rule for units 7 and 8). Thud lub-dub throughout.",
+    "R3 bars 57-64: Motif F at M on brass (velocity rule), at 2M on plastic-E5, at M on plastic-Cs5 with velocity 0.5, starting bars 57, 59, 61, 63; bed [0,0,5,0].",
+    "Episode 3 bars 65-78: note n = 0..17, onset = bar 65 beat 1 + 3n beats; card = plastic-A5 if n even else plastic-Cs5; pitch = 2M*2^(D_f[n mod 6]/1200) (831.2, 1112.3, 1453.0, 1663.4, 1453.0, 1112.3); velocity 0.75. uvb76 pluck 155.7 Hz on beats 1 and 3 of bars 65-78, velocity 0.5. Bars 79-80: Stamp(79,1), Stamp(79,2), Stamp(80,1), with commons-bell 1662.4 velocity 0.5 on the last. No bed.",
+    "R4 bars 81-88: R3 texture plus carillon playing A_f at 2M on beat 1 of every bar (velocity 0.75) and uvb76 breath 311.3 Hz as one 8 s note from bar 85 beat 1, velocity 0.5. Stretto bars 89-96: Motif F entries every 2 beats (16 entries, entry e at bar 89 beat 1 + 2e beats), entry e uses card/root [brass@M, plastic-Cs5@622.6, plastic-E5@2M, plastic-A5@311.3, carillon@1245.2][e mod 5]; first note of each entry velocity 1.0, the rest 0.75; each entry plays its full 8 beats (the last entries ring into bars 97-98). Bars 97-100: Stamp on every beat with velocity [1.0,0.5,0.75,0.5][beat-1]; commons-bell 1662.4 on beat 1 of each of these bars, velocity 0.5.",
+    "Bars 101-104 (BEAT): ory-chord breath 207.8 Hz for 8 s velocity 0.25; fdr breath 206.5 Hz (its own measured pitch) for 8 s velocity 0.25, from bar 101 beat 1; thud lub-dub; nothing else sounds (the stretto rings have died by 200 s). Bar 105 (208 s): thud beat 1 velocity 1.0 and commons-bell 1662.4 beat 1 velocity 0.25; nothing else. Ends at 210.0 s."
+   ]
+  }
+ ],
+ "orchestration": "Families and registers are kept apart so that the missing reverb is not missed: the four Iowa/glass bars carry melody in 259-2200 Hz and are the only cards asked to ring (their own 1-2.6 s decays are the room); the two vowels sit at 104-501 Hz, breath-only, and every vowel pitch is now checked against the card's F1 (hiawatha never above 501 Hz, the 24-cent exception at hz(6); FDR never above 404): the retransition pedals in I are 334.5/167.25 not 668.9, the recap unison folds under 494, and the trio's parallel third is a fixed ratio 1.2325 that keeps hiawatha under 478 Hz. The sine (wwv) is the cantus above the vowels at 334-1551 Hz and the single-partial half of the clean BEAT; the buzzer is a bass-tenor colour at 155-589 Hz, struck for stabs, blown for drones and for its own-scale CLIMB; the chord card is a bed at its 208-330 Hz fundamental (loud peaks at 400-1050 Hz, so its rmsDb is the lowest of the sustained parts, -27); the drum is fixed at 182 Hz, centre, always; the commons bell is a 1.6-3.5 kHz tick at -30 to -32. Excitation follows measured decay (the material design's rule): cards with tauMax >= 0.8 s (carillon, commons, glass, three Iowa bells) are struck and ring by physics, the glass is also bowed; cards with tauMax <= 0.25 s (vowels, chord, buzzer, thud, sine) are breathed or bowed when they must sustain and struck only for events shorter than their decay (stabs, ticks, kicks). Because parts are RMS-normalised over their sounding samples, the two sub-0.25 s strikers get explicit offsets: thud -20 dB and buzzer stabs -24 dB, 2-6 dB under the ringing bells, so a 0.09 s kick or a 0.21 s stab is not promoted to the level of a pad; bowed and blown parts sit 4-9 dB under the strikes so a 16 s breath never swamps a 4 s ring. Panning: bar pairs left/right (brass -0.35 / plastic-Cs5 +0.35; A5 -0.5..-0.6 / E5 +0.3..+0.6), carillon far left, glass right, vowels inside (fdr -0.3, hiawatha +0.3), sine and drum centre, tick far right; positions persist across movements so an object can be tracked by place when its pitch changes. Motifs are written in cents relative to a root and realised through the card's own hz(k) so that transposition preserves what the physics preserves: a bar's arch, a vowel's formants. Tempi come from decay times: 96 bpm lets the brass bell (2.62 s) ring one bar, 168 bpm lets the plastic A5 bell (2.14 s) ring exactly one Motif D, 48 bpm gives the breath-driven chorale 15 s phrases under the 16 s sustain limit; the buzzer's trio cadence (one burst per 2.143 s) is the one tempo not derived from a card. Polyphony peaks in the IV stretto (five bells ringing 4 s each, entries every second) and in I's block punctuations; offline rendering is fine.",
+ "measuredVsChosen": "MEASURED (from the cards, used verbatim): every scale's cents (brass Cs5 [0,429,758,812,1098]; hiawatha [0,501,603,706,882,1176]; plastic A5 [0,362,549,818,971]; ory [0,296,...,1102] with its 1201-cent minimum as period; the buzzer's own [307,530,704,849,976] for the CLIMB); the four tonal centres (557.3 = brass bell pitch; 250.5 = hiawatha pitch; 442.5 = plastic A5 pitch/2; 207.8 = ory pitch); the drum's 182.0 Hz; every derived pitch (863.4, 668.9, 518.2, 714.0, 890.7, 1050.8, 1114.6, 1726.8, 376.6, 494.1, 354.9, 607.6, 311.3, 622.6, 1245.2, 526.1, 726.5, 2229.2, 2004, 3540, 1662.4, 400.0, 455.0, 503.1, 547.1, 588.7), all arithmetic on measured values; the 24-cent lift (1176 -> 1200) as the chorale's leading tone; the recall quantisations A_f, C_f, D_f, outputs of a stated rule; the YIELD intervals (carillon 787.1 -> 863.4 = 160 cents; E5 662.8 -> 714.0 = 129; buzzer 335.0 -> 354.9 = 100) and the list of cards NOT yielded because their disagreements are under 50 cents (A5 11, glass 34, commons 24); the two BEAT rates (588.7 vs 587.3 = 1.4 Hz; 207.8 vs 206.5 = 1.3 Hz); the excitation assignments by tau (vowels breath-only, buzzer strike as pizzicato at 0.21 s, thud and stabs as sub-0.25 s events) and by family (bars struck, formant-preserving voices transposed only where the fundamental stays under F1: FDR <= 404, hiawatha <= 501); the tempi 96 and 168 as functions of the brass and plastic-A5 decays; the observation that the ory scale is 12-TET within 12 cents at 11/12 degrees. CHOSEN (taste): the four-movement plan and every section length, including the cut of II to 180 s; octave equivalence (period 1200) for the three non-ory scales, which the cards do not certify; the 758-cent degree as the sonata's dominant polarity; the degree sequences and rhythms of Motifs A, B, C, D, E, F and their velocity lilts; the development's block plan (statement, yield, climb, canon, punctuation) and the climb's step of one degree per entry; the 50-cent audibility floor for YIELD; the voicing rule (-2/-3 degrees) for the chorale; the ory bed progressions and the reading of Motif F as a barbershop seventh over a minor bed; the CLIMB schedule (one own-scale degree per burst, bursts shortening 5-4-4-3-3-2) and the decision to end III's retransition on the clean beat and IV on the shimmering one; the buzzer's 28 bursts/min (the real UVB-76 cadence is remembered, not measured on this card); all pans and rmsDb values including the -20/-24 offsets for the short strikers; the 'one fixed point' conceit for the drum; letting single-mode cards be ticks and sines rather than leads. COMPROMISES stated as such: E5 and A5 in I play only octave doublings, tonic/octave punctuations and yields, and E5/Cs5 in III's hemiola play only degrees 0 and 5, because their arches (0.92, 0.68, 1.06) differ from the host bell's and their own minima do not contain the host scale; what they add is doubling colour, not measured consonance. The finale's bars play a near-12-TET gamut that no bar owns, which is the ordinary condition of orchestral bells and is accepted as such. The one-bar canon in III, the 1-beat canons in I and IV, and the stretto order of entries are formal choices with no measurement behind them.",
+ "risks": "1. Dynamics: per-part RMS normalisation runs over the whole part, so a velocity fade within one part (coda of I, coda of II, bars 101-104 of IV) survives as level as well as timbre; but a part that plays only soft notes is lifted to its rmsDb regardless, which is why the fades are also realised by thinning parts. 2. The 758-cent 'dominant' in I sits 56 cents above a fifth; to a 12-TET ear the exposition's second key may read as out of tune rather than as a modulation; the recap resolves it, and the YIELD entries now make 'out of tune on purpose' an audible theme before the development. 3. No reverb: breath notes end at note-off, so overlaps (0.2 s in I, 0.3 s in II, 0.05 s in III's trio, 0.1 s in IV) are the only legato; if the trio's 0.05 s clicks, raise it to 0.15. 4. The 24-cent lift in II may render as wobble at velocity 0.25 on a sine; the carillon doubling in A' (988.2 then 1002 Hz) makes it a discrete step. 5. The ory-chord bed is voiced above its fundamental (peaks at 400-1050 Hz) and will collide with the melody bells at M = 415.6; rmsDb -27 is a guess, and a bed root of 103.9 is the fallback. 6. The BEAT in IV is between two multi-partial cards: harmonic n beats at 1.3n Hz and FDR's fundamental under an F1 at 404 Hz is weak, so expect a shimmer rather than a tremolo; the clean version is III's (single-partial sine against a buzzer fundamental) and is the one to audition first; if the release ramps of the Q=150 cards smear it, lengthen the III hold from 12 to 15 beats. 7. The carillon card's family is 'unknown 81%', so its transposition law is whatever the engine defaults to; it is only moved within 557-2180 Hz, and its dominant pedal at 1726.8 Hz should be checked against its 0.89 s decay. 8. At 168 bpm a plastic bell's 2.14 s ring spans the whole Motif D; the b-section hemiola now puts every septimal degree on the A5 bell alone, so the smear is one bell against itself plus E5/Cs5 on tonic and octave; velocities are capped at 0.75 there. 9. The buzzer struck (tau 0.21 s) may be a click rather than a stab; if so, replace its scherzo strikes with 0.25 s breath notes at the same pitches (the yield at 335.0 survives either way). 10. The quantisation rule collapses C_f's cadence (1176 -> 1102 by the tie rule), a semitone the original never had; it is deliberate. 11. Section boundaries in III at 168 bpm are non-integer seconds (51.43, 102.86) and must be computed from bars, not rounded; the retransition beat window is bars 93-96 = 98.57-102.86 s. 12. The IV stretto (16 entries over five bells in 16 s, ringing into the stamps) is the densest passage and the most likely to exceed headroom before -15 LUFS; if it pumps, drop plastic-A5 and carillon from the rotation. 13. YIELD's 50-cent floor is a chosen threshold; if the 100-cent buzzer yield in III reads as a wrong note rather than a gesture, it is the one to cut, since the carillon (160) and E5 (129) are larger and carried by bells that ring. 14. The E5 fold rule and the hiawatha fold rule are deterministic but change a doubling's octave mid-phrase (recap bar 63-64 and recap S2 degree 4); if the octave jumps are audible as errors, apply the fold to the whole phrase instead of the note."
+}
