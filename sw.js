@@ -3,7 +3,7 @@
 // Cross-origin requests (CDN transformers.js, HF model shards) are never intercepted;
 // they manage their own caching. Scope-relative URLs keep this working under
 // the /yellowjacket/ GitHub Pages subpath.
-const VERSION = 'yj-v75';
+const VERSION = 'yj-v76';
 
 const PRECACHE = [
   'js/app/persist.js',
@@ -51,48 +51,6 @@ const PRECACHE = [
   'docs/lab/cards/wwv-tone.json',
   'js/studio/found-cards.js',
   'js/studio/card-voice.js',
-  'js/dsp/resample.js',
-  'js/audio-engine.js',
-  'js/waveform.js',
-  'js/spectrogram.js',
-  'js/transcribe.js',
-  'js/transcript-ui.js',
-  'js/dsp/eq.js',
-  'js/dsp/dehum.js',
-  'js/dsp/denoise.js',
-  'js/dsp/deess.js',
-  'js/dsp/gate.js',
-  'js/dsp/compressor.js',
-  'js/dsp/truepeak.js',
-  'js/dsp/limiter.js',
-  'js/dsp/loudness.js',
-  'js/dsp/loudnorm.js',
-  'js/dsp/chain.js',
-  'js/meters.js',
-  'js/machine/cliprefs.js',
-  'js/machine/slice-ui.js',
-  'js/export.js',
-  'js/fft.js',
-  'js/dsp/stretch.js',
-  'js/dsp/space.js',
-  'js/machine/compile.js',
-  'js/machine/sequencer.js',
-  'js/machine/pattern-ui.js',
-  'js/machine/song-ui.js',
-  'js/machine/cliplist-ui.js',
-  'js/analysis/constellation.js',
-  'js/machine/constellation-ui.js',
-  'js/machine/voicecurve-ui.js',
-  'js/machine/voice-ui.js',
-  'js/machine/crate-ui.js',
-  'js/machine/synth-ui.js',
-  'js/machine/modal-ui.js',
-  'js/machine/pads-ui.js',
-  'js/app/firstrun-ui.js',
-  'js/machine/synth.js',
-  'js/machine/keybed.js',
-  'js/app/pipeline-ui.js',
-  'js/analysis/modal.js',
   'js/instrument/card.js',
   'js/instrument/hits.js',
   'js/instrument/spectral.js',
@@ -106,9 +64,6 @@ const PRECACHE = [
   'js/instrument/body.js',
   'js/instrument/render.js',
   'js/app/instrument-controller.js',
-  'js/app/crate.js',
-  'js/analysis/harvest.js',
-  'js/main.js',
   'js/midi/smf.js',
   'js/app/fingerprint.js',
   'js/machine/controller.js',
@@ -221,7 +176,9 @@ const PRECACHE = [
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(VERSION).then((cache) => cache.addAll(
-      PRECACHE.map((url) => new Request(url, { cache: 'reload' }))
+      // One request per URL: Cache.addAll rejects a batch that names a URL
+      // twice, and a rejected install leaves the site with no worker at all.
+      [...new Set(PRECACHE.map((url) => new URL(url, self.location.href).href))].map((url) => new Request(url, { cache: 'reload' }))
     ))
   );
 });

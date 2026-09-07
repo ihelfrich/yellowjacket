@@ -2,7 +2,7 @@
 // connects to Engine.master so the sampler and Studio share one trusted output.
 
 import { studioStepDuration, studioStepSeconds, chordNotes } from './model.js';
-import { CardVoiceCache, DRIVEN as CARD_DRIVEN } from './card-voice.js';
+import { CardVoiceCache, DRIVEN as CARD_DRIVEN, cardVoiceLevel, SILENT_PEAK } from './card-voice.js';
 
 // STUDIO_BOUNCE_DEFAULT is the source-free rate: with no recording loaded there
 // is no session rate to inherit, and 48 kHz is the right floor for synthesis.
@@ -97,8 +97,8 @@ function syncGraph(graph, studio, at = 0) {
   }
 }
 
-function scheduleVoice(ctx, destination, track, note, when, duration, velocity, voices = null, cache = null) {
-  if (track.card && track.card.card && cache) return scheduleCardVoice(ctx, destination, track, note, when, duration, velocity, voices, cache);
+function scheduleVoice(ctx, destination, track, note, when, duration, velocity, voices = null, cache = null, liveOnly = false) {
+  if (track.card && track.card.card && cache) return scheduleCardVoice(ctx, destination, track, note, when, duration, velocity, voices, cache, liveOnly);
   const synth = track.synth;
   const filter = ctx.createBiquadFilter();
   const amp = ctx.createGain();
@@ -150,15 +150,20 @@ function scheduleVoice(ctx, destination, track, note, when, duration, velocity, 
 // A card note is one render of the physics at this pitch and dynamic, played
 // once at its own level. A struck card rings for as long as the physics says;
 // a bowed or blown card is released at note-off.
-function scheduleCardVoice(ctx, destination, track, note, when, duration, velocity, voices, cache) {
+function scheduleCardVoice(ctx, destination, track, note, when, duration, velocity, voices, cache, liveOnly = false) {
   const { card, excitation } = track.card;
   const midi = note + (track.synth && Number.isFinite(track.synth.transpose) ? track.synth.transpose : 0);
+  // On the live tick a note the cache does not hold is skipped rather than
+  // rendered on the main thread: a bowed chord costs hundreds of milliseconds
+  // against a 160 ms look-ahead and would push every other part late. The
+  // warm before PLAY and the warm behind the keys make this rare.
+  if (liveOnly && !cache.has(card, excitation, midi, velocity, duration)) return;
   const rendered = cache.render(card, excitation, midi, velocity, duration);
-  if (!(rendered.peak > 1e-6)) return;
+  if (!(rendered.peak > SILENT_PEAK)) return;
   const src = ctx.createBufferSource();
   src.buffer = cache.buffer(ctx, rendered);
   const amp = ctx.createGain();
-  const level = Math.min(1, 0.5 / rendered.peak) * Math.max(0.05, Math.min(1, velocity));
+  const level = cardVoiceLevel(rendered.peak, velocity);
   const noteOff = when + Math.max(0.025, duration);
   let stopAt = when + rendered.seconds;
   amp.gain.setValueAtTime(level, when);
@@ -166,6 +171,10 @@ function scheduleCardVoice(ctx, destination, track, note, when, duration, veloci
     amp.gain.setValueAtTime(level, noteOff);
     amp.gain.exponentialRampToValueAtTime(0.0001, noteOff + 0.08);
     stopAt = Math.min(stopAt, noteOff + 0.1);
+  } else if (rendered.seconds > 0.06) {
+    // the render is tapered already; this keeps a stop never landing on a step
+    amp.gain.setValueAtTime(level, stopAt - 0.03);
+    amp.gain.exponentialRampToValueAtTime(0.0001, stopAt);
   }
   src.connect(amp).connect(destination);
   src.start(when);
@@ -275,7 +284,7 @@ export class StudioEngine extends EventTarget {
       if (!event) continue;
       const duration = studioStepSeconds(this.studio.bpm) * event.gate;
       for (const note of chordNotes(event.note, event.chord)) {
-        scheduleVoice(this._ctx, this._graph.strips[i].input, track, note, when, duration, event.velocity, this._voices, this.cache);
+        scheduleVoice(this._ctx, this._graph.strips[i].input, track, note, when, duration, event.velocity, this._voices, this.cache, true);
       }
     }
     if (this.studio.metronome && step % 4 === 0) this._click(when, step % 16 === 0);

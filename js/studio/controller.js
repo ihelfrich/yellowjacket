@@ -34,9 +34,14 @@ export function initStudioController(ctx) {
     if ($('dropZone')) $('dropZone').classList.add('is-hidden');
   }
 
-  view.addEventListener('play', () => {
-    if (!studioEngine.running && ctx.api.stopLoom) ctx.api.stopLoom();
-    studioEngine.toggle();
+  view.addEventListener('play', async () => {
+    if (studioEngine.running) { studioEngine.stop(); return; }
+    if (ctx.api.stopLoom) ctx.api.stopLoom();
+    // the click wakes the audio context; card parts render their notes in the
+    // workers before the sequencer starts, so the first bar is not late
+    if (studioEngine.engine && studioEngine.engine.wake) studioEngine.engine.wake();
+    try { await warmAll(); } catch (_) { /* reported by warmAll */ }
+    if (!studioEngine.running) studioEngine.start();
   });
   view.addEventListener('stop', () => studioEngine.stop());
   view.addEventListener('studio', (event) => edit('studio', (doc) => { doc[event.detail.key] = event.detail.value; }));
@@ -47,26 +52,33 @@ export function initStudioController(ctx) {
   function warmAll() {
     if (warming) return warming;
     warming = (async () => {
-      await yieldToPaint();
-      for (let i = 0; i < studio.tracks.length; i++) {
-        const track = studio.tracks[i];
-        if (!track.card) continue;
-        await warmCardTrack(studioEngine.cache, studio, track, {
-          pool: instrumentPool,
-          yieldFn: yieldToPaint,
-          onProgress: (done, total) => status('STUDIO · RENDERING ' + track.name + ' · ' + done + '/' + total, done < total),
-        });
+      try {
+        await yieldToPaint();
+        for (let i = 0; i < studio.tracks.length; i++) {
+          const track = studio.tracks[i];
+          if (!track.card) continue;
+          await warmCardTrack(studioEngine.cache, studio, track, {
+            pool: instrumentPool,
+            yieldFn: yieldToPaint,
+            onProgress: (done, total) => status('STUDIO · RENDERING ' + track.name + ' · ' + done + '/' + total, done < total),
+          });
+        }
+        // The warm ran under whatever the bench was saying; hand the status back.
+        if (studioEngine.running) status('STUDIO PLAYING · ' + studio.bpm + ' BPM', true);
+      } catch (err) {
+        statusFault('STUDIO · RENDER FAULT · ' + (err && err.message ? err.message : err));
+      } finally {
+        warming = null;
       }
-      warming = null;
-      // The warm ran under whatever the bench was saying; hand the status back.
-      if (studioEngine.running) status('STUDIO PLAYING · ' + studio.bpm + ' BPM', true);
     })();
     return warming;
   }
   const cardFiles = new Map();
   async function loadFoundCard(id) {
     if (!cardFiles.has(id)) {
-      cardFiles.set(id, fetch(foundCardUrl(id, document.baseURI)).then((r) => { if (!r.ok) throw new Error('card ' + id + ' · HTTP ' + r.status); return r.json(); }));
+      const p = fetch(foundCardUrl(id, document.baseURI)).then((r) => { if (!r.ok) throw new Error('card ' + id + ' · HTTP ' + r.status); return r.json(); });
+      p.catch(() => cardFiles.delete(id)); // a failed fetch is not remembered; the next pick tries again
+      cardFiles.set(id, p);
     }
     return cardFiles.get(id);
   }
@@ -102,7 +114,8 @@ export function initStudioController(ctx) {
   }
   window.addEventListener('keydown', (e) => {
     if (!keysEnabled || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target && e.target.closest && e.target.closest('input, select, textarea, [contenteditable], button')) return;
+    // typing targets own their keys; a focused button (the tab just clicked, a part's pick) does not
+    if (e.target && e.target.closest && e.target.closest('input, select, textarea, [contenteditable]')) return;
     if (e.code === 'KeyZ') { keyOctave = Math.max(1, keyOctave - 1); status('STUDIO · OCTAVE ' + keyOctave); e.preventDefault(); return; }
     if (e.code === 'KeyX') { keyOctave = Math.min(7, keyOctave + 1); status('STUDIO · OCTAVE ' + keyOctave); e.preventDefault(); return; }
     const semi = KEY_SEMITONE[e.code];
@@ -110,7 +123,12 @@ export function initStudioController(ctx) {
     e.preventDefault();
     playKey(12 * (keyOctave + 1) + semi).catch(() => {});
   });
-  ctx.api.setStudioKeysEnabled = (on) => { keysEnabled = !!on; if (on) status('STUDIO · KEYS A–; PLAY PART ' + (view.selectedTrack + 1) + ' · Z/X OCTAVE'); };
+  let keysHinted = false;
+  ctx.api.setStudioKeysEnabled = (on) => {
+    keysEnabled = !!on;
+    // once a session, and after whatever brought the visitor here has been read
+    if (on && !keysHinted) { keysHinted = true; setTimeout(() => { if (keysEnabled) status('STUDIO · KEYS A–; PLAY PART ' + (view.selectedTrack + 1) + ' · Z/X OCTAVE'); }, 1800); }
+  };
 
   ctx.api.studioSetCard = (card, excitation = 'strike', name = null, trackIndex = null) => {
     const index = trackIndex === null ? view.selectedTrack : trackIndex;
@@ -151,8 +169,8 @@ export function initStudioController(ctx) {
   view.addEventListener('synth', (event) => edit('studio-sound', (doc) => {
     const track = doc.tracks[event.detail.track];
     if (!track) return;
-    track.preset = 'custom';
-    track.name = 'CUSTOM ' + (event.detail.track + 1);
+    // a card part keeps its card and name: the designer's transpose still applies to it
+    if (!track.card) { track.preset = 'custom'; track.name = 'CUSTOM ' + (event.detail.track + 1); }
     track.synth[event.detail.key] = event.detail.value;
   }));
   view.addEventListener('step', (event) => edit('studio-notes', (doc) => {
@@ -213,7 +231,6 @@ export function initStudioController(ctx) {
     status(event.detail.playing ? 'STUDIO PLAYING · ' + studio.bpm + ' BPM' : 'STUDIO STOPPED', event.detail.playing);
   });
   studioEngine.addEventListener('step', (event) => view.setStep(event.detail.step));
-  view.addEventListener('play', () => warmAll());
 
   // Undo, project import, and resume mutate the document behind this surface.
   store.addEventListener('change', (event) => {

@@ -9,6 +9,7 @@ import { cardPitchHz } from '../instrument/family.js';
 import { relatedScale } from '../instrument/tuning.js';
 import { cardFromSource, CARD_SECONDS } from '../instrument/from-source.js';
 import { instrumentPool } from '../instrument/pool.js';
+import { cardVoiceLevel, SILENT_PEAK } from '../studio/card-voice.js';
 import { download } from '../export.js';
 
 export { cardFromSource, CARD_SECONDS };
@@ -59,9 +60,10 @@ export function scaleLine(card) {
 export function cardDisplayName(card, fileName = '') {
   const base = String(fileName || '').split('/').pop().replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[_-]+/g, ' ').trim();
   const letters = (base.match(/[a-z]/gi) || []).length;
-  if (letters >= 3) return base.toUpperCase().slice(0, 16);
+  const clip = (s) => Array.from(s).slice(0, 16).join(''); // never split a surrogate pair
+  if (letters >= 3) return clip(base.toUpperCase());
   const f1 = cardPitchHz(card);
-  return `${noteName(f1)} ${familyLabel(card.family)}`.toUpperCase().slice(0, 16);
+  return clip(`${noteName(f1)} ${familyLabel(card.family)}`.toUpperCase());
 }
 
 /** One list row per mode; pure so it can be tested without a DOM. */
@@ -194,8 +196,8 @@ export function initInstrumentController(ctx) {
       rendered.set(key, v);
     }
     const peak = v.meta.peak || 0;
-    if (peak < 1e-4) { status(`SILENT · THIS CARD DOES NOT SPEAK UNDER ${excitation.toUpperCase()}`); return; }
-    source = engine.audition(v.samples, { sampleRate: v.sampleRate, gain: Math.min(1, 0.5 / peak) });
+    if (!(peak > SILENT_PEAK)) { status(`SILENT · THIS CARD DOES NOT SPEAK UNDER ${excitation.toUpperCase()}`); return; }
+    source = engine.audition(v.samples, { sampleRate: v.sampleRate, gain: cardVoiceLevel(peak, 1) });
     if (!source) { status('NO AUDIO CONTEXT · PLAY THE SOURCE ONCE FIRST'); return; }
     play.hidden = true;
     stop.hidden = false;
@@ -212,9 +214,9 @@ export function initInstrumentController(ctx) {
     try {
       const v = await instrumentPool.render({ card, pitchHz: cardPitchHz(card), excitation, seconds: AUDITION_SECONDS });
       const peak = v.meta.peak || 0;
-      if (peak < 1e-4) { status(`SILENT · THIS CARD DOES NOT SPEAK UNDER ${excitation.toUpperCase()}`); return; }
+      if (!(peak > SILENT_PEAK)) { status(`SILENT · THIS CARD DOES NOT SPEAK UNDER ${excitation.toUpperCase()}`); return; }
       const pcm = new Float32Array(v.samples.length);
-      const g = Math.min(1, 0.5 / peak);
+      const g = cardVoiceLevel(peak, 1);
       for (let i = 0; i < pcm.length; i++) pcm[i] = v.samples[i] * g;
       const label = cardDisplayName(card, P && (P.fileName || P.name)).slice(0, 12) + ' ' + excitation.toUpperCase();
       const slot = ctx.api.machineAddSample({ pcm, sampleRate: v.sampleRate, label, role: 'TONE', kind: 'card', meta: { cardId: card.id, excitation, pitchHz: cardPitchHz(card) } });

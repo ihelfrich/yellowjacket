@@ -18,6 +18,7 @@ export class InstrumentPool {
     this.jobs = new Map();
     this.seq = 0;
     this.next = 0;
+    this.failures = 0;
   }
   get busy() { return this.jobs.size; }
 
@@ -34,8 +35,13 @@ export class InstrumentPool {
         else job.reject(new Error(msg.message || 'instrument worker error'));
       };
       w.onerror = (e) => {
+        // A worker whose script failed to load is dead: retire it so the next
+        // job spawns a fresh one, and after two such deaths render in place.
         const err = new Error(e.message || 'instrument worker error');
         for (const [id, job] of this.jobs) if (job.worker === i) { job.reject(err); this.jobs.delete(id); }
+        try { w.terminate(); } catch (_) { /* already gone */ }
+        if (this.workers[i] === w) this.workers[i] = null;
+        if (++this.failures >= 2) this.available = false;
       };
       this.workers[i] = w;
     }
@@ -65,7 +71,13 @@ export class InstrumentPool {
     return this._post('card', { mono: copy, sampleRate, opts }, [copy.buffer], onProgress).then((m) => m.result);
   }
 
-  terminate() { for (const w of this.workers) if (w) w.terminate(); this.workers = []; this.jobs.clear(); }
+  terminate() {
+    for (const w of this.workers) if (w) { try { w.terminate(); } catch (_) { /* gone */ } }
+    this.workers = [];
+    const err = new Error('instrument pool terminated');
+    for (const [, job] of this.jobs) job.reject(err);
+    this.jobs.clear();
+  }
 }
 
 /** The bench's shared pool; workers start on the first job. */

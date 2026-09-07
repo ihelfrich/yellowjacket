@@ -154,8 +154,12 @@ export function generateStudioIdea(studio, seed = null) {
   studio.bars = Math.max(2, Math.min(STUDIO_MAX_BARS, studio.bars || 2));
   const random = mulberry32(nextSeed);
   const scale = scaleSpec(studio);
-  const chord = scale === 'major' ? 'major' : (scale === 'pentatonic' ? 'fifth' : 'minor');
-  const progression = scale === 'major' ? [0, 4, 5, 3] : [0, 5, 3, 4];
+  const scaleId = STUDIO_SCALES[studio.scale] ? studio.scale : (studio.scale === 'custom' ? 'custom' : 'minor');
+  // A custom scale is voiced by its own third: a major third and no minor one
+  // makes major triads, a minor third makes minor ones, neither makes fifths.
+  const custom = scaleId === 'custom' ? (scale.intervals.includes(4) && !scale.intervals.includes(3) ? 'major' : scale.intervals.includes(3) ? 'minor' : 'fifth') : null;
+  const chord = scaleId === 'major' ? 'major' : scaleId === 'pentatonic' ? 'fifth' : scaleId === 'custom' ? custom : 'minor';
+  const progression = chord === 'major' ? [0, 4, 5, 3] : [0, 5, 3, 4];
   for (const track of studio.tracks) track.steps.fill(null);
 
   const total = studio.bars * STUDIO_STEPS_PER_BAR;
@@ -238,7 +242,9 @@ export function normalizeStep(value) {
 function applyTrack(target, saved) {
   if (!saved || typeof saved !== 'object') return;
   if (typeof saved.name === 'string') target.name = saved.name.slice(0, 16);
-  const savedCard = saved.preset === 'card' && saved.card && saved.card.card && Array.isArray(saved.card.card.modes) ? saved.card : null;
+  // A well-formed saved card wins over the preset label: a designer knob on a
+  // card part used to relabel it 'custom' and lose the card on restore.
+  const savedCard = saved.card && saved.card.card && Array.isArray(saved.card.card.modes) ? saved.card : null;
   if (savedCard) { target.preset = 'card'; target.card = { card: savedCard.card, excitation: CARD_EXCITATIONS.includes(savedCard.excitation) ? savedCard.excitation : 'strike' }; }
   else if (saved.preset === 'custom') { target.preset = 'custom'; target.card = null; }
   else if (typeof saved.preset === 'string') { target.preset = presetById(saved.preset).id; target.card = null; }

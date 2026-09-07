@@ -85,6 +85,12 @@ export function renderVoice({ card, pitchHz, excitation = 'strike', params = {},
     truth.set(down.subarray(0, Math.min(truthLen, down.length)));
   }
   const samples = body && body.kind ? applyBody(truth, TRUTH_RATE, { ...body, family: card.family.kind }) : truth;
+  // A struck or plucked render is a slice of a ring that may outlast it; the
+  // last 20 ms fall on a raised cosine so a stop never lands on a step.
+  if (!DRIVEN.has(excitation)) {
+    const n = Math.min(samples.length, Math.round(0.02 * TRUTH_RATE));
+    for (let i = 0; i < n; i++) samples[samples.length - n + i] *= 0.5 * (1 + Math.cos(Math.PI * (i + 1) / n));
+  }
   const result = {
     samples, sampleRate: TRUTH_RATE, key,
     meta: { ...describe(samples, TRUTH_RATE), used: { position: card.hits ? 'measured' : 'theory', path: nonlinear ? 'bank-4x' : 'closed-form' } },

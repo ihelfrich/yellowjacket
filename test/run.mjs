@@ -39,7 +39,7 @@ import { buildCard, fitDampingLaw, classifyFamily, qAt, FAMILY_RATIOS, fitNonlin
 import { modesAt, contactTimeSec, halfSineWeight, modeShape, cardPitchHz } from '../js/instrument/family.js';
 import { highpass, findHits, bestHit } from '../js/instrument/hits.js';
 import { cardFromSource, cardRows, cardSummary, noteName as cardNoteName } from '../js/app/instrument-controller.js';
-import { CardVoiceCache, cardNoteKey, noteSeconds, dynamicsBucket, trackNotes, warmCardTrack } from '../js/studio/card-voice.js';
+import { CardVoiceCache, cardNoteKey, noteSeconds, dynamicsBucket, trackNotes, warmCardTrack, cardVoiceLevel, SILENT_PEAK } from '../js/studio/card-voice.js';
 import { InstrumentPool } from '../js/instrument/pool.js';
 import { cardScale, cardScaleIntervals, scaleLine, cardDisplayName } from '../js/app/instrument-controller.js';
 import { scaleSpec, applyCustomScale, scaleNote as studioScaleNote, createStudio as createStudioForScales } from '../js/studio/model.js';
@@ -6368,7 +6368,7 @@ const studioCardCases = [
     const cache = new CardVoiceCache(4), card = bellCard();
     const a = cache.render(card, 'strike', 72, 0.8, 0.25);
     assert.equal(a.sampleRate, 96000); assert.ok(a.peak > 0.01 && a.peak <= 1, 'audible, unclipped: ' + a.peak);
-    assert.ok(Math.abs(a.seconds - 2.5) < 1e-6);
+    assert.ok(Math.abs(a.seconds - noteSeconds('strike', 0.25, card)) < 1e-6, 'a strike renders for its ring: ' + a.seconds);
     assert.strictEqual(cache.render(card, 'strike', 72, 0.9, 0.5), a, 'a hit returns the same object');
     assert.ok(cache.has(card, 'strike', 72, 0.8, 0.25) && !cache.has(card, 'pluck', 72, 0.8, 0.25));
     for (const m of [60, 62, 64, 65]) cache.render(card, 'strike', m, 0.8, 0.25);
@@ -6491,7 +6491,114 @@ const modulesParseCases = [
   },
 ];
 
+// --- review fixes (2026-09-06 adversarial review of b94ff45..f040868) -----------
+const reviewFixCases = [
+  async function precacheNamesEveryUrlOnceAndEveryFileExists() {
+    const sw = await readFile(new URL('../sw.js', import.meta.url), 'utf8');
+    const start = sw.indexOf('const PRECACHE = [');
+    const block = sw.slice(start, sw.indexOf('];', start));
+    const urls = [...block.matchAll(/'([^']+)'/g)].map((m) => m[1].replace(/^\.\//, ''));
+    assert.ok(urls.length > 100, 'the list was parsed: ' + urls.length);
+    const dupes = urls.filter((u, i) => urls.indexOf(u) !== i);
+    assert.deepEqual(dupes, [], 'Cache.addAll rejects a batch naming a URL twice, and the worker never installs');
+    const missing = urls.filter((u) => !/^https?:/.test(u) && !existsSync(new URL('../' + u, import.meta.url)));
+    assert.deepEqual(missing, [], 'every precached file is on disk');
+    assert.match(sw, /new Set\(PRECACHE\.map/, 'the install handler dedupes as well');
+  },
+  function aDesignerKnobOnACardPartKeepsTheCardThroughTheSnapshot() {
+    const studio = createStudioForScales();
+    applyCardInstrument(studio.tracks[2], bellCard(), 'strike', 'CARILLON');
+    studio.tracks[2].synth.transpose = -12;
+    const back = applyStudioSnapshotForCards(createStudioForScales(), JSON.parse(JSON.stringify(studio)));
+    assert.equal(back.tracks[2].preset, 'card'); assert.ok(back.tracks[2].card, 'transpose on a card part is not a preset change');
+    assert.equal(back.tracks[2].synth.transpose, -12);
+    const legacy = JSON.parse(JSON.stringify(studio)); legacy.tracks[2].preset = 'custom'; legacy.tracks[2].name = 'CUSTOM 3';
+    const rescued = applyStudioSnapshotForCards(createStudioForScales(), legacy);
+    assert.equal(rescued.tracks[2].preset, 'card'); assert.ok(rescued.tracks[2].card, 'a well-formed saved card wins over the preset label');
+  },
+  function everyFoundCardLandsAtTheSameLevel() {
+    const cache = new CardVoiceCache(); const target = 20 * Math.log10(0.5 * 0.85);
+    let audible = 0;
+    for (const c of FOUND_CARDS) {
+      const card = JSON.parse(readFileSync(new URL('../docs/lab/cards/' + c.id + '.json', import.meta.url), 'utf8'));
+      const midi = Math.round(69 + 12 * Math.log2(cardPitchHz(card) / 440));
+      const r = cache.render(card, c.excitation, midi, 0.85, 0.32);
+      if (!(r.peak > SILENT_PEAK)) continue;
+      audible++;
+      const db = 20 * Math.log10(r.peak * cardVoiceLevel(r.peak, 0.85));
+      assert.ok(Math.abs(db - target) < 0.1, c.id + ' lands at ' + target.toFixed(1) + ' dBFS, got ' + db.toFixed(1));
+    }
+    assert.ok(audible >= 8, audible + ' of ' + FOUND_CARDS.length + ' found cards are audible under their own excitation');
+    assert.equal(cardVoiceLevel(0, 1), 0); assert.equal(cardVoiceLevel(1e-5, 1), 0, 'a silent render gets no gain');
+  },
+  function aStruckRenderEndsAtSilence() {
+    const cache = new CardVoiceCache();
+    for (const id of ['commons-bell-15cm', 'freesound-wineglass', 'carillon-bell']) {
+      const card = JSON.parse(readFileSync(new URL('../docs/lab/cards/' + id + '.json', import.meta.url), 'utf8'));
+      const r = cache.render(card, 'strike', 60, 1, 0.25);
+      const tail = r.samples.subarray(r.samples.length - Math.round(0.002 * r.sampleRate));
+      let tp = 0; for (const s of tail) tp = Math.max(tp, Math.abs(s));
+      assert.ok(tp < 0.02 * r.peak, id + ' last 2 ms is ' + (tp / r.peak).toFixed(3) + ' of peak');
+      assert.equal(Math.abs(r.samples[r.samples.length - 1]), 0, 'the last sample is silence');
+    }
+  },
+  function struckNotesRenderForTheirRing() {
+    const card = bellCard();
+    assert.equal(noteSeconds('strike', 0.3, card), 2, 'three times a 0.6 s ring, in quarter seconds');
+    assert.equal(noteSeconds('pluck', 5, { modes: [{ freqHz: 182, tauSec: 0.09, amp: 1 }] }), 1, 'a thud does not cost four seconds');
+    assert.equal(noteSeconds('strike', 0.3, { modes: [{ freqHz: 400, tauSec: 3, amp: 1 }] }), 4, 'capped');
+    assert.equal(noteSeconds('bow', 0.3, card), 1, 'driven notes are unchanged');
+  },
+  function ideaVoicesTheSelectedScale() {
+    for (const [scale, chord, progression] of [['major', 'major', [0, 4, 5, 3]], ['pentatonic', 'fifth', [0, 5, 3, 4]], ['minor', 'minor', [0, 5, 3, 4]]]) {
+      const s = createStudioForScales(); s.scale = scale; s.bars = 4;
+      generateStudioIdea(s, 1234);
+      const chords = new Set(s.tracks[1].steps.filter(Boolean).map((st) => st.chord));
+      assert.deepEqual([...chords], [chord], scale + ' harmony chord');
+      assert.equal(s.tracks[0].steps[16].note, studioScaleNote(s.keyRoot, scaleSpec(s), progression[1], 2), scale + ' bar-2 bass root follows its progression');
+    }
+    const custom = createStudioForScales(); applyCustomScale(custom, [0, 4, 7, 11], 'BRIGHT'); custom.bars = 2;
+    generateStudioIdea(custom, 1234);
+    assert.deepEqual([...new Set(custom.tracks[1].steps.filter(Boolean).map((st) => st.chord))], ['major'], 'a custom scale with a major third and no minor one is voiced major');
+    const dark = createStudioForScales(); applyCustomScale(dark, [0, 3, 7, 10], 'DARK'); dark.bars = 2;
+    generateStudioIdea(dark, 1234);
+    assert.deepEqual([...new Set(dark.tracks[1].steps.filter(Boolean).map((st) => st.chord))], ['minor']);
+  },
+  async function aDeadWorkerIsRetiredAndThePoolFallsBackInPlace() {
+    let made = 0;
+    globalThis.Worker = class { constructor() { made++; setTimeout(() => this.onerror && this.onerror({ message: 'failed to fetch worker' }), 0); } postMessage() {} terminate() {} };
+    try {
+      const pool = new InstrumentPool({ size: 1, workerUrl: 'x.js' });
+      assert.equal(pool.available, true);
+      const job = { card: bellCard(), pitchHz: 600, excitation: 'strike', seconds: 0.5 };
+      await assert.rejects(pool.render(job), /failed to fetch/);
+      const second = await Promise.race([pool.render(job).then(() => 'resolved', () => 'rejected'), new Promise((r) => setTimeout(() => r('hung'), 500))]);
+      assert.equal(second, 'rejected', 'the slot was rebuilt instead of posting into a corpse');
+      assert.equal(made, 2); assert.equal(pool.busy, 0);
+      assert.equal(pool.available, false, 'two dead workers: render in place from here');
+      const third = await pool.render(job);
+      assert.ok(third.meta.peak > 0, 'the third job renders on the main thread');
+    } finally { delete globalThis.Worker; }
+  },
+  function theShippedA5CardReadsAsATunedBarAndASeriesAsAString() {
+    const a5 = JSON.parse(readFileSync(new URL('../docs/lab/cards/iowa-bells-plastic-ff-A5.json', import.meta.url), 'utf8'));
+    const f = classifyFamily(a5.modes);
+    assert.equal(f.kind, 'bar', JSON.stringify(f));
+    assert.ok(f.arch > 0.4 && f.arch < 0.95, 'a −48 dB long line no longer silences the loud partials: arch ' + f.arch);
+    assert.ok(Math.abs(cardPitchHz(a5) - 885) < 2, 'pitch is the fundamental: ' + cardPitchHz(a5).toFixed(1));
+    const series = classifyFamily([110, 220, 330, 440, 550].map((hz) => ({ freqHz: hz, tauSec: 1, amp: 1, phase: 0 })));
+    assert.equal(series.kind, 'string', JSON.stringify(series));
+    assert.ok(series.confidence > 0.5, 'the bell reference loses the series on its empty tierce: ' + series.confidence.toFixed(2));
+  },
+  function cardDisplayNameNeverSplitsASurrogatePair() {
+    const name = cardDisplayName(bellCard(), 'ab😀'.repeat(8) + '.wav');
+    assert.ok(!/[\uD800-\uDBFF]$/.test(name) && !/^[\uDC00-\uDFFF]/.test(name), 'no lone surrogate: ' + JSON.stringify(name));
+    assert.ok(Array.from(name).length <= 16);
+  },
+];
+
 const groups = [
+  ['review fixes', reviewFixCases],
   ['modules parse', modulesParseCases],
   ['studio cards', studioCardCases],
   ['instrument panel', instrumentPanelCases],

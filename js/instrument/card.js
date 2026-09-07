@@ -26,16 +26,31 @@ export const FAMILY_RATIOS = Object.freeze({
 export const UNKNOWN_CONFIDENCE = 0.25;
 export const UNKNOWN_DISTANCE = 0.03; // 3% mean log distance: not any family
 export const RATIO_GATE_DB = 40; // modes this far under the strongest do not vote on the family
-export const RATIO_GATE_Q = 0.05; // nor do modes with under this share of the longest-ringing mode's Q (a 33 ms thump is not a pitch)
+export const RATIO_GATE_Q_MIN = 40; // nor do modes that ring fewer than ~13 cycles (a 33 ms thump at 350 Hz is Q 36, not a pitch)
+export const COVERAGE_PENALTY = 0.02; // score cost of a reference slot no measured mode fills
 
-/** The modes that count for pitch and family: within RATIO_GATE_DB of the strongest and not a mere transient beside the longest-ringing mode. */
+/**
+ * The modes that count for pitch and family: within RATIO_GATE_DB of the
+ * strongest, and ringing at least RATIO_GATE_Q_MIN cycles. The ring test is
+ * absolute: a share of the longest Q let a −48 dB fitter artefact at 3.5 kHz
+ * (Q 10,900) silence a bar's loudest partial, and Q = πfτ grows with
+ * frequency, so a share also drops the fundamental of any equal-decay comb.
+ */
 export function votingModes(modes) {
-  let top = 0, qMax = 0;
-  for (const m of modes) if (m.freqHz > 0) { top = Math.max(top, m.amp || 0); qMax = Math.max(qMax, modeQ(m)); }
+  let top = 0;
+  for (const m of modes) if (m.freqHz > 0) top = Math.max(top, m.amp || 0);
   const gate = top * Math.pow(10, -RATIO_GATE_DB / 20);
   const loud = modes.filter((m) => m.freqHz > 0 && (m.amp || 0) >= gate);
-  const ringing = loud.filter((m) => modeQ(m) >= RATIO_GATE_Q * qMax);
+  const ringing = loud.filter((m) => modeQ(m) >= RATIO_GATE_Q_MIN);
   return ringing.length ? ringing : loud;
+}
+
+/** Share of a reference's slots (below the highest measured ratio) that a measured ratio fills within 5 %. */
+function slotCoverage(ratios, ref) {
+  const topRatio = ratios[ratios.length - 1] * 1.1;
+  const slots = ref.filter((r) => r <= topRatio);
+  if (!slots.length) return 1;
+  return slots.filter((r) => ratios.some((m) => Math.abs(Math.log(m / r)) <= 0.05)).length / slots.length;
 }
 
 // Base64 without Buffer: the same card must build in node (tests, CLI) and in the bench.
@@ -141,12 +156,21 @@ export function classifyFamily(modes) {
   const scores = [];
   for (const [kind, ref] of Object.entries(FAMILY_RATIOS)) {
     if (kind === 'tunedBar') continue; // the arch end of `bar`, not a family of its own
+    // Nearest-reference matching lets a measured ratio skip reference slots: a
+    // harmonic series 1:2:3:4:5 sits at distance zero from the bell reference
+    // (1, 2, 2.4, 3, 4, 5) as well as from a string, and a wine glass at
+    // 1 : 6.9 : 9.9 matches a tuned bar's third and fourth modes with its
+    // second missing. So every candidate's score is its distance plus a cost
+    // for each of its slots (below the highest measured ratio) that no
+    // measured mode fills; the bell then loses the series to the string on its
+    // empty tierce, and a card missing a partial keeps its label at a lower
+    // confidence. The absolute UNKNOWN_DISTANCE test still uses the distance.
     if (kind === 'bar') {
       // The arch is read from the first two overtones. Above them a real bar's
       // ratios also fall with its thickness (A5 on the Iowa set: 3.17 · 6.43 ·
       // 8.83 against C#5's 3.27 · 7.11 · 11.0), which one parameter cannot carry.
       const { arch, err } = fitArch(ratios.slice(0, 3));
-      scores.push({ kind, dist: err, B: 0, arch });
+      scores.push({ kind, dist: err, score: err + COVERAGE_PENALTY * (1 - slotCoverage(ratios, archRatios(arch))), B: 0, arch });
       continue;
     }
     if (kind === 'string') {
@@ -156,26 +180,17 @@ export function classifyFamily(modes) {
       const { B, err } = fitInharmonicity(ratios);
       const indices = new Set(ratios.map((r) => Math.max(1, Math.round(r))));
       const coverage = indices.size / Math.max(...indices);
-      scores.push({ kind, dist: coverage >= 0.5 ? err : Infinity, B, arch: 0 });
+      const dist = coverage >= 0.5 ? err : Infinity;
+      scores.push({ kind, dist, score: dist + COVERAGE_PENALTY * (1 - coverage), B, arch: 0 });
+      continue;
     }
-    else scores.push({ kind, dist: ratioDistance(ratios, ref), B: 0, arch: 0 });
+    const dist = ratioDistance(ratios, ref);
+    scores.push({ kind, dist, score: dist + COVERAGE_PENALTY * (1 - slotCoverage(ratios, ref)), B: 0, arch: 0 });
   }
-  scores.sort((a, b) => a.dist - b.dist);
+  scores.sort((a, b) => a.score - b.score);
   const best = scores[0], second = scores[1];
-  let confidence = second.dist > 0 ? Math.max(0, 1 - best.dist / second.dist) : 0;
+  const confidence = second.score > 0 ? Math.max(0, 1 - best.score / second.score) : 0;
   const kind = confidence < UNKNOWN_CONFIDENCE || best.dist > UNKNOWN_DISTANCE ? 'unknown' : best.kind;
-  // Nearest-reference matching lets a measured ratio skip reference slots: a
-  // wine glass at 1 : 6.9 : 9.9 matches a tuned bar's third and fourth modes
-  // with its second missing, as does a bar card whose second partial the fitter
-  // dropped. The label stays; the confidence carries the share of reference
-  // slots (below the highest measured ratio) that a measured mode occupies.
-  if (kind !== 'unknown' && kind !== 'string') {
-    const ref = kind === 'bar' ? archRatios(best.arch) : FAMILY_RATIOS[kind];
-    const topRatio = ratios[ratios.length - 1] * 1.1;
-    const slots = ref.filter((r) => r <= topRatio);
-    const matched = slots.filter((r) => ratios.some((m) => Math.abs(Math.log(m / r)) <= 0.05)).length;
-    confidence *= slots.length ? matched / slots.length : 1;
-  }
   return { kind, confidence, inharmonicity: kind === 'string' ? best.B : 0, arch: kind === 'bar' ? best.arch : 0, ratios };
 }
 
