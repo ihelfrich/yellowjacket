@@ -33,6 +33,7 @@ import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
 import { initCyclicController } from './app/cyclic-controller.js';
 import { initInstrumentController } from './app/instrument-controller.js';
+import { confirmAct } from './app/confirm.js';
 import { initSourceController } from './app/source-controller.js';
 import { initFieldLibrary } from './app/field-library.js';
 import { initMachineController } from './machine/controller.js';
@@ -464,7 +465,8 @@ window.addEventListener('keydown', (event) => {
 
 // ---------- keys ----------
 window.addEventListener('keydown', (e) => {
-  if (e.target.matches('input, select, textarea')) return;
+  // the target can be the document itself (no focused element in some embeds)
+  if (!e.target || typeof e.target.matches !== 'function' || e.target.matches('input, select, textarea')) return;
   // A focused button owns Space (native click) — TAP TEMPO would double-fire otherwise.
   if (e.code === 'Space' && e.target.closest && e.target.closest('button')) return;
   if (e.code === 'Space') {
@@ -572,18 +574,24 @@ if (views.firstRun) views.firstRun.addEventListener('start', (e) => {
   openStartRoute(e.detail.path);
 });
 if (views.firstRun) views.firstRun.addEventListener('dismiss', markFirstRunDone);
-$('btnOpenSynth').addEventListener('click', () => {
-  if (!$('resumePanel').hidden && typeof window.confirm === 'function'
-    && !window.confirm('Start a new synth session? The saved resume session will be replaced after your first edit. CRATE instruments are kept.')) {
+$('btnOpenSynth').addEventListener('click', async () => {
+  if (!$('resumePanel').hidden && !(await confirmAct({
+    title: 'Start a new synth session?',
+    body: 'The saved resume session will be replaced after your first edit.\n\nCRATE instruments are kept.',
+    ok: 'START', cancel: 'KEEP THE SESSION',
+  }))) {
     status('SAVED SESSION KEPT');
     return;
   }
   markFirstRunDone();
   openStartRoute('synth');
 });
-$('btnOpenDrums').addEventListener('click', () => {
-  if (!$('resumePanel').hidden && typeof window.confirm === 'function'
-    && !window.confirm('Start a new drum session? The saved resume session will be replaced after your first edit. CRATE instruments are kept.')) {
+$('btnOpenDrums').addEventListener('click', async () => {
+  if (!$('resumePanel').hidden && !(await confirmAct({
+    title: 'Start a new drum session?',
+    body: 'The saved resume session will be replaced after your first edit.\n\nCRATE instruments are kept.',
+    ok: 'START', cancel: 'KEEP THE SESSION',
+  }))) {
     status('SAVED SESSION KEPT');
     return;
   }

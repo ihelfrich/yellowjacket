@@ -124,3 +124,34 @@ stayed green, because the DOM-only modules were never imported by a test.
   becomes a MACHINE track (`ctx.api.machineAddSample`, asset kind `card`).
 - Names: a card is called after its file when the file has a name, else by
   its note and family (D5 TUNED BAR), because a Freesound preview is a number.
+
+## 8. The review, and what it caught
+
+An adversarial review of the day's five commits (six dimensions, three
+refuters per finding, majority kills) returned fourteen findings, every one
+unanimous, none refuted. The worst was mine and invisible from localhost:
+the service-worker precache I extended listed 45 modules twice, bare and
+`./`-prefixed; `Cache.addAll` rejects a batch that names a URL twice, so no
+visitor had installed a worker since v72 and returning visitors were pinned
+to v71, the build before the INSTRUMENT panel. Fixed, deduped at install as
+well, tested, and confirmed on the live site: one active registration, 142
+files in the v76 cache.
+
+The rest, each with the test the review proposed: struck cards played 27–54
+dB under the synths (the level only attenuated; every note now lands at
+−6 dBFS × velocity); IDEA in MAJOR wrote minor chords (a spec object compared
+to a string); a designer knob on a card part lost the card from every save;
+the ring gate took its reference from modes under the amplitude gate and Q's
+frequency weighting could drop a comb's fundamental (an absolute Q ≥ 40 over
+the loud modes); a harmonic series tied the bell reference and read unknown
+(slot coverage is now part of the score); struck renders were cut at 2.5 s
+mid-ring with a click (they render for three times the longest decay and end
+on a 20 ms taper); cold card notes rendered on the scheduler tick (skipped
+live, warmed before PLAY); a dead worker received jobs forever (retired, and
+after two deaths the pool renders in place); per-context AudioBuffers were
+pinned (WeakMap); keys were dead after clicking a tab; the keys hint
+overwrote confirmations; names could split a surrogate pair.
+
+The bench's own confirm dialog (`js/app/confirm.js`) replaces all six
+native `window.confirm` calls; a test forbids the native one anywhere under
+`js/`.

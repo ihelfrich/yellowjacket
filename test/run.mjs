@@ -42,6 +42,7 @@ import { cardFromSource, cardRows, cardSummary, noteName as cardNoteName } from 
 import { CardVoiceCache, cardNoteKey, noteSeconds, dynamicsBucket, trackNotes, warmCardTrack, cardVoiceLevel, SILENT_PEAK } from '../js/studio/card-voice.js';
 import { InstrumentPool } from '../js/instrument/pool.js';
 import { cardScale, cardScaleIntervals, scaleLine, cardDisplayName } from '../js/app/instrument-controller.js';
+import { paragraphsOf, confirmAct } from '../js/app/confirm.js';
 import { scaleSpec, applyCustomScale, scaleNote as studioScaleNote, createStudio as createStudioForScales } from '../js/studio/model.js';
 import { applyCardInstrument, cardInstrumentName, applyStudioSnapshot as applyStudioSnapshotForCards, applyInstrumentPreset as applyPresetForCards } from '../js/studio/model.js';
 import { FOUND_CARDS } from '../js/studio/found-cards.js';
@@ -6589,6 +6590,16 @@ const reviewFixCases = [
     const series = classifyFamily([110, 220, 330, 440, 550].map((hz) => ({ freqHz: hz, tauSec: 1, amp: 1, phase: 0 })));
     assert.equal(series.kind, 'string', JSON.stringify(series));
     assert.ok(series.confidence > 0.5, 'the bell reference loses the series on its empty tierce: ' + series.confidence.toFixed(2));
+  },
+  async function theBenchConfirmsInItsOwnWordsNotTheBrowsers() {
+    assert.deepEqual(paragraphsOf('Replace “x”?\n\nIts transcript, cuts\nand repairs go.\n\n  Machine tracks are kept.  '), ['Replace “x”?', 'Its transcript, cuts and repairs go.', 'Machine tracks are kept.']);
+    assert.deepEqual(paragraphsOf(''), []);
+    assert.equal(await confirmAct({ title: 'x' }), true, 'with no DOM and no window.confirm the act proceeds');
+    const { readdirSync } = await import('node:fs');
+    const offenders = [];
+    const walk = (dir) => { for (const name of readdirSync(dir, { withFileTypes: true })) { const p = new URL(name.name + (name.isDirectory() ? '/' : ''), dir); if (name.isDirectory()) walk(p); else if (name.name.endsWith('.js') && !p.href.endsWith('/app/confirm.js')) { const src = readFileSync(p, 'utf8'); if (/window\.confirm\(/.test(src)) offenders.push(p.href.split('/js/')[1]); } } };
+    walk(new URL('../js/', import.meta.url));
+    assert.deepEqual(offenders, [], 'every confirmation goes through the bench dialog');
   },
   function cardDisplayNameNeverSplitsASurrogatePair() {
     const name = cardDisplayName(bellCard(), 'ab😀'.repeat(8) + '.wav');

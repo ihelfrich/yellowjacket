@@ -3,6 +3,7 @@
 import { applyInstrumentPreset, applyCardInstrument, applyCustomScale, generateStudioIdea, normalizeStep, transformStudioBar, CARD_EXCITATIONS } from './model.js';
 import { warmCardTrack } from './card-voice.js';
 import { instrumentPool } from '../instrument/pool.js';
+import { confirmAct } from '../app/confirm.js';
 import { FOUND_CARDS, foundCardById, foundCardUrl } from './found-cards.js';
 import { cardPitchHz } from '../instrument/family.js';
 import { studioMidiFile } from './midi.js';
@@ -185,10 +186,9 @@ export function initStudioController(ctx) {
     const start = event.detail.page * 16;
     for (let i = start; i < start + 16; i++) track.steps[i] = null;
   }));
-  view.addEventListener('idea', () => {
+  view.addEventListener('idea', async () => {
     const hasNotes = studio.tracks.some((track) => track.steps.some(Boolean));
-    if (hasNotes && typeof window.confirm === 'function'
-      && !window.confirm('Replace the current Studio notes with a new key-aware idea? You can undo this.')) return;
+    if (hasNotes && !(await confirmAct({ title: 'Write a new idea over these notes?', body: 'Every part gets a fresh key-aware arrangement. UNDO brings the current notes back.', ok: 'WRITE IT', cancel: 'KEEP THEM' }))) return;
     edit('studio-idea', (doc) => generateStudioIdea(doc));
     status('STUDIO IDEA · ' + studio.bars + ' BARS · ' + studio.bpm + ' BPM');
   });

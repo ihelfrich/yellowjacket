@@ -6,6 +6,7 @@ import {
   serializeProject, snapshotDoc, applySnapshot, hydrateSample, projectHasContent,
   OpfsStore, FORMAT_VERSION,
 } from './persist.js';
+import { confirmAct } from './confirm.js';
 import {
   buildBundle, readBundle, projectEntries, parseProjectEntries, safeProjectName,
 } from './project-bundle.js';
@@ -266,9 +267,11 @@ export function initPersistController(ctx) {
       return;
     }
 
-    if (projectHasContent(P, R) && typeof window.confirm === 'function'
-      && !window.confirm('Open “' + (payload.json.fileName || file.name) + '”?\n\n'
-        + 'This replaces the current bench session. CRATE instruments are kept.')) {
+    if (projectHasContent(P, R) && !(await confirmAct({
+      title: 'Open “' + (payload.json.fileName || file.name) + '”?',
+      body: 'This replaces the current bench session.\n\nCRATE instruments are kept.',
+      ok: 'OPEN IT', cancel: 'KEEP THIS ONE', danger: true,
+    }))) {
       status('PROJECT KEPT');
       if (btn) { btn.disabled = false; btn.classList.remove('is-working'); }
       return;
@@ -521,8 +524,11 @@ export function initPersistController(ctx) {
 
   async function discard() {
     if (!opfs) return;
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function'
-      && !window.confirm('Discard the saved Yellowjacket session? This cannot be undone. CRATE instruments are kept.')) {
+    if (!(await confirmAct({
+      title: 'Discard the saved session?',
+      body: 'This cannot be undone.\n\nCRATE instruments are kept.',
+      ok: 'DISCARD', cancel: 'KEEP IT', danger: true,
+    }))) {
       status('SAVED SESSION KEPT');
       return;
     }

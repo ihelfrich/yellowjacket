@@ -10,6 +10,8 @@ export const DEMO_TRACK = Object.freeze({
   name: 'Sparks — Zane Little.mp3',
 });
 
+import { confirmAct } from './confirm.js';
+
 export function sourceReplacementNeedsConfirmation(runtime) {
   return !!(runtime && runtime.buffer);
 }
@@ -31,14 +33,14 @@ export function initSourceController(ctx) {
   const P = store.project;
   const R = store.runtime;
 
-  function confirmSourceReplacement() {
+  async function confirmSourceReplacement() {
     if (!sourceReplacementNeedsConfirmation(R)) return true;
     const name = P.fileName ? '“' + P.fileName + '”' : 'the current source';
-    const ok = typeof window.confirm !== 'function' || window.confirm(
-      'Replace ' + name + '?\n\n'
-      + 'Its transcript, cuts, repairs, slices, and saved resume point will be replaced. '
-      + 'Machine tracks and CRATE instruments are kept.'
-    );
+    const ok = await confirmAct({
+      title: 'Replace ' + name + '?',
+      body: 'Its transcript, cuts, repairs, slices, and saved resume point will be replaced.\n\nMachine tracks and CRATE instruments are kept.',
+      ok: 'REPLACE', cancel: 'KEEP IT', danger: true,
+    });
     if (!ok) {
       $('dropZone').classList.add('is-hidden');
       status('SOURCE KEPT');
@@ -58,7 +60,7 @@ export function initSourceController(ctx) {
       else statusFault('MIDI FAULT · the studio is not ready');
       return;
     }
-    if (!confirmSourceReplacement()) return;
+    if (!(await confirmSourceReplacement())) return;
     status(COPY.decoding, true);
     let ab;
     try {
@@ -71,7 +73,7 @@ export function initSourceController(ctx) {
   }
 
   async function loadDemo() {
-    if (!confirmSourceReplacement()) return;
+    if (!(await confirmSourceReplacement())) return;
     const btn = $('btnLoadDemo');
     btn.disabled = true;
     btn.classList.add('is-working');
@@ -358,7 +360,7 @@ export function initSourceController(ctx) {
       showRipHelp(u, "That host won't hand audio to a web page. Rip it on your machine, then drop the file here:");
       return;
     }
-    if (!confirmSourceReplacement()) return;
+    if (!(await confirmSourceReplacement())) return;
     const btn = $('btnLoadUrl');
     btn.disabled = true;
     btn.classList.add('is-working');
