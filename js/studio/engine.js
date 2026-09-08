@@ -1,7 +1,7 @@
 // Polyphonic melodic instrument engine for the Studio surface. It deliberately
 // connects to Engine.master so the sampler and Studio share one trusted output.
 
-import { studioStepDuration, studioStepSeconds, chordNotes } from './model.js';
+import { studioStepDuration, studioStepSeconds, chordNotes, stepPitch } from './model.js';
 import { CardVoiceCache, DRIVEN as CARD_DRIVEN, cardVoiceLevel, SILENT_PEAK } from './card-voice.js';
 
 // STUDIO_BOUNCE_DEFAULT is the source-free rate: with no recording loaded there
@@ -21,6 +21,8 @@ const TICK_MS = 25;
 const START_DELAY = 0.04;
 
 function dbGain(db) { return Math.pow(10, Number(db || 0) / 20); }
+// note is a pitch in semitones, not an integer: a step off the twelve-tone grid
+// arrives here as 64.38 and sounds 38 cents above E4.
 function hz(note) { return 440 * Math.pow(2, (note - 69) / 12); }
 
 function impulse(ctx, seconds = 2.4, decay = 2.7) {
@@ -283,7 +285,7 @@ export class StudioEngine extends EventTarget {
       const event = track.steps[step];
       if (!event) continue;
       const duration = studioStepSeconds(this.studio.bpm) * event.gate;
-      for (const note of chordNotes(event.note, event.chord)) {
+      for (const note of chordNotes(stepPitch(event), event.chord)) {
         scheduleVoice(this._ctx, this._graph.strips[i].input, track, note, when, duration, event.velocity, this._voices, this.cache, true);
       }
     }
@@ -319,7 +321,7 @@ export class StudioEngine extends EventTarget {
         const event = track.steps[step];
         if (!event) continue;
         const duration = studioStepSeconds(this.studio.bpm) * event.gate;
-        for (const note of chordNotes(event.note, event.chord)) {
+        for (const note of chordNotes(stepPitch(event), event.chord)) {
           scheduleVoice(ctx, graph.strips[i].input, track, note, when, duration, event.velocity, null, this.cache);
         }
       }

@@ -10,6 +10,7 @@ import { relatedScale } from '../instrument/tuning.js';
 import { cardFromSource, CARD_SECONDS } from '../instrument/from-source.js';
 import { instrumentPool } from '../instrument/pool.js';
 import { cardVoiceLevel, SILENT_PEAK } from '../studio/card-voice.js';
+import { dedupeScaleIntervals } from '../studio/model.js';
 import { download } from '../export.js';
 
 export { cardFromSource, CARD_SECONDS };
@@ -39,17 +40,32 @@ export function cardScale(card) {
   if (!card || !card.modes || card.modes.length < 2) return [];
   return relatedScale(card.modes).map((s) => s.cents);
 }
-/** Those minima snapped to semitones for a twelve-tone STUDIO, 0 first, deduped. */
+/**
+ * Those minima in semitones for STUDIO, 0 first, sorted, deduped. A minimum is
+ * admitted by the semitone it lands nearest and kept exactly: the Iowa brass
+ * bell's 758 and 812 cents both round to 8, and a rounded scale played only one
+ * of them. Two minima under SCALE_DEGREE_CENTS apart are one degree the curve
+ * happened to sample twice, and the lower one stands for both.
+ */
 export function cardScaleIntervals(card) {
-  const set = new Set([0]);
-  for (const c of cardScale(card)) { const n = Math.round(c / 100); if (n > 0 && n < 12) set.add(n); }
-  return [...set].sort((a, b) => a - b);
+  const admitted = [];
+  for (const c of cardScale(card)) { const column = Math.round(c / 100); if (column > 0 && column < 12) admitted.push(c / 100); }
+  return dedupeScaleIntervals(admitted);
 }
-/** The scale line for the panel. */
+/**
+ * The scale line for the panel: every minimum the curve found, then the degrees
+ * STUDIO is actually handed — both in whole cents, because the second list is
+ * no longer a list of semitone columns. Rounding those degrees to semitones for
+ * display printed uvb76-buzz's 19 degrees as 9 distinct numbers ('6 6 6',
+ * '7 7 7 7') and both of the brass bell's semitone-8 degrees as '8', which is
+ * the collapse the exact scale exists to remove, put back in the one place the
+ * person reads it. Surviving degrees are at least SCALE_DEGREE_CENTS apart, so
+ * whole cents cannot collide. The phrasing is pinned by test/run.mjs.
+ */
 export function scaleLine(card) {
   const cents = cardScale(card);
   if (!cents.length) return '';
-  return 'ITS OWN SCALE · ' + cents.map((c) => Math.round(c)).join(' · ') + ' cents · snaps to ' + cardScaleIntervals(card).join(' ');
+  return 'ITS OWN SCALE · ' + cents.map((c) => Math.round(c)).join(' · ') + ' cents · snaps to ' + cardScaleIntervals(card).map((v) => Math.round(v * 100)).join(' ');
 }
 
 /**
@@ -81,13 +97,24 @@ export function cardRows(card, { limit = 8 } = {}) {
   });
 }
 
-/** One line: pitch, family and confidence, mode count, Q range, what is assumed, what bends. */
+/** One line: pitch, family and how well it fits, mode count, Q range, what is assumed, what bends. */
 export function cardSummary(card) {
   const modes = card.modes;
   if (!modes.length) return 'nothing to card';
   const qs = modes.map(modeQ), lo = Math.round(Math.min(...qs)), hi = Math.round(Math.max(...qs));
   const kind = familyLabel(card.family);
-  const conf = card.family.kind === 'unknown' ? '' : ` (${Math.round(card.family.confidence * 100)}%)`;
+  // `confidence` is `fitScore(best.dist)` (js/instrument/card.js) — how closely
+  // these ratios match the family they were named, on the gate's own scale. It
+  // used to be the gap to the runner-up; the gap is now `margin` and this is
+  // not it. A bare percent beside a family name reads as certainty about the
+  // name, which is the one thing this number does not measure, so it is
+  // labelled: uvb76-buzz is called a string at 25 % fit, not 25 % certainty.
+  // Three states, three readings: nothing named, a comb asserted from a measured
+  // f0 rather than earned by the ratios, and a real fit.
+  const conf = card.family.kind === 'unknown' ? ''
+    : card.family.assumed ? ' (assumed from f0)'
+    : Number.isFinite(card.family.confidence) ? ` (fit ${Math.round(card.family.confidence * 100)}%)`
+    : '';
   const f1 = cardPitchHz(card);
   const parts = [`${noteName(f1)} · ${f1.toFixed(1)} Hz`, `${kind}${conf}`, `${modes.length} mode${modes.length === 1 ? '' : 's'}`, `Q ${lo === hi ? lo : lo + '–' + hi}${card.damping.assumed ? ' assumed' : ''}`];
   if (card.nonlinearity && card.nonlinearity.length) parts.push(`bends ${Math.round(Math.max(...card.nonlinearity.map((l) => l.cents || 0)))} cents with level`);

@@ -31,7 +31,12 @@ a browser normally resamples everything to the output device's rate on decode, w
 quietly halves a 96 kHz recording before you ever see it, so Yellowjacket decodes through
 a context built at the file's rate instead. That matters most for found sound — the
 ultrasonic detail in a field recording is exactly what becomes audible when you pitch it
-down. A `.mid` file dropped on the bench loads into STUDIO's six parts instead. The
+down. A `.mid` file dropped on the bench loads into STUDIO's six parts instead, and a `.json`
+file opens as an instrument card or a score. Nothing has to get in at all to make a
+sound: the intake offers eleven instruments the lab measured from real recordings —
+a carillon, one Iowa bell struck with two different mallets, a wine glass, a handbell, Roosevelt's
+vowel, the UVB-76 buzzer, a 1921 band chord — and pressing one resynthesizes that
+object from its modes and damping with no file, no download and no network. The
 demo is **Sparks** by Zane Little, a 2:40 electronic pop track released under
 [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/); its vocals, transients,
 and tonal sections exercise every bench without asking a first-time visitor to find a
@@ -187,6 +192,20 @@ DAW. MIDI also comes back the other way: drop a Standard MIDI File and its tempo
 land on the grid, quantized to sixteenths, filling only the parts the file actually
 carries and reporting anything that fell outside the four-bar window. Studio edits participate in undo, autosave, and portable `.yjkt` projects without
 needing a recording loaded first. Any part can also play a **card** — a found instrument read from a recording on the SIGNAL bench's INSTRUMENT panel, or one of the lab's own (a carillon, Iowa's orchestral bells, a wine glass, FDR's vowel, the UVB-76 buzzer) from the chooser's ◇ list: every note is rendered by the physics at that pitch and dynamic, struck, plucked, bowed or blown, never a sample shifted up and down, and the bounce renders the same notes offline. Renders run in a worker pool; the keyboard plays the selected part (A to ; from C, Z and X for octaves); USE SCALE on the INSTRUMENT panel hands STUDIO the object's own consonances as a custom scale. A dropped `.mid` still folds four bars onto the grid for live play, but the whole file is kept: **RENDER FILE** renders every bar of it offline through the score renderer (`js/score/`), one card per part, synth parts skipped by name.
+
+**SCORE** sits under the STUDIO roll and is where a piece longer and stranger than four
+bars gets built. A score is parts of notes in **hertz and seconds** — it carries pitches
+the twelve keys cannot spell and a length the roll cannot hold — written as
+`yj-score-1` JSON that both the page and `scripts/render-score.mjs` read, so a piece
+moves between the browser and a terminal without being flattened to semitones. Open a
+score file, turn what is on the roll right now into one, or take the four movements of
+**Thirteen Cards**, the 13-minute symphony built from thirteen measured objects
+(`docs/lab/2026-09-07-thirteen-cards.md`). RENDER IT renders in the worker pool a block
+at a time — peak memory is one block, not the whole piece, which is what makes a
+four-minute movement possible in a tab at all — with a progress bar and a cancel, then
+hands the result to the bench to listen to or writes it as a 24-bit WAV. Measured here:
+movement III, 10 parts and 677 notes, rendered in 61 s to 43.1 MB and decoded back at
+2:36.929, matched, no conversion.
 
 **LOOM** is the semantic performance layer. Select kept transcript words and **WEAVE
 WORDS** opens them as real source material in one action; a real audio span works too.

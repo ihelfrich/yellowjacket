@@ -93,6 +93,12 @@
 <link rel="modulepreload" href="js/instrument/pool.js">
 <link rel="modulepreload" href="js/studio/card-voice.js">
 <link rel="modulepreload" href="js/app/instrument-controller.js">
+<link rel="modulepreload" href="js/studio/found-cards.js">
+<link rel="modulepreload" href="js/app/found-row.js">
+<link rel="modulepreload" href="js/score/model.js">
+<link rel="modulepreload" href="js/score/render.js">
+<link rel="modulepreload" href="js/score/symphony/index.js">
+<link rel="modulepreload" href="js/app/score-panel.js">
 <link rel="modulepreload" href="js/app/confirm.js">
 <link rel="modulepreload" href="js/app/source-handle.js">
 <link rel="modulepreload" href="js/app/fingerprint.js">
@@ -113,13 +119,10 @@
 <link rel="modulepreload" href="js/app/wire-controller.js">
 <link rel="modulepreload" href="js/app/persist.js">
 <link rel="modulepreload" href="js/app/persist-controller.js">
-<link rel="modulepreload" href="js/studio/found-cards.js">
 <link rel="modulepreload" href="js/studio/view.js">
 <link rel="modulepreload" href="js/studio/engine.js">
 <link rel="modulepreload" href="js/studio/midi.js">
 <link rel="modulepreload" href="js/midi/smf.js">
-<link rel="modulepreload" href="js/score/model.js">
-<link rel="modulepreload" href="js/score/render.js">
 <link rel="modulepreload" href="js/studio/controller.js">
 <link rel="modulepreload" href="js/loom/view.js">
 <link rel="modulepreload" href="js/loom/engine.js">
@@ -480,6 +483,7 @@
   <!-- ============ STUDIO ============ -->
   <section id="tab-studio" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-studio" aria-hidden="true">
     <div id="studioHost" class="yj-studio-host"></div>
+    <div id="scoreHost" class="yj-score-host"></div>
   </section>
 
   <!-- ============ LOOM ============ -->
@@ -495,6 +499,7 @@
 <div class="yj-drop" id="dropZone">
   <div class="yj-drop-inner">
     <div class="yj-drop-word">DROP A FILE</div>
+    <button id="btnLookAround" class="yj-btn yj-drop-skip" title="Hide this and look at the six benches. SHELF in the header brings it back.">LOOK AROUND FIRST</button>
     <div class="yj-resume yj-link" id="linkPanel" hidden>
       <p class="yj-resume-info" id="linkInfo" role="status">A LINK BROUGHT YOU HERE</p>
       <div class="yj-toolrow">
@@ -509,12 +514,14 @@
       </div>
     </div>
     <p>WAV, MP3, M4A, OGG, FLAC — kept at their own sample rate, up to 192 kHz.<br>
-    A <strong>.MID</strong> file loads into STUDIO's six parts.<br>
+    A <strong>.MID</strong> file loads into STUDIO's six parts; a <strong>.JSON</strong> card or score
+    opens as an instrument or a piece.<br>
     It never leaves this machine. There's no server to send it to.</p>
     <div class="yj-demo">
       <button id="btnLoadDemo" class="yj-btn yj-btn-primary">LOAD THE DEMO SONG</button>
       <p class="yj-demo-note"><strong>SPARKS</strong> · ZANE LITTLE · 2:40 · <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a></p>
     </div>
+    <div class="yj-found" id="foundRow"></div>
     <div class="yj-field" id="fieldLibrary">
       <p class="yj-field-head">OR OPEN SOMETHING FROM THE SHELF</p>
       <p class="yj-field-note">Places, voices, radio signals, scores, records, and stranger things — all public domain
@@ -558,7 +565,7 @@
   <div id="stRight">NO FILE</div>
 </footer>
 
-<input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.mid,.midi,.yjkt" hidden>
+<input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.mid,.midi,.yjkt,.json" hidden>
 <input type="file" id="projectInput" accept=".yjkt,application/vnd.yellowjacket.project+zip" hidden>
 <script type="module" src="js/main.js"></script>
 <script>

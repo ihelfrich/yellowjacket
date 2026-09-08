@@ -19,10 +19,10 @@ Probe scripts in the session scratchpad (`calib3.mjs`); cards for C#5, E5, A5
 
 | quantity | measured | engine before | engine after |
 |---|---|---|---|
-| partial ratios, 24 cards, both mallets | 3.23 · 6.99 · 10.51 · 15.75 (medians); 3.1–3.3 and 6.2–7.2 across the octave | free bar 2.756 · 5.404 · 8.933 | `bar` carries an `arch` (0 free, 1 this set), fitted on the first two overtones |
+| partial ratios, 24 cards, both mallets | 3.23 · 6.99 · 10.51 · 15.75 (medians); 3.1–3.3 and 6.2–7.2 across the octave | free bar 2.756 · 5.404 · 8.933 | `bar` carries an `arch` (0 free, 1 this set), fitted on the first two overtones — **superseded 2026-09-07, see the addendum under this table** |
 | classification | ratios 1 : 3.2 : 7 : 10.5 read as "harmonics 1, 3, 7, 11" of a string at 0.98 | string wins on any near-integer set | a string needs half its comb present; loud cards: 13 of 24 read as bars, arch 0.54–1.12; the rest lack a fundamental within 40 dB and stay `unknown` |
 | junk modes | lines at exactly 2·f0 at −51 to −59 dB (a preamp's second harmonic) and −60 dB fits become the "lowest mode" | every mode votes | modes under 40 dB below the strongest do not vote; `cardPitchHz` ignores them |
-| transients | a wine glass over a table: the 33 ms thump at 350 Hz (Q 36, −27 dB) read as the pitch in the bench | the lowest loud mode is the pitch | modes with under 5 % of the longest ring's Q do not vote on pitch or family |
+| transients | a wine glass over a table: the 33 ms thump at 350 Hz (Q 36, −27 dB) read as the pitch in the bench | the lowest loud mode is the pitch | modes with under 5 % of the longest ring's Q do not vote on pitch or family — **superseded 2026-09-07, see the addendum under this table** |
 | room | 2–25 Hz rumble as loud as the notes, even in an anechoic chamber; the pp file sat under it | none | 40 Hz 4th-order high-pass before hit finding and carding (`hits.js`) |
 | Q of the fundamental | 1,300–6,000, median 3,400 (ff), 4,400 (brass) | — | unchanged; the carillon's 2,400 is the same class |
 | linearity | ff vs pp, 38–52 dB apart: fundamental shift 0.0 cents, 28 partials median 0.00 cents | 14 of 34 cards carried a "law" with r² up to 0.96 implying ≤ 8.9 cents: tracker drift | a law must move the pitch ≥ 12 cents over the hit's own range; 0 of 34 remain; the accepted synthetic law implies 111 |
@@ -31,6 +31,29 @@ Probe scripts in the session scratchpad (`calib3.mjs`); cards for C#5, E5, A5
 
 The second column is data; the fourth is the smallest change that makes the
 engine agree with it. Each change has a test the data forced.
+
+**Addendum, 2026-09-07 — the transients row.** The share-of-max-Q rule stated
+in row 4 is not what shipped, and the difference matters. A rule proportional
+to the longest ring is frequency-weighted through Q = πfτ: a low fundamental
+with a long τ can still fall under 5 % of a high partial's Q and lose its vote,
+which is how a fundamental came to be dropped. It was replaced by an absolute
+floor — `RATIO_GATE_Q_MIN = 40`, a Q of 40, which is 40/π ≈ **13 cycles**, not
+40 cycles as the format spec said until today. The wine glass's 33 ms thump is
+Q 36 and still does not vote; the fundamentals do.
+
+**Addendum, 2026-09-07 — the first row's fourth column is no longer true, and
+was the defect.** "Fitted on the first two overtones" meant the arch was read
+from `ratios.slice(0, 3)` and then *scored on those same three numbers*, while
+every other family was scored over all six. That is in-sample, and it is what
+let a wine glass (1 : 6.9 : 9.9 : 16.3 : 19.8 : 19.8) sit at 1.8 % and read
+`bar` at 82 %. The arch is now fitted **and scored over every measured ratio**,
+which moves the real bells too — Iowa A5 from 0.011 to 0.052 — so
+`UNKNOWN_DISTANCE` moved from 3 % to 6 % on the same measurement. Later the
+same day: a card with fewer than three voting modes is no longer scored at all,
+because two modes are one informative ratio and the arch spans 2.670 to 3.442,
+so any second partial in a ±14.5 % band fitted it exactly. Full derivation and
+every card's before/after in `docs/lab/2026-09-07-classifier-honesty.md`. The
+rest of this note's table stands as measured; nothing above has been rewritten.
 
 ## 2. Hit finding, made shared
 

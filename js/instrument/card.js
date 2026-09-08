@@ -23,15 +23,29 @@ export const FAMILY_RATIOS = Object.freeze({
   plate: [1, 1.73, 2.33, 3.91, 4.11, 6.30],             // free circular plate, ν≈0.33
   bell: [1, 2, 2.4, 3, 4, 5],                           // hum, prime, tierce, quint, nominal, deciem
 });
-export const UNKNOWN_CONFIDENCE = 0.25;
-export const UNKNOWN_DISTANCE = 0.03; // 3% mean log distance: not any family
+// Two families the ratios fit equally well is a different failure from fitting
+// none, so the margin to the runner-up still gates the label. It is no longer
+// what the card reports as confidence (see `classifyFamily`).
+export const UNKNOWN_MARGIN = 0.25;
+// 6 % charged mean log distance (see `familyScores`): not any family. Read on
+// the charged distance the four Iowa bells span 1.4–5.2 % and the nearest
+// object the table has no model for sits half again past the worst of them —
+// a carillon bell at 8.1 %, the UVB-76 buzz at 8.3 %, a wine glass at 9.6 %.
+// The old 3 % was read on a bar distance fitted to the same three ratios it was
+// scored against, which is how a wine glass passed it at 1.8 %.
+export const UNKNOWN_DISTANCE = 0.06;
 export const RATIO_GATE_DB = 40; // modes this far under the strongest do not vote on the family
 export const RATIO_GATE_Q_MIN = 40; // nor do modes that ring fewer than ~13 cycles (a 33 ms thump at 350 Hz is Q 36, not a pitch)
-export const COVERAGE_PENALTY = 0.02; // score cost of a reference slot no measured mode fills
+// Three voting modes, so two informative ratios: the first ratio is 1 by
+// construction and lands on every reference's first slot, so two modes carry
+// one ratio, and one ratio names a family whatever it is (see `familyScores`).
+export const MIN_VOTING_MODES = 3;
+export const COVERAGE_PENALTY = 0.02; // flat cost of a reference slot no measured mode fills: it separates hypotheses a perfect fit ties at zero
 
 /**
  * The modes that count for pitch and family: within RATIO_GATE_DB of the
- * strongest, and ringing at least RATIO_GATE_Q_MIN cycles. The ring test is
+ * strongest, and with a Q of at least RATIO_GATE_Q_MIN — a Q, not a cycle
+ * count, so a Q of 40 is 40/π ≈ 13 cycles of ring. The ring test is
  * absolute: a share of the longest Q let a −48 dB fitter artefact at 3.5 kHz
  * (Q 10,900) silence a bar's loudest partial, and Q = πfτ grows with
  * frequency, so a share also drops the fundamental of any equal-decay comb.
@@ -45,7 +59,16 @@ export function votingModes(modes) {
   return ringing.length ? ringing : loud;
 }
 
-/** Share of a reference's slots (below the highest measured ratio) that a measured ratio fills within 5 %. */
+/**
+ * Share of a reference's slots that a measured ratio fills within 5 %. The
+ * slots counted run to 10 % above the highest measured ratio, not to it: a
+ * mode sitting just under a slot is evidence for that slot, and excluding it
+ * charged Iowa A5 for missing the free bar's 8.933 when its top partial at
+ * 8.828 is 1.2 % away (bar coverage 0.33 without the headroom, 0.50 with it).
+ * The headroom cuts both ways — it also charges a slot up to 10 % above the
+ * top measured mode that nothing filled, which is fdr-vowel's sixth harmonic
+ * (string comb 0.60 without, 0.50 with).
+ */
 function slotCoverage(ratios, ref) {
   const topRatio = ratios[ratios.length - 1] * 1.1;
   const slots = ref.filter((r) => r <= topRatio);
@@ -130,6 +153,23 @@ function fitArch(ratios) {
   return best;
 }
 
+/**
+ * What a fitted free parameter costs. A hypothesis that bent toward the same n
+ * ratios it is then scored against has n − 1 residual degrees of freedom, so
+ * its mean residual understates its error by n/(n − 1) — the correction that
+ * makes a sample variance unbiased. `bar` (arch) and `string` (B) pay it; the
+ * fixed references have nothing to bend and do not.
+ *
+ * It is a multiplier, so it cannot charge a fit that left no residual at all.
+ * Two voting modes leave one informative ratio and the arch reaches every
+ * second partial from 2.670 to 3.442 exactly, so the error is 0 and n/(n − 1)
+ * = 2 times 0 is still 0. That case is refused in `familyScores`, not priced.
+ */
+function fitOptimism(n) { return n / (n - 1); }
+
+/** A hypothesis's distance charged for the share of its slots no measured mode reached. */
+function charged(err, coverage) { return err / coverage + COVERAGE_PENALTY * (1 - coverage); }
+
 function fitInharmonicity(ratios) {
   // f_n / (n f_1) = sqrt(1 + B n^2) with the lowest mode as n = 1
   let best = { B: 0, err: Infinity };
@@ -144,54 +184,105 @@ function fitInharmonicity(ratios) {
   return best;
 }
 
-/** Family from the ratios of the lowest six modes to the lowest. */
-export function classifyFamily(modes) {
+/** Every family hypothesis scored against one set of modes, best first, with the ratios they were scored on. */
+export function familyScores(modes) {
   // Only voting modes count: a −55 dB line at exactly 2·f0 (a preamp's second
   // harmonic on the Iowa bells), a junk fit at −60 dB, or a 33 ms thump under
   // a wine glass would otherwise become the "lowest mode" and the ratio set.
   const sorted = votingModes(modes).slice().sort((a, b) => a.freqHz - b.freqHz).slice(0, 6);
-  if (sorted.length < 2) return { kind: 'unknown', confidence: 0, inharmonicity: 0, arch: 0, ratios: sorted.map(() => 1) };
-  const f1 = sorted[0].freqHz;
-  const ratios = sorted.map((m) => m.freqHz / f1);
+  if (!sorted.length) return { ratios: [], scores: [] };
+  const ratios = sorted.map((m) => m.freqHz / sorted[0].freqHz);
+  // One informative ratio is not evidence. Swept over r from 1.02 to 19 in
+  // steps of 0.001, a two-mode card 1 : r is given a family for 80.7 % of all
+  // r — 63.5 % of them `bar`, because the arch is a continuum that places any
+  // second partial from 2.670 to 3.442 at no distance at all, and 2.1 % of
+  // them at over 99 % confidence. Two informative ratios name a family for
+  // 23.5 % of pairs. A verdict that fires on four intervals in five measures
+  // the table's density, not the object, so a card that thin is not scored.
+  if (ratios.length < MIN_VOTING_MODES) return { ratios, scores: [] };
   const scores = [];
   for (const [kind, ref] of Object.entries(FAMILY_RATIOS)) {
     if (kind === 'tunedBar') continue; // the arch end of `bar`, not a family of its own
-    // Nearest-reference matching lets a measured ratio skip reference slots: a
-    // harmonic series 1:2:3:4:5 sits at distance zero from the bell reference
-    // (1, 2, 2.4, 3, 4, 5) as well as from a string, and a wine glass at
-    // 1 : 6.9 : 9.9 matches a tuned bar's third and fourth modes with its
-    // second missing. So every candidate's score is its distance plus a cost
-    // for each of its slots (below the highest measured ratio) that no
-    // measured mode fills; the bell then loses the series to the string on its
-    // empty tierce, and a card missing a partial keeps its label at a lower
-    // confidence. The absolute UNKNOWN_DISTANCE test still uses the distance.
+    // One number per hypothesis, on the same terms for all of them: the mean
+    // |log| distance from every measured ratio to its nearest reference ratio,
+    // divided by the share of the reference's slots a measured mode fills, plus
+    // a flat COVERAGE_PENALTY for the slots it does not, and charged for any
+    // parameter fitted to these same ratios. Nearest-reference matching lets a
+    // measured ratio skip slots — a harmonic series 1:2:3:4:5 sits at distance
+    // zero from the bell (1, 2, 2.4, 3, 4, 5) as well as from a string, and a
+    // wine glass at 1 : 6.9 : 9.9 matches a tuned bar's third and fourth modes
+    // with its second missing — and a slot the object never sounded is a
+    // prediction the object never tested, so the untested share of a hypothesis
+    // is charged at the rate the tested share earned. The flat term is what
+    // separates hypotheses an exact fit ties at zero: the bell loses the series
+    // to the string on its empty tierce, and a card missing one partial keeps
+    // its label at a lower confidence.
     if (kind === 'bar') {
-      // The arch is read from the first two overtones. Above them a real bar's
-      // ratios also fall with its thickness (A5 on the Iowa set: 3.17 · 6.43 ·
-      // 8.83 against C#5's 3.27 · 7.11 · 11.0), which one parameter cannot carry.
-      const { arch, err } = fitArch(ratios.slice(0, 3));
-      scores.push({ kind, dist: err, score: err + COVERAGE_PENALTY * (1 - slotCoverage(ratios, archRatios(arch))), B: 0, arch });
+      // Fitted and scored on every measured ratio. Reading the arch from the
+      // first two overtones and scoring it on those same three numbers was
+      // in-sample: it put a wine glass (1 : 6.9 : 9.9 : 16.3 : 19.8 : 19.8) at
+      // 1.8 %, inside the old 3 % gate, and called it a bar at 82 %. Scored
+      // honestly it is at 9.6 % and is no family. A real bar pays too — Iowa
+      // A5, whose fourth partial (8.83) no single arch reaches while its second
+      // and third sit near arch 0.85, goes from 1.1 % to 5.2 % — so the gate
+      // moved to the measurement, not the measurement to the gate.
+      const { arch, err } = fitArch(ratios);
+      const coverage = slotCoverage(ratios, archRatios(arch));
+      scores.push({ kind, dist: charged(err * fitOptimism(ratios.length), coverage), coverage, B: 0, arch });
       continue;
     }
     if (kind === 'string') {
       // A string is a comb: its lowest modes are consecutive harmonics. Ratios
       // like 1 : 3.2 : 7 : 10.5 fit "harmonics 1, 3, 7, 11" numerically and are
       // a bar, so the string hypothesis needs at least half its comb present.
+      // The comb is built out to the highest measured ratio so that `coverage`
+      // is the one quantity every family reports, measured by `slotCoverage`
+      // on the same slots-to-10-%-above-the-top rule as every other family. It used
+      // to be `indices.size / max(indices)` — distinct rounded harmonic numbers
+      // over the largest one — which never asked how near its integer a ratio
+      // actually sat. A hemisphere at 1 : 1.7 : 2.4 : 3.2 rounds to {1, 2, 3}
+      // and scored a full 1.00 comb on partials 15 % and 20 % off a harmonic.
       const { B, err } = fitInharmonicity(ratios);
-      const indices = new Set(ratios.map((r) => Math.max(1, Math.round(r))));
-      const coverage = indices.size / Math.max(...indices);
-      const dist = coverage >= 0.5 ? err : Infinity;
-      scores.push({ kind, dist, score: dist + COVERAGE_PENALTY * (1 - coverage), B, arch: 0 });
+      const comb = Array.from({ length: Math.max(1, Math.round(ratios[ratios.length - 1])) }, (_, i) => i + 1);
+      const coverage = slotCoverage(ratios, comb);
+      scores.push({ kind, dist: coverage >= 0.5 ? charged(err * fitOptimism(ratios.length), coverage) : Infinity, coverage, B, arch: 0 });
       continue;
     }
-    const dist = ratioDistance(ratios, ref);
-    scores.push({ kind, dist, score: dist + COVERAGE_PENALTY * (1 - slotCoverage(ratios, ref)), B: 0, arch: 0 });
+    const coverage = slotCoverage(ratios, ref);
+    scores.push({ kind, dist: charged(ratioDistance(ratios, ref), coverage), coverage, B: 0, arch: 0 });
   }
-  scores.sort((a, b) => a.score - b.score);
+  scores.sort((a, b) => a.dist - b.dist);
+  return { ratios, scores };
+}
+
+/** How well the winning hypothesis fits, on the gate's own scale: 1 at no distance, 0 at UNKNOWN_DISTANCE and beyond. */
+function fitScore(dist) { return Math.max(0, 1 - dist / UNKNOWN_DISTANCE); }
+
+/**
+ * Family from the ratios of the lowest six modes to the lowest.
+ *
+ * `confidence` answers the question the panel puts to it — how well do these
+ * ratios match the family it names — so it reads the distance, on the gate's
+ * own scale. It used to be the gap to the runner-up, which measures something
+ * else and is now returned separately as `margin`. The two disagree on the
+ * cards in `docs/lab/cards/`: hiawatha-vowel fits its family 4.7× closer than
+ * Iowa A5 fits a bar (0.0110 against 0.0519) and carried the lower number
+ * (0.76 against 0.80), so the panel called the worse fit the more confident.
+ * 1 : 3.26 : 7.69 is the sharp case — nothing within 2.5 %, nothing else
+ * within twenty times that, printed as 96 %.
+ *
+ * A card the gates refuse has no family beside it, so it has no fit to report
+ * and `confidence` is 0. Reading the winner's fit regardless put 1 : 2 — which
+ * the string and the bell both place exactly, and which the margin gate
+ * therefore refuses — at `unknown` with a confidence of 1.
+ */
+export function classifyFamily(modes) {
+  const { ratios, scores } = familyScores(modes);
+  if (!scores.length) return { kind: 'unknown', confidence: 0, margin: 0, dist: null, inharmonicity: 0, arch: 0, ratios };
   const best = scores[0], second = scores[1];
-  const confidence = second.score > 0 ? Math.max(0, 1 - best.score / second.score) : 0;
-  const kind = confidence < UNKNOWN_CONFIDENCE || best.dist > UNKNOWN_DISTANCE ? 'unknown' : best.kind;
-  return { kind, confidence, inharmonicity: kind === 'string' ? best.B : 0, arch: kind === 'bar' ? best.arch : 0, ratios };
+  const margin = second.dist > 0 ? Math.max(0, 1 - best.dist / second.dist) : 0;
+  const kind = margin < UNKNOWN_MARGIN || best.dist > UNKNOWN_DISTANCE ? 'unknown' : best.kind;
+  return { kind, confidence: kind === 'unknown' ? 0 : fitScore(best.dist), margin, dist: best.dist, inharmonicity: kind === 'string' ? best.B : 0, arch: kind === 'bar' ? best.arch : 0, ratios };
 }
 
 /** The lowest mode that counts (see `votingModes`). */

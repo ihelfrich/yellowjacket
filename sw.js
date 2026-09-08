@@ -3,7 +3,7 @@
 // Cross-origin requests (CDN transformers.js, HF model shards) are never intercepted;
 // they manage their own caching. Scope-relative URLs keep this working under
 // the /yellowjacket/ GitHub Pages subpath.
-const VERSION = 'yj-v78';
+const VERSION = 'yj-v79';
 
 const PRECACHE = [
   'js/app/persist.js',
@@ -44,6 +44,9 @@ const PRECACHE = [
   'workers/instrument-worker.js',
   'docs/lab/cards/carillon-bell.json',
   'docs/lab/cards/iowa-bells-plastic-ff-Cs5.json',
+  'docs/lab/cards/iowa-bells-brass-Cs5.json',
+  'docs/lab/cards/iowa-bells-plastic-ff-E5.json',
+  'docs/lab/cards/iowa-bells-plastic-ff-A5.json',
   'docs/lab/cards/freesound-wineglass.json',
   'docs/lab/cards/commons-bell-15cm.json',
   'docs/lab/cards/opz-thud.json',
@@ -52,6 +55,13 @@ const PRECACHE = [
   'docs/lab/cards/uvb76-buzz.json',
   'docs/lab/cards/ory-chord.json',
   'docs/lab/cards/wwv-tone.json',
+  'js/app/found-row.js',
+  'js/app/score-panel.js',
+  'js/score/symphony/index.js',
+  'js/score/symphony/movement-1.js',
+  'js/score/symphony/movement-2.js',
+  'js/score/symphony/movement-3.js',
+  'js/score/symphony/movement-4.js',
   'js/studio/found-cards.js',
   'js/studio/card-voice.js',
   'js/instrument/card.js',

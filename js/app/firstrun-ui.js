@@ -118,6 +118,10 @@ export class FirstRunView extends EventTarget {
     this._visible = false;
     this._onKey = (e) => {
       if (e.key !== 'Escape') return;
+      // This panel layers above the intake overlay, whose own Escape handler
+      // sits on window and therefore runs after this one. Marking the key
+      // consumed is what stops a single Escape closing both surfaces.
+      e.preventDefault();
       this._act('dismiss', {});
     };
     if (!host) return;

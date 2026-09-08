@@ -673,6 +673,12 @@ const lockCases = [
 
 const { repairChannel } = await import('../workers/repair-worker.js');
 import { FFT as RepairFFT, hann as repairHann } from '../js/fft.js';
+import { NAME as scoreFileName, cases as scoreFileCases } from './cases-score-file.mjs';
+import { NAME as renderBlockName, cases as renderBlockCases } from './cases-render-block.mjs';
+import { NAME as classifierName, cases as classifierCases } from './cases-classifier.mjs';
+import { NAME as centsName, cases as centsCases } from './cases-cents.mjs';
+import { NAME as frontDoorName, cases as frontDoorCases } from './cases-frontdoor.mjs';
+import { NAME as scorePanelName, cases as scorePanelCases } from './cases-score-panel.mjs';
 
 function repairFixture() {
   const sr = 48000;
@@ -6339,7 +6345,7 @@ const instrumentPanelCases = [
     assert.match(rows[0].text, /^600\.\d Hz · 1\.00×$/);
     assert.match(rows[1].text, /^19\d\d Hz · 3\.2\d×$/);
     assert.ok(rows.every((row) => /^Q \d+ · -?\d+ dB$/.test(row.detail)), JSON.stringify(rows.map((row) => row.detail)));
-    assert.match(cardSummary(r.card), /^D5 · 600\.\d Hz · tuned bar \(\d+%\) · 3 modes · Q \d+–\d+$/);
+    assert.match(cardSummary(r.card), /^D5 · 600\.\d Hz · tuned bar \(fit \d+%\) · 3 modes · Q \d+–\d+$/);
   },
   async function aSustainedSourceBecomesASpectralCardAtItsOwnPitch() {
     const sr = 48000, n = sr * 2, x = new Float32Array(n);
@@ -6790,6 +6796,12 @@ const groups = [
   ['clip lifecycle', clipCases],
   ['undo history', undoCases],
   ['conform', conformCases],
+  [scoreFileName, scoreFileCases],
+  [renderBlockName, renderBlockCases],
+  [classifierName, classifierCases],
+  [centsName, centsCases],
+  [frontDoorName, frontDoorCases],
+  [scorePanelName, scorePanelCases],
 ];
 
 for (const [name, cases] of groups) {

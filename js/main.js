@@ -33,6 +33,8 @@ import { ProjectStore } from './app/project-store.js';
 import { initBenchController } from './app/bench-controller.js';
 import { initCyclicController } from './app/cyclic-controller.js';
 import { initInstrumentController } from './app/instrument-controller.js';
+import { initFoundRow } from './app/found-row.js';
+import { initScorePanel } from './app/score-panel.js';
 import { confirmAct } from './app/confirm.js';
 import { initSourceController } from './app/source-controller.js';
 import { initFieldLibrary } from './app/field-library.js';
@@ -252,6 +254,10 @@ const CONTROLLERS = [
   // field renders into the drop zone and calls api.loadFromUrl, registered by source above.
   ['field', initFieldLibrary],
   ['studio', initStudioController],
+  // the overlay's measured instruments need STUDIO's api.studioSetCard
+  ['found', initFoundRow],
+  // score sits under the studio roll and hands renders to the bench
+  ['score', initScorePanel],
   ['loom', initLoomController],
   // persist is last on purpose: restore needs every api registered above it.
   ['persist', initPersistController],
@@ -355,6 +361,10 @@ if (views.pipeline) views.pipeline.addEventListener('jump', (e) => {
 ctx.api.jump = (tab, mstate = null) => jump(tab, mstate);
 
 function jump(tab, mstate = null) {
+  // Deliberate navigation beats the intake wall. The overlay covers the header
+  // and the tab bar at z-index 40, so a ⌘K jump used to switch tabs behind it
+  // and look like nothing happened. SHELF in the header raises it again.
+  $('dropZone').classList.add('is-hidden');
   showTab(tab);
   if (mstate) {
     const button = document.querySelector('.yj-substate-btn[data-mstate="' + mstate + '"]');
@@ -370,6 +380,8 @@ const commandDefs = [
   { id: 'nav-loom', group: 'LOOM', label: 'SEMANTIC MIDI LOOM', note: 'Bind source words and spans to a traceable MIDI gesture', keywords: 'weave provenance semantic midi opz source gesture', run: () => jump('loom') },
   { id: 'loom-weave', group: 'LOOM', label: 'WEAVE MATERIAL × GESTURE', note: 'Compile the current Loom inputs into a traceable performance', keywords: 'make hook bind source midi', button: 'btnLoomWeave', reason: 'LOAD MATERIAL AND GESTURE FIRST', run: () => { jump('loom'); $('btnLoomWeave').click(); } },
   { id: 'studio-idea', group: 'STUDIO', label: 'GENERATE MUSICAL IDEA', note: 'Build a six-part loop in the selected key and scale', keywords: 'compose create progression melody bass chords', button: 'btnStudioIdea', run: () => { jump('studio'); $('btnStudioIdea').click(); } },
+  { id: 'score-panel', group: 'STUDIO', label: 'SCORE', note: 'Parts of notes in hertz and seconds: pitches the twelve keys cannot spell, lengths the four-bar roll cannot hold', keywords: 'score piece composition symphony thirteen cards movement render long form hertz cents', run: () => { jump('studio'); ctx.api.scoreReveal(); } },
+  { id: 'score-open', group: 'STUDIO', label: 'OPEN A SCORE OR A CARD', note: 'A .score.json opens as a piece; a card .json opens as an instrument on a part', keywords: 'open import score card json file instrument piece', run: () => { jump('studio'); ctx.api.scoreOpenFile(); } },
   { id: 'studio-midi', group: 'STUDIO', label: 'EXPORT STUDIO MIDI', note: 'Write six DAW-ready MIDI channels with tempo and swing', keywords: 'smf daw ableton logic export', button: 'btnStudioMidi', reason: 'WRITE OR GENERATE NOTES FIRST', run: () => { jump('studio'); $('btnStudioMidi').click(); } },
   { id: 'studio-bounce', group: 'STUDIO', label: 'BOUNCE STUDIO WAV', note: 'Render the instrument mix as 48 kHz stereo audio', keywords: 'render export mix print', button: 'btnStudioBounce', reason: 'WRITE OR GENERATE NOTES FIRST', run: () => { jump('studio'); $('btnStudioBounce').click(); } },
   { id: 'nav-slice', group: 'MACHINE', label: 'SLICE', note: 'Beatmap, carve, harvest, and patch output', keywords: 'chop clips op1 opz drum kit', run: () => jump('machine', 'slice') },
@@ -384,6 +396,7 @@ const commandDefs = [
   { id: 'load-demo', group: 'SOURCE', label: 'LOAD DEMO SONG', note: 'Open the bundled CC0 track', keywords: 'sparks example tour', button: 'btnLoadDemo', run: () => $('btnLoadDemo').click() },
   { id: 'quick-take', group: 'SOURCE', label: 'QUICK TAKE · WEAVE THIS SOURCE', note: 'Weave the selection (words, waveform drag, or clip; else four spans from the source) onto the starter phrase, arm lane 9, and run', keywords: 'loom weave semantic take quick play instrument words chop selection', reason: 'LOAD AUDIO FIRST', enabled: () => !!store.runtime.buffer, run: () => ctx.api.quickTake() },
   { id: 'keep-on-shelf', group: 'SOURCE', label: 'KEEP ON MY SHELF', note: 'Keep the loaded recording in this browser for next time — never uploaded', keywords: 'mine keep save library own files private local', button: 'btnKeep', reason: 'LOAD AUDIO FIRST', enabled: () => !!store.runtime.buffer, run: () => ctx.api.keepOnShelf() },
+  { id: 'found-instruments', group: 'SOURCE', label: 'PLAY A MEASURED INSTRUMENT', note: 'Ten objects the lab measured — carillon, Iowa orchestral bells, wine glass, handbell, FDR\u2019s vowel, the UVB-76 buzzer — resynthesized from their modes. No file, no download, no network', keywords: 'card instrument bell glass buzzer vowel found physics modes strike bow measured object no audio', run: () => ctx.api.revealFoundRow() },
   { id: 'field-library', group: 'SOURCE', label: 'OPEN THE SHELF', note: 'Public-domain places, voices, scores, records, and oddities, streamed from archive.org', keywords: 'shelf field nature birds ocean waves rain thunder storm crickets frogs cicada city street soundscape voice speech poem hiawatha roosevelt fireside voa news nasa voyager golden record bow shock signal radio shortwave numbers station spy cuba hm01 m08 uvb-76 buzzer wwv jjy time morse code bach goldberg piano jazz blues 1921 kid ory ethel waters vlf magnetosphere whistler lossless flac 96k', button: 'btnField', run: () => ctx.api.revealFieldLibrary() },
   { id: 'transcribe', group: 'SOURCE', label: 'TRANSCRIBE', note: 'Run Whisper locally on the loaded source', keywords: 'speech words captions ai', button: 'btnTranscribe', reason: 'LOAD AUDIO FIRST', run: () => { jump('transcript'); $('btnTranscribe').click(); } },
   { id: 'measure', group: 'TOOLS', label: 'MEASURE LOUDNESS', note: 'Run the BS.1770 measurement stack', keywords: 'lufs true peak rms crest', button: 'btnMeasure', reason: 'LOAD AUDIO FIRST', run: () => { jump('signal'); $('btnMeasure').click(); } },

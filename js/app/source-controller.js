@@ -27,6 +27,9 @@ export function linkLabel(raw) {
   return `${name} · ${u.hostname}`.toUpperCase();
 }
 
+// Surfaces that layer above the intake overlay and own Escape while they are up.
+const ABOVE_INTAKE = '.yj-firstrun:not([hidden]), .yj-command:not([hidden]), .yj-confirm';
+
 export function initSourceController(ctx) {
   const { store, engine, views, $, COPY, status, statusFault, fmtTime } = ctx;
   const { waveMini, waveMain, spec, sliceView } = views;
@@ -58,6 +61,12 @@ export function initSourceController(ctx) {
     if (/\.midi?$/i.test(file && file.name || '')) {
       if (ctx.api.importMidiFile) await ctx.api.importMidiFile(file);
       else statusFault('MIDI FAULT · the studio is not ready');
+      return;
+    }
+    // A card or a score. Neither replaces the bench's source, so neither asks.
+    if (/\.json$/i.test(file && file.name || '')) {
+      if (ctx.api.openJsonFile) await ctx.api.openJsonFile(file);
+      else statusFault('JSON FAULT · the score surface is not ready');
       return;
     }
     if (!(await confirmSourceReplacement())) return;
@@ -454,6 +463,11 @@ export function initSourceController(ctx) {
   $('urlInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') loadFromUrl(e.target.value);
   });
+  $('btnLookAround').addEventListener('click', () => {
+    $('dropZone').classList.add('is-hidden');
+    status('LOOKING AROUND · SHELF OR AUDIO IN BRINGS THE INTAKE BACK');
+  });
+
   $('btnOpenUrl').addEventListener('click', () => {
     $('dropZone').classList.remove('is-hidden');
     $('urlInput').focus();
@@ -469,7 +483,15 @@ export function initSourceController(ctx) {
     setTimeout(() => { $('btnCopyRip').textContent = 'COPY'; }, 1200);
   });
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && R.buffer) $('dropZone').classList.add('is-hidden');
+    // Escape dismisses the intake whether or not a source is loaded: the six
+    // benches are worth looking at before committing to a file, and the ten
+    // measured instruments in the overlay sound with no source at all. It
+    // belongs to whatever is on top, though — the first-run panel, the command
+    // deck and a confirm all sit above the intake, and one keystroke must not
+    // close two surfaces.
+    if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector(ABOVE_INTAKE)) {
+      $('dropZone').classList.add('is-hidden');
+    }
   });
   // ?url= prefills the field and raises a panel at the top of the drop zone
   // naming the file and its host, with one button; fetching still takes that

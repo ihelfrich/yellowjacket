@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { renderScore } from '../js/score/render.js';
+import { SYMPHONY_CARD_IDS as CARD_IDS } from '../js/score/symphony/index.js';
 import { scoreStats } from '../js/score/model.js';
 import { writeWav24, readWav } from './lib/wav.mjs';
 
@@ -24,7 +25,7 @@ mkdirSync(outDir, { recursive: true });
 const which = String(opt('--movements', '1,2,3,4')).split(',').map(Number);
 const master = !args.includes('--no-master');
 
-const CARD_IDS = ['iowa-bells-brass-Cs5', 'iowa-bells-plastic-ff-Cs5', 'iowa-bells-plastic-ff-E5', 'iowa-bells-plastic-ff-A5', 'carillon-bell', 'freesound-wineglass', 'hiawatha-vowel', 'fdr-vowel', 'opz-thud', 'commons-bell-15cm', 'uvb76-buzz', 'wwv-tone', 'ory-chord'];
+// The list lives in the browser module so the panel and this script cannot drift.
 const cards = {};
 for (const id of CARD_IDS) cards[id] = JSON.parse(readFileSync(new URL('../docs/lab/cards/' + id + '.json', import.meta.url), 'utf8'));
 

@@ -6,6 +6,13 @@
 export const FOUND_CARDS = Object.freeze([
   { id: 'carillon-bell', name: 'CARILLON', excitation: 'strike', note: 'Eulenspiegel noon chime · PD' },
   { id: 'iowa-bells-plastic-ff-Cs5', name: 'ORCH BELLS', excitation: 'strike', note: 'Iowa orchestral bells C#5 · anechoic' },
+  // The same bell at the same pitch (557.3 Hz against 557.4, 0.2 cents apart),
+  // struck with a brass mallet instead of a plastic one. What the mallet changes
+  // is measured and large: the brass strike puts the second partial 5.3 dB under
+  // the fundamental where the plastic strike leaves it 40.7 dB down, and rings
+  // the fundamental for 2.62 s against 1.24 s. Two objects that are the same
+  // object; the first movement of Thirteen Cards is built on the difference.
+  { id: 'iowa-bells-brass-Cs5', name: 'BRASS BELL', excitation: 'strike', note: 'Iowa orchestral bells C#5, brass mallet · anechoic' },
   { id: 'freesound-wineglass', name: 'WINE GLASS', excitation: 'strike', note: 'Freesound 654156 · CC0' },
   { id: 'commons-bell-15cm', name: 'HANDBELL', excitation: 'strike', note: 'Wikimedia Commons · PD' },
   { id: 'opz-thud', name: 'THUD', excitation: 'strike', note: 'one mode at 182 Hz' },

@@ -118,7 +118,15 @@ export function spectralCard(samples, sampleRate, {
     ? { hz: [modes[0].freqHz / 2, ...modes.map((m) => m.freqHz), modes[modes.length - 1].freqHz * 2], db: [20 * Math.log10(modes[0].amp) - 12, ...modes.map((m) => 20 * Math.log10(m.amp + 1e-9)), 20 * Math.log10(modes[modes.length - 1].amp + 1e-9) - 12] }
     : envelope;
   const family = classifyFamily(modes);
-  if (f0Hz && family.kind === 'unknown') { family.kind = 'string'; family.note = 'read at harmonics of f0; treated as a comb'; }
+  // A comb asserted from a measured f0, not a family the ratios earned: the
+  // classifier refused them. Marked so nothing downstream reports a fit for it —
+  // an unknown card now carries confidence 0, and "string (fit 0%)" would be a
+  // named family wearing the number that means no family was named.
+  if (f0Hz && family.kind === 'unknown') {
+    family.kind = 'string';
+    family.assumed = true;
+    family.note = 'read at harmonics of f0; treated as a comb';
+  }
   const card = {
     version: CARD_VERSION,
     id: sha256HexSync(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)).slice(0, 16),

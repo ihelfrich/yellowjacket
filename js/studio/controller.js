@@ -1,6 +1,6 @@
 // Studio controller: document mutations, transport, and stereo bounce.
 
-import { applyInstrumentPreset, applyCardInstrument, applyCustomScale, generateStudioIdea, normalizeStep, transformStudioBar, CARD_EXCITATIONS } from './model.js';
+import { applyInstrumentPreset, applyCardInstrument, applyCustomScale, generateStudioIdea, normalizeStep, transformStudioBar, scaleIntervalsLabel, CARD_EXCITATIONS } from './model.js';
 import { warmCardTrack } from './card-voice.js';
 import { instrumentPool } from '../instrument/pool.js';
 import { confirmAct } from '../app/confirm.js';
@@ -51,6 +51,9 @@ export function initStudioController(ctx) {
   // Cards: every note a card part will play is rendered ahead of playback,
   // between paints, so the sequencer only ever starts buffers it already has.
   const yieldToPaint = () => new Promise((resolve) => setTimeout(resolve, 0));
+  // trackNotes keys a card note on the pitch the step sounds, cents and all, so
+  // the warm fills exactly the renders the live tick will look for; a second
+  // place folding cents in here would only be one more thing to keep in step.
   let warming = null;
   function warmAll() {
     if (warming) return warming;
@@ -94,7 +97,7 @@ export function initStudioController(ctx) {
   }
   ctx.api.studioSetScale = (intervals, name = 'CARD') => {
     edit('studio', (doc) => { applyCustomScale(doc, intervals, name); });
-    status('STUDIO · SCALE ' + studio.customScale.name + ' · ' + studio.customScale.intervals.join(' '));
+    status('STUDIO · SCALE ' + studio.customScale.name + ' · ' + scaleIntervalsLabel(studio.customScale.intervals));
   };
 
   // The keyboard plays the selected part chromatically while STUDIO is up:

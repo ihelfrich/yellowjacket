@@ -1,8 +1,22 @@
 // Studio surface: six instrument channels, sound designer, note palette, and
 // a four-bar piano-roll-style step editor. Pure view; all edits are events.
 
-import { INSTRUMENT_PRESETS, KEY_NAMES, STUDIO_SCALES, CARD_EXCITATIONS, noteName, scaleSpec } from './model.js';
+import { INSTRUMENT_PRESETS, KEY_NAMES, STUDIO_SCALES, CARD_EXCITATIONS, noteName, scaleSpec, stepIsOnGrid, stepLabel } from './model.js';
 import { FOUND_CARDS } from './found-cards.js';
+
+/**
+ * Does this step already hold exactly what the palette would place? A second
+ * click on that step erases it. The palette only ever places on the grid, so a
+ * step at the same note carrying an audible departure is a different note and
+ * gets replaced — clearing it would lose the measurement with no way back but
+ * UNDO. `stepIsOnGrid`, not a bare zero, is the test: the roll prints no
+ * departure under LABEL_CENTS, and a step the roll calls a plain E5 has to
+ * behave like one, or the label promises a clear and the click replaces. Four
+ * of the 69 scale degrees the cards in docs/lab/cards/ produce sit there.
+ */
+export function stepMatchesPalette(step, note, chord) {
+  return !!step && step.note === note && step.chord === chord && stepIsOnGrid(step);
+}
 
 const STYLE = `
 .yj-studio { height:100%; min-height:0; display:flex; flex-direction:column; gap:10px; overflow:auto; }
@@ -253,9 +267,9 @@ export class StudioView extends EventTarget {
     const clear=button('CLEAR');clear.addEventListener('click',()=>this._emit('clearbar',{track:this.selectedTrack,page:this.page})); tools.append(chord,velocity,gate,left,right,invert,duplicate,clear);
     const grid=document.createElement('div');grid.className='yj-roll-grid';
     for(let local=0;local<16;local++){const index=this.page*16+local;const event=track.steps[index];const step=button('', 'yj-note-step'+(event?' is-on':''));step.dataset.step=index;
-      const num=document.createElement('span');num.className='yj-step-num';num.textContent=String(index+1).padStart(2,'0');step.appendChild(num,document.createTextNode(event?noteName(event.note)+(event.chord==='single'?'':' '+event.chord.toUpperCase()):'—'));
-      step.title=event?'Click to replace; right-click to clear':'Place '+noteName(this.note)+' '+this.chord;
-      step.addEventListener('click',()=>this._emit('step',{track:this.selectedTrack,index,value:event&&event.note===this.note&&event.chord===this.chord?null:{note:this.note,chord:this.chord,velocity:this.velocity,gate:this.gate}}));
+      const num=document.createElement('span');num.className='yj-step-num';num.textContent=String(index+1).padStart(2,'0');step.append(num,document.createTextNode(stepLabel(event)));
+      step.title=event?stepLabel(event)+' · click to replace, right-click to clear':'Place '+noteName(this.note)+' '+this.chord;
+      step.addEventListener('click',()=>this._emit('step',{track:this.selectedTrack,index,value:stepMatchesPalette(event,this.note,this.chord)?null:{note:this.note,chord:this.chord,velocity:this.velocity,gate:this.gate}}));
       step.addEventListener('contextmenu',(e)=>{e.preventDefault();this._emit('step',{track:this.selectedTrack,index,value:null});});grid.appendChild(step);}
     const keyboard=document.createElement('div');keyboard.className='yj-keyboard';
     for(let midi=this.keyboardBase;midi<this.keyboardBase+24;midi++){const black=[1,3,6,8,10].includes(midi%12);const key=button(noteName(midi),'yj-key'+(black?' is-black':'')+(this.note===midi?' is-selected':''));key.addEventListener('click',()=>{this.note=midi;this._emit('preview',{track:this.selectedTrack,note:midi,chord:this.chord,velocity:this.velocity});this.render();});keyboard.appendChild(key);}

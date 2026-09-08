@@ -6,7 +6,7 @@
 // AudioBuffer of a render, made once. Pure apart from the AudioBuffer helper.
 
 import { renderVoice, clearCache } from '../instrument/render.js';
-import { chordNotes, studioStepSeconds, CARD_EXCITATIONS } from './model.js';
+import { chordNotes, stepPitch, studioStepSeconds, CARD_EXCITATIONS } from './model.js';
 
 export const DRIVEN = new Set(['bow', 'breath']);
 export const DYNAMICS_STEPS = 4;   // velocity buckets 0.25 · 0.5 · 0.75 · 1
@@ -82,7 +82,13 @@ export class CardVoiceCache {
   get size() { return this.map.size; }
 }
 
-/** The distinct notes a card track will play: [{ midi, velocity, duration }], one per render key. */
+/**
+ * The distinct notes a card track will play: [{ midi, velocity, duration }],
+ * one per render key. A step is keyed on the pitch it sounds, not the column it
+ * is written in: the engine asks the cache for note + cents, so a warm that
+ * dropped the cents left every retuned note out of the cache and the live tick
+ * skipped it.
+ */
 export function trackNotes(studio, track) {
   if (!track || !track.card || !track.card.card) return [];
   const { card, excitation } = track.card;
@@ -93,7 +99,7 @@ export function trackNotes(studio, track) {
     const event = track.steps[step];
     if (!event) continue;
     const duration = studioStepSeconds(studio.bpm) * event.gate;
-    for (const note of chordNotes(event.note, event.chord)) {
+    for (const note of chordNotes(stepPitch(event), event.chord)) {
       const midi = note + transpose;
       const key = cardNoteKey(card, excitation, midi, event.velocity, duration);
       if (!seen.has(key)) seen.set(key, { midi, velocity: event.velocity, duration });

@@ -5,6 +5,10 @@ export const STUDIO_STEPS_PER_BAR = 16;
 export const STUDIO_MAX_BARS = 4;
 export const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 export const CARD_EXCITATIONS = Object.freeze(['strike', 'pluck', 'bow', 'breath']);
+// A step's cents is a departure from its own note, so an octave is the widest
+// one that still leaves `note` the pitch it is written at; more than that
+// belongs in the note.
+export const STEP_CENTS_LIMIT = 1200;
 export const STUDIO_SCALES = {
   minor: { name: 'MINOR', intervals: [0, 2, 3, 5, 7, 8, 10] },
   major: { name: 'MAJOR', intervals: [0, 2, 4, 5, 7, 9, 11] },
@@ -12,18 +16,72 @@ export const STUDIO_SCALES = {
   pentatonic: { name: 'PENTATONIC', intervals: [0, 3, 5, 7, 10] },
 };
 
-/** The scale in force: a named one, or the studio's own `customScale` (an object's consonances, snapped to semitones) under the id 'custom'. */
+/** The scale in force: a named one, or the studio's own `customScale` (an object's consonances, in exact semitones) under the id 'custom'. */
 export function scaleSpec(studio) {
   if (studio && studio.scale === 'custom' && studio.customScale && Array.isArray(studio.customScale.intervals) && studio.customScale.intervals.length) return studio.customScale;
   return STUDIO_SCALES[studio && studio.scale] || STUDIO_SCALES.minor;
 }
 
-/** Set a custom scale from semitone intervals (0 always included, sorted, deduped). */
+// Two degrees this close are one degree measured twice. The dissonance curve is
+// sampled 600 times over a 2.05 ratio (instrument/tuning.js), so its minima sit
+// on a 2.07-cent grid and two samples on one valley floor read as two minima;
+// 5 cents is above that grid, at the pitch JND for successive tones, and an
+// order of magnitude under the 54 cents between the Iowa brass bell's two
+// degrees inside semitone 8, which the exact scale exists to keep apart.
+export const SCALE_DEGREE_CENTS = 5;
+
+/** Semitone intervals with 0 first, sorted, and degrees within SCALE_DEGREE_CENTS folded onto the lowest — kept at its measured value, never rounded. */
+export function dedupeScaleIntervals(intervals) {
+  const admitted = [0];
+  for (const v of intervals || []) { const n = Number(v); if (Number.isFinite(n) && n > 0) admitted.push(n); }
+  admitted.sort((a, b) => a - b);
+  const out = [];
+  for (const n of admitted) if (!out.length || (n - out[out.length - 1]) * 100 >= SCALE_DEGREE_CENTS) out.push(n);
+  return out;
+}
+
+/** A measured scale for a status line: its degrees in whole cents, since raw semitone floats read as noise. */
+export function scaleIntervalsLabel(intervals) {
+  if (!Array.isArray(intervals) || !intervals.length) return '';
+  return intervals.map((v) => Math.round(Number(v) * 100)).join(' ') + ' CENTS';
+}
+
+/**
+ * Set a custom scale from semitone intervals (0 always included, sorted,
+ * deduped). An interval is admitted by the semitone it lands nearest but kept
+ * exactly as measured: the Iowa brass bell's 7.58 and 8.12 are one semitone
+ * apart on the roll and 54 cents apart in the air, and rounding lost one of them.
+ */
 export function applyCustomScale(studio, intervals, name = 'CARD') {
-  const set = new Set([0]);
-  for (const v of intervals || []) { const n = Math.round(Number(v)); if (Number.isFinite(n) && n > 0 && n < 12) set.add(n); }
-  studio.customScale = { name: String(name || 'CARD').toUpperCase().slice(0, 12), intervals: [...set].sort((a, b) => a - b) };
+  const admitted = [];
+  for (const v of intervals || []) { const n = Number(v), column = Math.round(n); if (Number.isFinite(n) && column > 0 && column < 12) admitted.push(n); }
+  studio.customScale = { name: scaleName(name), intervals: dedupeScaleIntervals(admitted) };
   studio.scale = 'custom';
+  return studio;
+}
+
+function scaleName(name) { return String(name || 'CARD').toUpperCase().slice(0, 12); }
+
+/**
+ * A saved custom scale, restored as saved. Loading still validates — a project
+ * file is untrusted input, so a degree must be a finite number inside ten
+ * octaves, and the list comes back sorted with the root first — but it does not
+ * re-run the card intake of `applyCustomScale`. That intake makes two decisions
+ * about a fresh measurement, both wrong to make twice: it drops any degree
+ * outside 0 < round(semitones) < 12, and it folds degrees within
+ * SCALE_DEGREE_CENTS onto the lower one. Measured against the scales this
+ * version writes, restoring through the intake changes none of them (all 15
+ * cards in docs/lab/cards/ survive it bit for bit, as do the integer scales
+ * every released version wrote); it silently deletes a degree only in a saved
+ * file the intake would now reject — [0, 0.4, 7] loses the 40-cent degree,
+ * [0, 7, 11.6] loses the 1160-cent one. A scale already inside a project is the
+ * person's, not a measurement waiting to be re-admitted.
+ */
+export function restoreCustomScale(studio, saved) {
+  const kept = [0];
+  for (const v of (saved && saved.intervals) || []) { const n = Number(v); if (Number.isFinite(n) && n > 0 && n < 120) kept.push(n); }
+  kept.sort((a, b) => a - b);
+  studio.customScale = { name: scaleName(saved && saved.name), intervals: kept.filter((n, i) => i === 0 || n !== kept[i - 1]) };
   return studio;
 }
 
@@ -43,6 +101,7 @@ const CHORD_INTERVALS = {
   single: [0], fifth: [0, 7], minor: [0, 3, 7], major: [0, 4, 7], seventh: [0, 4, 7, 10],
 };
 const WAVES = new Set(['sine', 'triangle', 'sawtooth', 'square']);
+const LABEL_CENTS = 2; // within a couple of cents of the grid the roll just reads the note
 
 function clamp(v, lo, hi, fallback = lo) {
   const n = Number(v);
@@ -121,7 +180,9 @@ export function applyCardInstrument(track, card, excitation = 'strike', name = n
 }
 
 export function chordNotes(root, chord = 'single') {
-  const note = Math.round(clamp(root, 0, 127, 60));
+  // the root is a pitch, not a key index: a step off the twelve-tone grid
+  // arrives fractional and its chord moves with it
+  const note = clamp(root, 0, 127, 60);
   const intervals = CHORD_INTERVALS[chord] || CHORD_INTERVALS.single;
   return intervals.map((interval) => Math.min(127, note + interval));
 }
@@ -131,18 +192,34 @@ export function noteName(midi) {
   return KEY_NAMES[note % 12] + (Math.floor(note / 12) - 1);
 }
 
-export function scaleNote(keyRoot, scale, degree, octave = 4) {
-  const spec = scale && typeof scale === 'object' ? scale : (STUDIO_SCALES[scale] || STUDIO_SCALES.minor);
-  const count = spec.intervals.length;
-  const rawDegree = Math.round(Number(degree) || 0);
-  const octaves = Math.floor(rawDegree / count);
-  const wrapped = ((rawDegree % count) + count) % count;
-  const root = (Math.round(clamp(keyRoot, 0, 11, 0)) + 12 * (octave + 1));
-  return Math.min(127, Math.max(0, root + spec.intervals[wrapped] + octaves * 12));
+function specOf(scale) {
+  return scale && typeof scale === 'object' ? scale : (STUDIO_SCALES[scale] || STUDIO_SCALES.minor);
 }
 
-function event(note, chord = 'single', velocity = 0.8, gate = 0.9) {
-  return normalizeStep({ note, chord, velocity, gate });
+function degreeIndex(spec, rawDegree) {
+  const count = spec.intervals.length;
+  return ((rawDegree % count) + count) % count;
+}
+
+/** The key column a degree lands in: its nearest semitone, so the roll stays twelve columns wide. */
+export function scaleNote(keyRoot, scale, degree, octave = 4) {
+  const spec = specOf(scale);
+  const rawDegree = Math.round(Number(degree) || 0);
+  const octaves = Math.floor(rawDegree / spec.intervals.length);
+  const root = (Math.round(clamp(keyRoot, 0, 11, 0)) + 12 * (octave + 1));
+  return Math.min(127, Math.max(0, root + Math.round(spec.intervals[degreeIndex(spec, rawDegree)]) + octaves * 12));
+}
+
+/** What that column owes the degree, in cents. Zero for the named scales; a measured scale is not twelve-tone. */
+export function scaleCents(scale, degree) {
+  const spec = specOf(scale);
+  const interval = spec.intervals[degreeIndex(spec, Math.round(Number(degree) || 0))];
+  return (interval - Math.round(interval)) * 100;
+}
+
+// The column for the roll, the cents for the air.
+function degreeEvent(studio, scale, degree, octave, chord, velocity, gate) {
+  return normalizeStep({ note: scaleNote(studio.keyRoot, scale, degree, octave), chord, velocity, gate, cents: scaleCents(scale, degree) });
 }
 
 // A useful starting arrangement, not a slot machine. The seed changes rhythm
@@ -157,7 +234,8 @@ export function generateStudioIdea(studio, seed = null) {
   const scaleId = STUDIO_SCALES[studio.scale] ? studio.scale : (studio.scale === 'custom' ? 'custom' : 'minor');
   // A custom scale is voiced by its own third: a major third and no minor one
   // makes major triads, a minor third makes minor ones, neither makes fifths.
-  const custom = scaleId === 'custom' ? (scale.intervals.includes(4) && !scale.intervals.includes(3) ? 'major' : scale.intervals.includes(3) ? 'minor' : 'fifth') : null;
+  const columns = scale.intervals.map((v) => Math.round(v));
+  const custom = scaleId === 'custom' ? (columns.includes(4) && !columns.includes(3) ? 'major' : columns.includes(3) ? 'minor' : 'fifth') : null;
   const chord = scaleId === 'major' ? 'major' : scaleId === 'pentatonic' ? 'fifth' : scaleId === 'custom' ? custom : 'minor';
   const progression = chord === 'major' ? [0, 4, 5, 3] : [0, 5, 3, 4];
   for (const track of studio.tracks) track.steps.fill(null);
@@ -166,28 +244,26 @@ export function generateStudioIdea(studio, seed = null) {
   for (let bar = 0; bar < studio.bars; bar++) {
     const degree = progression[bar % progression.length];
     const at = bar * 16;
-    const bass = scaleNote(studio.keyRoot, scale, degree, 2);
-    const harmony = scaleNote(studio.keyRoot, scale, degree, 3);
-    studio.tracks[0].steps[at] = event(bass, 'single', 0.94, 1.8);
-    studio.tracks[0].steps[at + 6] = event(scaleNote(studio.keyRoot, scale, degree + 4, 2), 'single', 0.72, 0.8);
-    studio.tracks[0].steps[at + 8] = event(bass, 'single', 0.86, 1.4);
-    studio.tracks[0].steps[at + 11] = event(scaleNote(studio.keyRoot, scale, degree + (random() > 0.5 ? 2 : 1), 2), 'single', 0.68, 0.7);
-    studio.tracks[1].steps[at] = event(harmony, chord, 0.68, 3.6);
-    studio.tracks[1].steps[at + 8] = event(harmony, chord, 0.58, 3.2);
-    studio.tracks[2].steps[at] = event(scaleNote(studio.keyRoot, scale, degree, 4), chord, 0.44, 12);
-    studio.tracks[5].steps[at] = event(scaleNote(studio.keyRoot, scale, degree, 1), 'single', 0.72, 7.5);
+    studio.tracks[0].steps[at] = degreeEvent(studio, scale, degree, 2, 'single', 0.94, 1.8);
+    studio.tracks[0].steps[at + 6] = degreeEvent(studio, scale, degree + 4, 2, 'single', 0.72, 0.8);
+    studio.tracks[0].steps[at + 8] = degreeEvent(studio, scale, degree, 2, 'single', 0.86, 1.4);
+    studio.tracks[0].steps[at + 11] = degreeEvent(studio, scale, degree + (random() > 0.5 ? 2 : 1), 2, 'single', 0.68, 0.7);
+    studio.tracks[1].steps[at] = degreeEvent(studio, scale, degree, 3, chord, 0.68, 3.6);
+    studio.tracks[1].steps[at + 8] = degreeEvent(studio, scale, degree, 3, chord, 0.58, 3.2);
+    studio.tracks[2].steps[at] = degreeEvent(studio, scale, degree, 4, chord, 0.44, 12);
+    studio.tracks[5].steps[at] = degreeEvent(studio, scale, degree, 1, 'single', 0.72, 7.5);
   }
   for (let step = 2; step < total; step += 4) {
     const bar = Math.floor(step / 16);
     const degree = progression[bar % progression.length] + (random() > 0.52 ? 2 : 4);
-    studio.tracks[4].steps[step] = event(scaleNote(studio.keyRoot, scale, degree, 4), 'single', 0.48 + random() * 0.22, 0.55);
+    studio.tracks[4].steps[step] = degreeEvent(studio, scale, degree, 4, 'single', 0.48 + random() * 0.22, 0.55);
   }
   for (let step = 0; step < total; step += 2) {
     if (random() < 0.34) continue;
     const bar = Math.floor(step / 16);
     const base = progression[bar % progression.length];
     const degree = base + Math.floor(random() * 7);
-    studio.tracks[3].steps[step] = event(scaleNote(studio.keyRoot, scale, degree, 4), 'single', 0.5 + random() * 0.35, random() > 0.8 ? 1.8 : 0.75);
+    studio.tracks[3].steps[step] = degreeEvent(studio, scale, degree, 4, 'single', 0.5 + random() * 0.35, random() > 0.8 ? 1.8 : 0.75);
   }
   studio.touched = true;
   return studio;
@@ -232,11 +308,59 @@ export function studioHasContent(studio) {
 export function normalizeStep(value) {
   if (!value || typeof value !== 'object') return null;
   const chord = Object.prototype.hasOwnProperty.call(CHORD_INTERVALS, value.chord) ? value.chord : 'single';
-  return {
+  const cents = clampCents(value.cents);
+  const step = {
     note: Math.round(clamp(value.note, 0, 127, 60)), chord,
     velocity: clamp(value.velocity, 0.05, 1, 0.82),
     gate: clamp(value.gate, 0.05, 16, 0.9),
   };
+  // A twelve-tone step carries no cents key at all, so a project written before
+  // this existed reloads as the same object and sounds the same sample.
+  if (cents) step.cents = cents;
+  return step;
+}
+
+/**
+ * A cents value the model will act on. NaN and ±Infinity are not departures
+ * that got too big — they are no measurement at all, so they drop to the grid
+ * rather than clamping to ±STEP_CENTS_LIMIT, which would invent a semitone.
+ */
+export function clampCents(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(STEP_CENTS_LIMIT, Math.max(-STEP_CENTS_LIMIT, n));
+}
+
+/** A step's departure from its own note, in cents. */
+export function stepCents(step) {
+  return clampCents(step && step.cents);
+}
+
+/** What a step sounds, in semitones. Without cents it is the note itself — the same double, so the same frequency to the last bit. */
+export function stepPitch(step) {
+  const cents = stepCents(step);
+  return cents ? step.note + cents / 100 : step.note;
+}
+
+/**
+ * Is this step's departure too small for the roll to print? Then the roll calls
+ * it the bare note, and everything else must call it that too — the label is the
+ * only evidence the person has for what a step holds. Measured on the fifteen
+ * cards in docs/lab/cards/: 4 of 69 scale degrees sound under a cent and a half
+ * off the grid (hiawatha-vowel +1.24, ory-chord +0.08 and -0.50, Iowa plastic
+ * C#5 -0.17), and LABEL_CENTS is itself under the ~5-cent pitch JND that
+ * SCALE_DEGREE_CENTS is set by, so nothing audible hangs on the difference.
+ */
+export function stepIsOnGrid(step) {
+  return Math.abs(Math.round(stepCents(step))) < LABEL_CENTS;
+}
+
+/** A step in the roll: its note, how far off the grid it sits, its chord. */
+export function stepLabel(step) {
+  if (!step) return '—';
+  const cents = Math.round(stepCents(step));
+  const departure = stepIsOnGrid(step) ? '' : ' ' + (cents > 0 ? '+' : '') + cents;
+  return noteName(step.note) + departure + (step.chord === 'single' ? '' : ' ' + String(step.chord).toUpperCase());
 }
 
 function applyTrack(target, saved) {
@@ -283,7 +407,7 @@ export function applyStudioSnapshot(target, saved) {
   target.metronome = saved.metronome === true;
   target.keyRoot = Math.round(clamp(saved.keyRoot, 0, 11, target.keyRoot));
   const custom = saved.customScale && Array.isArray(saved.customScale.intervals) ? saved.customScale : null;
-  if (custom) applyCustomScale(target, custom.intervals, custom.name);
+  if (custom) restoreCustomScale(target, custom);
   else target.customScale = null;
   target.scale = typeof saved.scale === 'string' && (STUDIO_SCALES[saved.scale] || (saved.scale === 'custom' && custom)) ? saved.scale : (STUDIO_SCALES[target.scale] ? target.scale : 'minor');
   target.ideaSeed = Number.isFinite(saved.ideaSeed) ? saved.ideaSeed >>> 0 : target.ideaSeed;
