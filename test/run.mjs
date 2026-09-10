@@ -679,6 +679,12 @@ import { NAME as classifierName, cases as classifierCases } from './cases-classi
 import { NAME as centsName, cases as centsCases } from './cases-cents.mjs';
 import { NAME as frontDoorName, cases as frontDoorCases } from './cases-frontdoor.mjs';
 import { NAME as scorePanelName, cases as scorePanelCases } from './cases-score-panel.mjs';
+import { NAME as analyticName, cases as analyticCases } from './cases-analytic.mjs';
+import { NAME as sigMeasureName, cases as sigMeasureCases } from './cases-sigint-measure.mjs';
+import { NAME as sigSegmentName, cases as sigSegmentCases } from './cases-sigint-segment.mjs';
+import { NAME as sigCwName, cases as sigCwCases } from './cases-sigint-cw.mjs';
+import { NAME as sigFskName, cases as sigFskCases } from './cases-sigint-fsk.mjs';
+import { NAME as sigTdoaName, cases as sigTdoaCases } from './cases-sigint-tdoa.mjs';
 
 function repairFixture() {
   const sr = 48000;
@@ -1247,7 +1253,11 @@ const lifecycleCases = [
       }
       assert.ok(SHELVES.includes(rec.shelf), rec.id + ' sits on a known shelf');
       shelves.add(rec.shelf);
-      assert.match(rec.source, /^https:\/\/archive\.org\/details\//, rec.id + ' cites its item page');
+      // The invariant is that a reader can go and check the licence themselves,
+      // not that the file lives on one host. Wikimedia Commons file pages carry
+      // the same thing an archive.org item page does.
+      assert.match(rec.source, /^https:\/\/(archive\.org\/details|commons\.wikimedia\.org\/wiki\/File:)/,
+        rec.id + ' cites a page where its licence can be read');
       assert.match(rec.dur, /^\d+:\d\d$/, rec.id + ' duration reads as M:SS');
       assert.ok(fieldLicenseUrl(rec.license), rec.id + ' license tag resolves to a deed URL');
       // The shelf says "all public domain" in three places and a commercial
@@ -1258,9 +1268,25 @@ const lifecycleCases = [
         rec.id + ' is public domain, not ' + rec.license);
       // Every variant must stream from the item it cites, and a lossless
       // variant must carry the header-read rate and depth the badge shows.
-      const item = rec.source.slice('https://archive.org/details/'.length) + '/';
+      const onCommons = rec.source.startsWith('https://commons.wikimedia.org/wiki/File:');
+      const item = onCommons ? null : rec.source.slice('https://archive.org/details/'.length) + '/';
+      // A Commons file page names exactly one file, so the check is that the
+      // stream IS that file: same basename, underscores and all. This is the
+      // same guarantee the archive.org branch gives — a card cannot cite one
+      // licence page and quietly stream something else.
+      const commonsName = onCommons
+        ? decodeURIComponent(rec.source.slice('https://commons.wikimedia.org/wiki/File:'.length))
+        : null;
       assert.ok(rec.light || rec.hi, rec.id + ' has at least one variant');
       for (const v of [rec.light, rec.hi].filter(Boolean)) {
+        if (onCommons) {
+          assert.match(v.url, /^https:\/\/upload\.wikimedia\.org\/wikipedia\/commons\//,
+            rec.id + ' streams from the Commons file store');
+          assert.equal(decodeURIComponent(v.url.split('/').pop()), commonsName,
+            rec.id + ' streams the very file its page documents');
+          assert.ok(Number.isFinite(v.mb) && v.mb > 0, rec.id + ' states its size');
+          continue;
+        }
         assert.match(v.url, /^https:\/\/archive\.org\/download\//, rec.id + ' streams from archive.org');
         assert.ok(v.url.slice('https://archive.org/download/'.length).startsWith(item),
           rec.id + ' variant lives under its source item');
@@ -6802,6 +6828,12 @@ const groups = [
   [centsName, centsCases],
   [frontDoorName, frontDoorCases],
   [scorePanelName, scorePanelCases],
+  [analyticName, analyticCases],
+  [sigMeasureName, sigMeasureCases],
+  [sigSegmentName, sigSegmentCases],
+  [sigCwName, sigCwCases],
+  [sigFskName, sigFskCases],
+  [sigTdoaName, sigTdoaCases],
 ];
 
 for (const [name, cases] of groups) {

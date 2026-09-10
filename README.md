@@ -76,6 +76,29 @@ music, which this shelf once mislabelled as launch-day control-room audio until
 Ian heard otherwise — and forty-four seconds of the plasma wave instrument as
 Voyager 1 crossed Jupiter's bow shock in 1979, played back as sound.
 
+The same bench has a second state. **SCOPE** is everything above; **SIGINT** reads the
+same audio as a transmission rather than as a recording. It surveys a recording for
+emissions above the noise floor, measures one — centre frequency, occupied bandwidth
+by the ITU's −26 dB definition and by 99% power, drift in hertz per second, symbol
+rate, FSK shift, SNR — and assembles an ITU emission designator from them
+(`249HF1B` for 45.45 baud RTTY at a 170 Hz shift, by SM.1138's own arithmetic). It
+ranks what the emission might be with the evidence for and against each hypothesis,
+and tries the decoders that ranking makes plausible: Morse, RTTY, DTMF and selective
+calling. Every number carries an uncertainty and every estimator can refuse — a
+bench that reads confident traffic out of hiss is worse than one that reads nothing,
+so refusals print as prominently as answers.
+
+It also does one thing that is not characterisation. A recording of 5 MHz carries
+both NIST time stations, WWV in Colorado and WWVH on Kauai, marking each minute on
+different tones. They share a clock, so the difference in when their marks arrive is
+the difference in how far they travelled. **TWO STATIONS** measures it: 13.24 ms on
+the shelf's 2019 recording, a path difference of 3,971 ± 359 km, inside the 18.1 ms
+that 5,430 km of baseline allows. Four of its sixteen epochs measured differences
+light cannot produce and were dropped by name rather than averaged away. It does not
+give a position — one difference is a line, not a point, and the ionosphere adds
+path the geometry cannot see — and it says so. `docs/lab/2026-09-10-two-stations-one-channel.md`
+has the working.
+
 **MINE** is the sixth drawer and the only one not in the manifest: whatever you
 kept. Load any file, press **KEEP**, and the bytes are held in this browser's
 private storage (the same origin-private file system the crate and project

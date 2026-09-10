@@ -99,6 +99,17 @@
 <link rel="modulepreload" href="js/score/render.js">
 <link rel="modulepreload" href="js/score/symphony/index.js">
 <link rel="modulepreload" href="js/app/score-panel.js">
+<link rel="modulepreload" href="js/dsp/analytic.js">
+<link rel="modulepreload" href="js/sigint/measure.js">
+<link rel="modulepreload" href="js/sigint/designator.js">
+<link rel="modulepreload" href="js/sigint/segment.js">
+<link rel="modulepreload" href="js/sigint/classify.js">
+<link rel="modulepreload" href="js/sigint/decode/cw.js">
+<link rel="modulepreload" href="js/sigint/decode/fsk.js">
+<link rel="modulepreload" href="js/sigint/decode/rtty.js">
+<link rel="modulepreload" href="js/sigint/decode/tones.js">
+<link rel="modulepreload" href="js/sigint/tdoa.js">
+<link rel="modulepreload" href="js/app/sigint-controller.js">
 <link rel="modulepreload" href="js/app/confirm.js">
 <link rel="modulepreload" href="js/app/source-handle.js">
 <link rel="modulepreload" href="js/app/fingerprint.js">
@@ -248,6 +259,12 @@
 
   <!-- ============ SIGNAL ============ -->
   <section id="tab-signal" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-signal" aria-hidden="true">
+    <div class="yj-substate yj-sigstate-band" role="tablist" id="sigStateBand">
+      <button class="yj-sigstate-btn is-active" data-sigstate="scope" role="tab" aria-selected="true">SCOPE</button>
+      <button class="yj-sigstate-btn" data-sigstate="sigint" role="tab" aria-selected="false"
+        title="The same audio read as a transmission: what is present, what its numbers are, what it says">SIGINT</button>
+    </div>
+    <div id="sigstate-scope" class="yj-sigstate is-active">
     <div class="yj-cols">
       <div class="yj-grow">
         <div class="yj-panel" data-label="SIGNAL / TIME DOMAIN">
@@ -323,6 +340,10 @@
           </div>
         </div>
       </aside>
+    </div>
+    </div>
+    <div id="sigstate-sigint" class="yj-sigstate">
+      <div id="sigintHost" class="yj-sigint-host"></div>
     </div>
   </section>
 

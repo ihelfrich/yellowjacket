@@ -1,9 +1,18 @@
 // Radix-2 iterative FFT. Worker-safe, no dependencies.
 
 export class FFT {
-  constructor(size) {
+  /**
+   * `precision` picks the twiddle tables. 'f32' is the default and is what
+   * every display path wants: half the memory, and its ~1e-7 relative error is
+   * far under the noise in anything being drawn. 'f64' is for measurement —
+   * with float32 twiddles the instantaneous frequency of a pure 1 kHz tone
+   * wanders +/-0.43 Hz sample to sample (measured), which averages away over a
+   * symbol but not over a single sample.
+   */
+  constructor(size, { precision = 'f32' } = {}) {
     if ((size & (size - 1)) !== 0 || size < 2) throw new Error('FFT size must be a power of 2');
     this.size = size;
+    this.precision = precision === 'f64' ? 'f64' : 'f32';
     this.rev = new Uint32Array(size);
     const bits = Math.log2(size);
     for (let i = 0; i < size; i++) {
@@ -11,8 +20,9 @@ export class FFT {
       for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b);
       this.rev[i] = r;
     }
-    this.cos = new Float32Array(size / 2);
-    this.sin = new Float32Array(size / 2);
+    const Table = this.precision === 'f64' ? Float64Array : Float32Array;
+    this.cos = new Table(size / 2);
+    this.sin = new Table(size / 2);
     for (let i = 0; i < size / 2; i++) {
       const a = (-2 * Math.PI * i) / size;
       this.cos[i] = Math.cos(a);

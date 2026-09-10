@@ -35,6 +35,7 @@ import { initCyclicController } from './app/cyclic-controller.js';
 import { initInstrumentController } from './app/instrument-controller.js';
 import { initFoundRow } from './app/found-row.js';
 import { initScorePanel } from './app/score-panel.js';
+import { initSigintController } from './app/sigint-controller.js';
 import { confirmAct } from './app/confirm.js';
 import { initSourceController } from './app/source-controller.js';
 import { initFieldLibrary } from './app/field-library.js';
@@ -258,6 +259,8 @@ const CONTROLLERS = [
   ['found', initFoundRow],
   // score sits under the studio roll and hands renders to the bench
   ['score', initScorePanel],
+  // sigint reads the bench's own loaded buffer; it needs api.getLiftRange from bench
+  ['sigint', initSigintController],
   ['loom', initLoomController],
   // persist is last on purpose: restore needs every api registered above it.
   ['persist', initPersistController],
@@ -547,6 +550,23 @@ function openStartRoute(path) {
   }
   if (path === 'drums' && ctx.api.loadDrumStarter) ctx.api.loadDrumStarter();
 }
+// SIGNAL's own two-state band. MACHINE's handler below is hardcoded to that
+// tab, so this is separate rather than shared: two benches with sub-states is
+// not yet a pattern worth abstracting.
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('[data-sigstate]');
+  if (!b) return;
+  for (const other of document.querySelectorAll('[data-sigstate]')) {
+    const on = other === b;
+    other.classList.toggle('is-active', on);
+    other.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  for (const pane of document.querySelectorAll('.yj-sigstate')) {
+    pane.classList.toggle('is-active', pane.id === 'sigstate-' + b.dataset.sigstate);
+  }
+  if (b.dataset.sigstate === 'scope' && ctx.api.sizeCanvases) ctx.api.sizeCanvases();
+});
+
 // Substate chips (SLICE / PATTERN / SONG …) are the second half of "where am
 // I"; both jump() and the strip's own handler end in a click on one of them.
 document.addEventListener('click', (e) => {
