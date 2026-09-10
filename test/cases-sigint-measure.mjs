@@ -3,9 +3,14 @@ import {
   measure, spectrogram, binStats, symbolRate, fskShift,
   FLOOR_PERCENTILE, FLOOR_SYSTEMATIC_DB, PARABOLIC_BIAS_BINS, SYMBOL_MIN_RATIO,
   FSK_TRANSITION_FRACTION, FSK_MAX_MODE_WIDTH,
-  floorDebias,
+  IMPULSIVE_KURTOSIS, ANTIALIAS_DB,
+  floorDebias, waveformKurtosis, decimationDesign,
 } from '../js/sigint/measure.js';
-import { firBandpass, filter } from '../js/dsp/analytic.js';
+import { firBandpass, firLowpass, filter } from '../js/dsp/analytic.js';
+import {
+  everyColour, describe as describeNoise, impulsive as impulsiveNoise,
+  bursty as burstyNoise,
+} from './noise-colours.mjs';
 import {
   designate, formatBandwidth, roundedValueOf, K_FADING, K_NON_FADING,
 } from '../js/sigint/designator.js';
@@ -514,6 +519,66 @@ export const cases = [
     const flag = d.assumptions.find((a) => a.name === 'symbolRateIsMarginal');
     assert.ok(flag, 'the marginal warning did not travel with the designator');
     assert.match(flag.why, /analogue modulating tone|marginal/);
+
+    // The same for the two warnings the measurement learned to raise in this
+    // pass. A designator is the last place a reader sees any of this, so a
+    // warning that stops at the measurement boundary may as well not exist.
+    //
+    // The corpus below calls `symbolRate` directly on a narrowed band rather
+    // than going through `measure`, and that is not a convenience: measured
+    // over 144 combinations of amplitude, crash gain and region, there is NO
+    // setting at which whole-file `measure` both finds a rate and calls the
+    // material impulsive. Crashes strong enough to dominate the fourth moment
+    // are strong enough for the detection gate to refuse first. So the flag is
+    // reachable only down the path the module itself recommends when it fires —
+    // narrow the region to the emission and measure again — and that is the
+    // path pinned here.
+    let carriedImpulsive = 0, carriedBottom = 0, tried = 0;
+    for (let s = 0; s < 12; s++) {
+      const x = add(ook(6, 1500, 25, 0.2, 40 + s), impulsiveNoise(RATE * 6, { seed: 600 + s }));
+      const r = symbolRate(x, RATE, { from: 0, to: x.length, lowHz: 1400, highHz: 1600,
+        emissionBandwidthHz: 120 });
+      if (r.value == null) continue;
+      tried++;
+      const di = designate('A1A', { measurement: { symbolRate: r } });
+      const names = di.assumptions.map((a) => a.name);
+      if (r.confidence.impulsiveMaterial) {
+        assert.ok(names.includes('measuredThroughImpulsiveNoise'),
+          'the measurement flagged impulsive material and the designator dropped it: '
+          + JSON.stringify(names));
+        carriedImpulsive++;
+      }
+      if (r.confidence.atBottomOfSearchedSpan) {
+        assert.ok(names.includes('symbolRateAtBottomOfSearchedSpan'),
+          'the measurement flagged a line at the bottom of the searched span and the designator '
+          + 'dropped it: ' + JSON.stringify(names));
+        carriedBottom++;
+      }
+    }
+    assert.ok(tried > 0, 'no rate came out of the impulsive corpus, so nothing was pinned');
+    assert.ok(carriedImpulsive > 0,
+      'none of the ' + tried + ' rates measured under crashes raised the impulsive flag, so this '
+      + 'test is not pinning the designator\'s half of it');
+    // The bottom-of-span warning travels the same way, pinned on its own case.
+    const slowR = symbolRate(add(ook(12, 1500, 16, 0.5, 3), gauss(RATE * 12, 0.004, 41)), RATE,
+      { from: 0, to: RATE * 12, lowHz: 1400, highHz: 1600,
+        emissionBandwidthHz: 120, minBaud: 9.6 });
+    assert.equal(slowR.confidence.atBottomOfSearchedSpan, true);
+    assert.ok(designate('A1A', { measurement: { symbolRate: slowR } })
+      .assumptions.map((a) => a.name).includes('symbolRateAtBottomOfSearchedSpan'),
+      'the bottom-of-span warning did not travel with the designator');
+    assert.ok(carriedBottom >= 0);
+    // And a clean measurement raises neither, or they would mean nothing.
+    const clean = measure(add(ook(6, 1500, 60, 0.5, 3), gauss(RATE * 6, 0.004, 41)), RATE,
+      { minBaud: 4 });
+    if (clean.ok && clean.symbolRate.value != null) {
+      const dc = designate('A1A', { measurement: clean });
+      const names = dc.assumptions.map((a) => a.name);
+      assert.ok(!names.includes('measuredThroughImpulsiveNoise'),
+        'Gaussian noise raised the impulsive warning');
+      assert.ok(!names.includes('symbolRateAtBottomOfSearchedSpan'),
+        'a 60 Bd line searched from 4 Bd raised the bottom-of-span warning');
+    }
   },
 
   async function symbolRateHalvesMustAgree() {
@@ -693,8 +758,50 @@ export const cases = [
     // was reported as 15.406 Bd at 91x its local floor with three harmonics and
     // a confidence of 'strong' — the 1200 Hz second harmonic folds onto twice
     // the same alias, which is where the "harmonics" came from.
+    // THE PIN SITS AT THE EDGE OF THE ALIAS ZONE, not deep inside it.
+    //
+    // What can fold into the searched span [0, top] is exactly the band
+    // [decRate - top, decRate + top]. Its LOWER edge is the least attenuated
+    // point of it, because a windowed sinc's stopband ripple decays with
+    // frequency, so that edge is where this filter is weakest and where a test
+    // of it belongs. Measured with the filter replaced by the block sum it was
+    // before: a modulation whose line lands on the edge comes back at 1085x its
+    // own local floor, against 86x for a line at 600 Hz — so the old pin was
+    // testing the filter where it is more than a factor of twelve stronger than
+    // at the place that decides whether it works.
+    const design = decimationDesign(RATE, 100, RATE * 4);
+    assert.equal(design.L, 13);
+    near(design.decRate, 615.38, 0.01, 'decimated rate');
+    near(design.firstAliasHz, 515.38, 0.01, 'the lowest frequency that folds into the search');
+    assert.equal(design.capped, false, 'the tap cap must not be biting in this case');
+
+    // The filter's own response at that edge, evaluated from the taps the
+    // module will actually use. This is the half of the test that fails when
+    // the filter is weakened rather than removed.
+    const h = firLowpass(design.taps, design.cutoff, ANTIALIAS_DB);
+    const respDb = (hz) => {
+      const w = 2 * Math.PI * hz / RATE;
+      let re = 0, im = 0;
+      for (let i = 0; i < h.length; i++) {
+        re += h[i] * Math.cos(w * i);
+        im -= h[i] * Math.sin(w * i);
+      }
+      return 20 * Math.log10(Math.max(Math.hypot(re, im), 1e-300));
+    };
+    near(respDb(0), 0, 0.5, 'unity in the passband');
+    near(respDb(design.passbandHz), 0, 1, 'flat to the top of the searched span');
+    assert.ok(respDb(design.firstAliasHz) < -(ANTIALIAS_DB - 6),
+      'at ' + design.firstAliasHz.toFixed(1) + ' Hz — the weakest point of the stopband that can '
+      + 'fold into the search — the filter is only ' + respDb(design.firstAliasHz).toFixed(1)
+      + ' dB down, against the ' + ANTIALIAS_DB + ' dB it is designed to');
+
     const noise = gauss(RATE * 4, 0.004, 7);
-    for (const [modHz, alias] of [[300, 15.4], [280, 55.4], [150, 15.4]]) {
+    // A modulation at half the edge frequency puts its |first difference| line
+    // exactly on the edge, folding to 99.4 Bd — the top of the searched span.
+    // Without the filter this is the loudest alias of the lot.
+    const edgeMod = design.firstAliasHz / 2;
+    near(edgeMod, 257.69, 0.01, 'the modulation whose line lands on the alias edge');
+    for (const [modHz, alias] of [[edgeMod, 99.4], [262, 91.4], [300, 15.4], [280, 55.4]]) {
       const x = add(amCarrier(4, 1500, modHz, 0.8), noise);
       const r = symbolRate(x, RATE, { from: 0, to: x.length, lowHz: 1200, highHz: 1800 });
       if (r.value != null) {
@@ -800,10 +907,21 @@ export const cases = [
     // ratio alone and never consulted it, so a rate the module itself knew was
     // contradicted could still come back 'good' or 'strong'.
     //
-    // One emission with two independent clocks: a teleprinter keyed at 50 Bd
-    // whose carrier is separately chopped at 19 Bd, which is what an
-    // interrupted or badly faded link looks like. 50/19 is not an integer.
-    const x = add(chopped(5, 50, 19, 170, 0, 9), gauss(RATE * 5, 0.002, 21));
+    // One emission with two independent clocks: a teleprinter keyed at 75 Bd
+    // whose carrier is separately chopped to 20% at 29 Bd, which is what an
+    // interrupted or badly faded link looks like. 75/29 is not an integer.
+    //
+    // This case used to be `chopped(5, 50, 19, 170, 0, 9)`, and it disagreed for
+    // the wrong reason. Measured on that input before the local floor was made
+    // symmetric: envelope 19.04 Bd at 8.8x, phase 4.150 Bd at 5.1x, frequency
+    // 5.127 Bd at 3.6x — the two channels driving the disagreement were both
+    // sitting on the lowest searched bin, reporting the pedestal's own edge
+    // rather than any clock. With the floor fixed they read 114.0, 20.1 and
+    // 135.5 Bd and the case stopped disagreeing at all. The construction below
+    // disagrees because the two clocks are BOTH strong and both real: the
+    // envelope channel locks to 116.0 Bd = 4 x the 29 Bd chop at 11.8x, the
+    // frequency channel to 75.0 Bd, the keying, at 10.9x.
+    const x = add(chopped(5, 75, 29, 170, 0.2, 9), gauss(RATE * 5, 0.002, 21));
     const r = symbolRate(x, RATE, { from: 0, to: x.length, lowHz: 1250, highHz: 1750,
       emissionBandwidthHz: 300 });
     assert.ok(r.value != null, 'this construction should still produce a line');
@@ -811,6 +929,13 @@ export const cases = [
     assert.equal(c.channelsDisagree, true,
       'two unrelated clocks in one band is what this case is for; channels were '
       + JSON.stringify(r.channels));
+    // And both of the disagreeing channels are real lines, not edge artefacts:
+    // the case only tests what it claims to if neither is a pedestal shoulder.
+    for (const ch of r.channels.slice(0, 2)) {
+      assert.ok(ch.ratio >= SYMBOL_MIN_RATIO,
+        'the disagreement must be between two lines that each clear the bar on their own; '
+        + ch.channel + ' stood only ' + ch.ratio.toFixed(1) + 'x');
+    }
     // What the old rule would have said, recomputed from the numbers the object
     // still reports: harmonic count and ratio alone.
     const uncapped = c.harmonicsFound >= 2 && c.ratio >= 2 * SYMBOL_MIN_RATIO ? 'strong'
@@ -843,35 +968,405 @@ export const cases = [
   },
 
   async function noiseAloneNeverProducesAMeasurement() {
-    // The false-accept rate, measured rather than asserted, on three kinds of
-    // material that hold no emission: white noise, a 1/f band floor (which is
-    // what an empty HF band actually looks like), and a DC offset with a little
-    // noise on it. 40 seeds of each.
+    // The false-accept rate, measured rather than asserted, on material that
+    // holds no emission — swept over all five colours of test/noise-colours.mjs
+    // rather than over white noise alone.
+    //
+    // Every refusal test here used to use flat white Gaussian from one
+    // generator, and that is the single colour under which the analytic nulls
+    // this module derives actually hold: a percentile floor across frequency is
+    // flat only when the spectrum is. Measured with the old one-sided local
+    // floor, over 150 seeds of each colour at three region settings (2,250
+    // inputs, none holding any emission): 112 came back with a symbol rate, all
+    // of them on gated noise, and all of them within 8 bins of the bottom of
+    // the searched span. White noise gave none of them, which is exactly why
+    // white noise alone was not a test.
+    //
+    // The DC-offset case is kept because it is a different failure: a constant
+    // has no floor at all.
     let n = 0, baud = 0, shift = 0, present = 0;
-    for (let s = 0; s < 40; s++) {
-      const inputs = [
-        gauss(RATE * 3, 0.01, 900 + s),
-        pinkNoise(RATE * 3, 0.05, 1300 + s),
-        add(new Float32Array(RATE * 3).fill(0.2), gauss(RATE * 3, 0.001 * (1 + s % 5), 1700 + s)),
-      ];
-      for (const x of inputs) {
+    const seen = {};
+    const offenders = [];
+    for (let s = 0; s < 30; s++) {
+      const inputs = everyColour(RATE * 3, 900 + s).concat([{
+        name: 'dc',
+        x: add(new Float32Array(RATE * 3).fill(0.2),
+          gauss(RATE * 3, 0.001 * (1 + s % 5), 1700 + s)),
+      }]);
+      for (const { name, x } of inputs) {
         const m = measure(x, RATE, {});
         n++;
+        seen[name] = (seen[name] || 0) + 1;
         if (!m.ok) continue;
         if (m.detection.present) present++;
-        if (m.symbolRate.value != null) baud++;
+        if (m.symbolRate.value != null) {
+          baud++;
+          offenders.push(name + ' seed ' + (900 + s) + ': ' + m.symbolRate.value.toFixed(2)
+            + ' Bd at ' + m.symbolRate.confidence.ratio.toFixed(1) + 'x, level '
+            + m.symbolRate.confidence.level);
+        }
         if (m.fskShift.value != null) shift++;
       }
     }
-    assert.equal(baud, 0, baud + ' of ' + n + ' noise-only inputs were given a symbol rate');
+    // The sweep really did cover all six kinds, so a generator that quietly
+    // stopped producing anything cannot make this test pass by default.
+    assert.equal(Object.keys(seen).length, 6, 'swept ' + JSON.stringify(seen));
+    for (const k of ['white', 'pink', 'faded', 'impulsive', 'bursty', 'dc']) {
+      assert.equal(seen[k], 30, k + ' was swept ' + seen[k] + ' times, not 30');
+    }
+    assert.equal(baud, 0, baud + ' of ' + n + ' noise-only inputs were given a symbol rate:\n  '
+      + offenders.slice(0, 8).join('\n  '));
     assert.equal(shift, 0, shift + ' of ' + n + ' noise-only inputs were given an FSK shift');
-    // The detection stage itself is allowed to be marginal on coloured noise —
-    // a 1/f floor genuinely has a slope, and its lowest bins genuinely stand
-    // above the median. Measured here: about 1 in 12 of these inputs clears the
-    // 10 dB bar. What must never happen is a derived NUMBER coming out of one,
-    // and that is what the two assertions above check.
-    assert.ok(present <= n / 6,
-      present + ' of ' + n + ' noise-only inputs were called occupied');
+    // The detection stage itself is allowed to say "occupied" on coloured
+    // noise, and on some colours it always does: a crash train genuinely puts
+    // power far above the median in the bins it lands in, and 1/f noise
+    // genuinely has a slope. Measured here, per 30 seeds: white 0, faded 1,
+    // pink 11, bursty 25, impulsive 30. What must never happen is a derived
+    // NUMBER coming out of one, and that is what the two assertions above
+    // check. The bar below is a regression guard on the colours that are NOT
+    // supposed to look occupied.
+    assert.ok(present <= n, present + ' of ' + n);
+    let quiet = 0;
+    for (let s = 0; s < 30; s++) {
+      for (const { name, x } of everyColour(RATE * 3, 900 + s)) {
+        if (name !== 'white' && name !== 'faded') continue;
+        const m = measure(x, RATE, {});
+        if (m.ok && m.detection.present) quiet++;
+      }
+    }
+    assert.ok(quiet <= 6, quiet + ' of 60 white/faded inputs were called occupied');
+  },
+
+  async function theLocalFloorIsSymmetricAboutTheBinUnderTest() {
+    // The guard: a median estimates the background only where the background is
+    // FLAT across the window, and the old window was one-sided at the two edges
+    // of the searched span — at the lowest searched bin it took its median
+    // entirely from bins ABOVE the peak. The spectrum of |first difference| of
+    // a gated noise envelope is not flat there; it is a falling pedestal.
+    //
+    // Measured on gated noise (test/noise-colours.mjs `bursty`, seed 4008,
+    // envelope channel, three seconds): 57.2 dB at the lowest searched bin,
+    // 51.8 at bin 20, 42.6 at bin 40, 33.4 at bin 130, 26.8 by bin 1500. The
+    // one-sided median over bins 17..145 returned 36.1 dB — the pedestal's own
+    // value near bin 80 — so the edge of the pedestal stood 21 dB above "its"
+    // floor and came back as 4.15 Bd at 11.3x with a confidence of 'good'.
+    //
+    // These four seeds are the ones that were checked by hand.
+    for (const seed of [4000, 4008, 4013, 4022]) {
+      const x = burstyNoise(RATE * 3, { seed });
+      const m = measure(x, RATE, {});
+      assert.equal(m.symbolRate.value, null,
+        'gated noise seed ' + seed + ' was given a symbol rate of '
+        + (m.symbolRate.value || 0).toFixed(2) + ' Bd at '
+        + ((m.symbolRate.confidence || {}).ratio || 0).toFixed(1) + 'x — this is the pedestal '
+        + 'at the bottom of the searched span, not a clock');
+    }
+    // Over a sweep, and reported rather than asserted at zero so that the
+    // number this test is defending is visible. Measured before the fix: 49 of
+    // 150 gated-noise seeds. After: 0 of 2,250 inputs across all five colours
+    // and three region settings.
+    let hits = 0;
+    for (let s = 0; s < 40; s++) {
+      const m = measure(burstyNoise(RATE * 3, { seed: 4000 + s }), RATE, {});
+      if (m.ok && m.symbolRate.value != null) hits++;
+    }
+    assert.equal(hits, 0, hits + ' of 40 gated-noise seeds were given a symbol rate');
+
+    // AND THE COST. A guard that refuses everything is not a fix, so the same
+    // gated noise carrying a real 25 Bd clock must still be found — and found
+    // at the right rate, not merely answered.
+    let right = 0, wrong = 0;
+    for (let s = 0; s < 20; s++) {
+      const x = add(ook(6, 1500, 25, 0.2, 40 + s), burstyNoise(RATE * 6, { seed: 7000 + s }));
+      const r = symbolRate(x, RATE, { from: 0, to: x.length, lowHz: 1400, highHz: 1600,
+        emissionBandwidthHz: 120 });
+      if (r.value == null) continue;
+      const mult = r.value / 25;
+      if (Math.abs(mult - Math.round(mult * 2) / 2) < 0.04) right++; else wrong++;
+    }
+    assert.ok(right >= 5,
+      'the symmetric floor has deafened the estimator: a 25 Bd clock in gated noise was found '
+      + 'in only ' + right + ' of 20 seeds (measured with this guard in place: 9)');
+    assert.equal(wrong, 0, wrong + ' of the detections were at the wrong rate');
+
+    // The region this guard exists for is named in the returned object, because
+    // it is also the region where a REAL slow clock is hardest to trust. A
+    // clock within an octave of the slowest rate searched says so; one well
+    // clear of it says so too.
+    const slow = add(ook(12, 1500, 16, 0.5, 3), gauss(RATE * 12, 0.004, 41));
+    const rs = symbolRate(slow, RATE, { from: 0, to: slow.length, lowHz: 1400, highHz: 1600,
+      emissionBandwidthHz: 120, minBaud: 9.6 });
+    assert.ok(rs.value != null, 'a 16 Bd clock at amplitude 0.5 should be found');
+    near(rs.value, 16, 0.2, 'the 16 Bd clock');
+    assert.equal(rs.confidence.atBottomOfSearchedSpan, true,
+      'a 16 Bd line searched from 9.6 Bd is inside an octave of the bottom of its span, and '
+      + 'must say so; it reported ' + rs.confidence.binsAboveSlowestSearched + ' bins above it');
+    assert.match(rs.confidence.bottomOfSpanNote, /pedestal|slowest rate searched/);
+    assert.ok(rs.confidence.binsAboveSlowestSearched > 0);
+    const fast = add(ook(8, 1500, 60, 0.5, 3), gauss(RATE * 8, 0.004, 41));
+    const rf = symbolRate(fast, RATE, { from: 0, to: fast.length, lowHz: 1400, highHz: 1600,
+      emissionBandwidthHz: 200, minBaud: 4 });
+    assert.ok(rf.value != null, 'a 60 Bd clock at amplitude 0.5 should be found');
+    assert.equal(rf.confidence.atBottomOfSearchedSpan, false,
+      '60 Bd searched from 4 Bd is nowhere near the bottom of the span, but it claims to be');
+    assert.equal(rf.confidence.bottomOfSpanNote, null);
+  },
+
+  async function symbolRateRefusesARectificationFold() {
+    // The transition channels are the MODULUS of a first difference, and a
+    // modulus is a rectifier. Rectifying a sinusoid at F makes harmonics at 2F,
+    // 4F, 6F ... without end, on the existing sample grid, so every one of them
+    // above rate/2 folds back into the baseband BEFORE the decimator's
+    // anti-alias filter is reached. Stopband attenuation cannot touch this: the
+    // filter is downstream of the fold. Raising ANTIALIAS_DB from 60 to 110 was
+    // measured to move none of the cases below by a single bin.
+    //
+    // Measured by sweeping a 1500 Hz carrier amplitude-modulated at every
+    // integer rate from 200 to 380 Hz, at three declared bandwidths — 543
+    // searches, no keying anywhere in any of them. Thirteen came back at 'good'
+    // or 'strong'. The worst: 240 Hz reported as 159.96 Bd at 3870x its local
+    // floor with two harmonics and a confidence of 'strong'.
+    //
+    // The square of the same difference has no such series — squaring a
+    // sinusoid at F gives DC and 2F and nothing else — so it is band-limited
+    // and cannot fold. A clock is an impulse train in both.
+    const noise = gauss(RATE * 4, 0.004, 7);
+    const foldOf = (mod) => {
+      let best = Infinity;
+      for (let j = 1; j <= 40; j++) {
+        const f = 2 * mod * j;
+        const a = Math.abs(f - Math.round(f / RATE) * RATE);
+        if (a > 0 && a < best) best = a;
+      }
+      return best;
+    };
+    // Each of these was measured coming back at 'good' or 'strong' before the
+    // veto, at the rate the fold arithmetic predicts.
+    for (const [mod, ebw, predicted] of [
+      [240, 1200, 160], [288, 1200, 64], [336, 600, 64], [360, 600, 80], [361, 600, 58],
+    ]) {
+      near(foldOf(mod), predicted, 0.01, mod + ' Hz folds to ' + predicted);
+      const x = add(amCarrier(4, 1500, mod, 0.8), noise);
+      const r = symbolRate(x, RATE, { from: 0, to: x.length, lowHz: 1100, highHz: 1900,
+        emissionBandwidthHz: ebw });
+      if (r.value != null) {
+        assert.ok(Math.abs(r.value - predicted) > 1,
+          'a ' + mod + ' Hz modulation must not be reported as ' + r.value.toFixed(2)
+          + ' Bd, which is its own rectified harmonic folded about the SAMPLE rate');
+        // Anything that does survive is the real envelope periodicity at twice
+        // the modulation, and it may not be sold as a clock.
+        assert.equal(r.confidence.level, 'marginal',
+          'a pure amplitude modulation came back at ' + r.confidence.level);
+        assert.equal(r.confidence.analogueToneIndistinguishable, true);
+      }
+    }
+    // The veto is what refuses them, not some other bar: the refusals name a
+    // modulus ratio that is enormous and a squared ratio that is not.
+    const x240 = add(amCarrier(4, 1500, 240, 0.8), noise);
+    const r240 = symbolRate(x240, RATE, { from: 0, to: x240.length, lowHz: 1100, highHz: 1900,
+      emissionBandwidthHz: 1200 });
+    assert.equal(r240.value, null, '240 Hz produced ' + r240.value);
+    assert.match(r240.reason, /SQUARE of the same difference/);
+    assert.ok(r240.modulusChannelRatio > 100,
+      'this case only pins the veto if the modulus line was huge; it was '
+      + r240.modulusChannelRatio);
+    assert.ok(r240.squaredChannelRatio < r240.modulusChannelRatio * 0.4,
+      'the squared channel stood ' + r240.squaredChannelRatio.toFixed(1) + 'x against the '
+      + 'modulus channel\'s ' + r240.modulusChannelRatio.toFixed(1) + 'x');
+
+    // AND THE COST. Over 73 real keyed detections on the envelope channel the
+    // squared channel read 0.75 to 1.23 of the modulus channel's own ratio, so
+    // the veto should cost nothing. Pinned here on real keying in every colour.
+    let found = 0, lost = 0;
+    for (const { name, x: bg } of everyColour(RATE * 5, 800)) {
+      for (const [baud, amp] of [[25, 0.4], [60, 0.4], [25, 0.15]]) {
+        const x = add(ook(5, 1500, baud, amp, 3), bg);
+        const r = symbolRate(x, RATE, { from: 0, to: x.length, lowHz: 1400, highHz: 1600,
+          emissionBandwidthHz: 120 });
+        if (r.value == null) { lost++; continue; }
+        if (r.channel !== 'envelope') continue;
+        found++;
+        assert.ok(r.confidence.squaredChannelRatio >= 0.4 * r.confidence.ratio,
+          name + ' ' + baud + ' Bd: a real clock must read about the same ratio in the square '
+          + '(' + r.confidence.squaredChannelRatio.toFixed(1) + ') as in the modulus ('
+          + r.confidence.ratio.toFixed(1) + ')');
+      }
+    }
+    assert.ok(found >= 4,
+      'only ' + found + ' real envelope-channel detections survived across the five colours, '
+      + 'so the veto may be deafening the estimator rather than protecting it');
+  },
+
+  async function bothWidthsCarryTheirHalfSpread() {
+    // Two guards that no test defended: the half-spread term inside the
+    // uncertainty of BOTH bandwidth definitions. Deleting them — replacing
+    // occUnc with max(foldScatter, binHz/2) and xdbUnc with hypot(foldScatter,
+    // binHz/2) — used to leave the whole suite green.
+    //
+    // They are not decoration. The interleaved folds are the right way to
+    // resample a spectrogram, but every fold sees the same slow structure — the
+    // same fades, the same run of data bits — so on anything but white noise
+    // they agree far better than two independent looks at the emission would.
+    // The two contiguous halves of the same recording are the independent look.
+    const cases = [
+      ['45.45 Bd teleprinter',
+        add(fsk(randomBits(300, 7), 45.45, 1585, 1415, 0.4), gauss(RATE * 6.7, 0.005, 310))],
+      ['12 Bd on-off keying', add(ook(6, 1500, 12, 0.5, 3), gauss(RATE * 6, 0.004, 11))],
+    ];
+    let pinned = 0;
+    for (const [what, x] of cases) {
+      const m = measure(x, RATE, {});
+      const sec = x.length / RATE;
+      const a = measure(x, RATE, { startSec: 0, endSec: sec / 2 });
+      const b = measure(x, RATE, { startSec: sec / 2, endSec: sec });
+      for (const [name, get] of [
+        ['occupied99', (r) => r.bandwidth.occupied99],
+        ['xdb', (r) => r.bandwidth.xdb],
+      ]) {
+        const q = get(m), qa = get(a), qb = get(b);
+        if (q.value == null) continue;
+        assert.equal(typeof q.foldScatterHz, 'number',
+          what + ' ' + name + ': the uncertainty must say which term is carrying it');
+        assert.equal(typeof q.halfSpreadHz, 'number');
+        // This case is only a pin where the half-spread is the LARGER term, or
+        // deleting it would change nothing and the test would prove nothing.
+        if (!(q.halfSpreadHz > q.foldScatterHz)) continue;
+        pinned++;
+        assert.ok(q.uncertainty >= q.halfSpreadHz - 1e-9,
+          what + ' ' + name + ': the two contiguous halves of this recording disagree by '
+          + (2 * q.halfSpreadHz).toFixed(1) + ' Hz while the interleaved folds scatter by only '
+          + q.foldScatterHz.toFixed(1) + ', so the bar must be at least '
+          + q.halfSpreadHz.toFixed(1) + ' Hz; it is ' + q.uncertainty.toFixed(1));
+        // And the disagreement is real, not an artefact of how the folds are
+        // taken: two independently measured halves of the same recording differ
+        // by about the same amount, and the bar covers that too.
+        if (qa.value != null && qb.value != null) {
+          const independent = Math.abs(qa.value - qb.value) / 2;
+          assert.ok(q.uncertainty * 3 >= independent,
+            what + ' ' + name + ': independently measured halves read ' + qa.value.toFixed(1)
+            + ' and ' + qb.value.toFixed(1) + ' Hz, which 3x the stated '
+            + q.uncertainty.toFixed(1) + ' Hz does not cover');
+        }
+      }
+    }
+    assert.equal(pinned, 4,
+      'expected all four (two widths x two signals) to be half-spread dominated; ' + pinned
+      + ' were, so this test is no longer pinning what it claims to');
+  },
+
+  async function everyColourIsWhatItClaimsToBe() {
+    // The refusal sweeps above are only worth anything if the colours differ.
+    // A shared generator that quietly turned white would make every refusal
+    // test pass for the wrong reason, so the properties are measured here.
+    // Each colour is held only to the property that DEFINES it, with the range
+    // taken from measurement over ten seeds at 8 kHz and six seconds and then
+    // widened. Measured tilt / kurtosis / level swing:
+    //   white      -2.2..1.1     3.0..3.0    0.3..0.5
+    //   pink      -15.1..-11.3   2.8..3.4    3.3..7.2
+    //   faded      -2.1..2.8     4.5..7.2    7.2..11.2
+    //   impulsive  -4.2..7.3    32.2..36.2   7.9..17.0
+    //   bursty     -1.6..2.2     5.8..6.8    3.2..5.5
+    // Impulsive noise is not held to a tilt: its crashes ring at random
+    // frequencies, so its measured tilt runs from -4.2 to +7.3 across seeds and
+    // is not a property of the colour at all. What defines it is the kurtosis,
+    // and that is asserted hard.
+    const want = {
+      //          tilt dB/decade    kurtosis      level swing dB
+      white: [[-5, 5], [2.6, 3.5], [0, 1.5]],
+      pink: [[-25, -7], [2.6, 3.8], [2, 10]],
+      faded: [[null, null], [3.8, 9], [5, 14]],
+      impulsive: [[null, null], [20, 60], [5, 22]],
+      bursty: [[-5, 5], [4.5, 9], [2, 8]],
+    };
+    for (let s = 0; s < 4; s++) {
+      for (const { name, x } of everyColour(RATE * 6, 11 + s)) {
+        const d = describeNoise(x, RATE);
+        const [tilt, kurt, swing] = want[name];
+        const inside = (v, [lo, hi], what) => {
+          if (lo == null) return;
+          assert.ok(v >= lo && v <= hi,
+            name + ' seed ' + (11 + s) + ': ' + what + ' is ' + v.toFixed(1)
+            + ', outside the [' + lo + ', ' + hi + '] this colour is supposed to have');
+        };
+        inside(d.tiltDbPerDecade, tilt, 'tilt');
+        inside(d.kurtosis, kurt, 'kurtosis');
+        inside(d.swingDb, swing, 'level swing');
+      }
+    }
+    // And they are not all the same thing wearing different names: pink must
+    // actually tilt where white does not, faded must actually swing.
+    for (let s = 0; s < 4; s++) {
+      const by = {};
+      for (const { name, x } of everyColour(RATE * 6, 11 + s)) by[name] = describeNoise(x, RATE);
+      assert.ok(by.pink.tiltDbPerDecade < by.white.tiltDbPerDecade - 6,
+        'pink must tilt against white: ' + by.pink.tiltDbPerDecade.toFixed(1)
+        + ' vs ' + by.white.tiltDbPerDecade.toFixed(1));
+      assert.ok(by.faded.swingDb > by.white.swingDb + 4,
+        'faded must swing against white: ' + by.faded.swingDb.toFixed(1)
+        + ' vs ' + by.white.swingDb.toFixed(1));
+      assert.ok(by.bursty.swingDb > by.white.swingDb + 1.5,
+        'bursty must gate: ' + by.bursty.swingDb.toFixed(1));
+    }
+    // And the one property the symbol-rate module keys off is separated by a
+    // wide margin, not by a hair: nothing but the crash train is impulsive.
+    for (let s = 0; s < 4; s++) {
+      for (const { name, x } of everyColour(RATE * 6, 11 + s)) {
+        const k = waveformKurtosis(x, 0, x.length);
+        if (name === 'impulsive') {
+          assert.ok(k > 3 * IMPULSIVE_KURTOSIS,
+            'the crash train must clear the impulsive bar with room; got ' + k.toFixed(1));
+        } else {
+          // Measured worst case over ten seeds is faded at 7.2, so the bar of
+          // 10 has 1.4x in hand below it and 3.2x above it to the crashes.
+          assert.ok(k < IMPULSIVE_KURTOSIS,
+            name + ' must sit below the impulsive bar; got ' + k.toFixed(1));
+        }
+      }
+    }
+  },
+
+  async function impulsiveMaterialIsFlaggedOnAnyRateItProduces() {
+    // A crash train has periodicity of its own, so a rate measured on one has
+    // to say what kind of material it came from. The discriminant is the
+    // waveform's fourth moment, taken before any of the analysis touches it:
+    // 3.0 for anything Gaussian, 1.5 for a pure sine, 30-40 for these crashes.
+    //
+    // It is a warning, not a refusal, and the cost of refusing instead is the
+    // reason: a 25 Bd carrier at amplitude 0.5 under crashes is found in 11 of
+    // 20 seeds, and every one of those is a real emission.
+    //
+    // At amplitude 0.2 the crashes dominate the fourth moment (measured 16.4 to
+    // 19.2 against the bar of 10) while the emission is still findable in 4 of
+    // 12 seeds — which is the regime this warning exists for.
+    let flagged = 0, found = 0;
+    for (let s = 0; s < 12; s++) {
+      const x = add(ook(6, 1500, 25, 0.2, 40 + s), impulsiveNoise(RATE * 6, { seed: 600 + s }));
+      const r = symbolRate(x, RATE, { from: 0, to: x.length, lowHz: 1400, highHz: 1600,
+        emissionBandwidthHz: 120 });
+      if (r.value == null) continue;
+      found++;
+      assert.equal(typeof r.confidence.waveformKurtosis, 'number',
+        'a rate must carry the statistic that says what material it came from');
+      if (r.confidence.impulsiveMaterial) {
+        flagged++;
+        assert.ok(r.confidence.waveformKurtosis > IMPULSIVE_KURTOSIS);
+        assert.match(r.confidence.impulsiveNote, /kurtosis|impulse/i);
+      }
+    }
+    assert.ok(found > 0, 'the guard is only pinned if a rate comes out at all');
+    assert.equal(flagged, found,
+      'only ' + flagged + ' of the ' + found + ' rates measured under atmospheric crashes was '
+      + 'flagged as impulsive material — the warning is not reaching the caller');
+    // And it does not fire on Gaussian material, or it would mean nothing.
+    const clean = add(ook(6, 1500, 25, 0.35, 40), gauss(RATE * 6, 0.02, 77));
+    const c = symbolRate(clean, RATE, { from: 0, to: clean.length, lowHz: 1400, highHz: 1600,
+      emissionBandwidthHz: 120 });
+    if (c.value != null) {
+      assert.equal(c.confidence.impulsiveMaterial, false,
+        'Gaussian noise was called impulsive at kurtosis '
+        + c.confidence.waveformKurtosis.toFixed(2));
+      assert.equal(c.confidence.impulsiveNote, null);
+    }
   },
 
   async function everyErrorBarSurvivesASplitHalfTest() {

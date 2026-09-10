@@ -319,6 +319,33 @@ export function designate(classification, opts = {}) {
           + 'an integer multiple of it, and the bandwidth would scale with it',
       });
     }
+    // What kind of material the rate came off. A crash train carries
+    // periodicity of its own, so a bandwidth resting on a rate measured through
+    // atmospheric noise has to say so — the measurement flags it, and a
+    // designator that dropped the flag would be the last place a reader could
+    // have seen it.
+    if (c.impulsiveMaterial) {
+      assumptions.push({
+        name: 'measuredThroughImpulsiveNoise', value: true, source: 'from the measurement',
+        why: 'the waveform this rate was measured from has a kurtosis of '
+          + (c.waveformKurtosis == null ? 'over the bar' : c.waveformKurtosis.toFixed(1))
+          + ', against 3.0 for anything Gaussian: it is a series of impulses, which is what '
+          + 'atmospheric noise on the low bands is. Check that the rate belongs to the emission '
+          + 'and not to the static before quoting this designator',
+      });
+    }
+    // And where in the searched span the line sat. A line within an octave of
+    // the slowest rate searched stands on a pedestal rather than on a flat
+    // floor, and it is where every false accept measured on noise lived.
+    if (c.atBottomOfSearchedSpan) {
+      assumptions.push({
+        name: 'symbolRateAtBottomOfSearchedSpan', value: true, source: 'from the measurement',
+        why: 'the line this bandwidth rests on sits within an octave of the slowest rate '
+          + 'searched, where the transition spectrum is a falling pedestal rather than a flat '
+          + 'floor. Measure again from a higher minBaud, or over a narrower band, before '
+          + 'quoting this designator',
+      });
+    }
   }
   const inputs = [baudInput];
   inputs.push(pick('shiftHz', opts.shiftHz, m && m.fskShift, 'Hz', 'measured FSK shift'));

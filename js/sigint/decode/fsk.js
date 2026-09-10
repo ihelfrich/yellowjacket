@@ -644,9 +644,37 @@ export function logNormalUpperTail(z) {
 }
 
 const nullMarginCache = new Map();
-export function nullMargin(T) {
-  if (T === 2) return { mean: 0.5, sd: Math.sqrt(1 / 12) };
-  if (nullMarginCache.has(T)) return nullMarginCache.get(T);
+/**
+ * The margin's null, optionally conditioned on the arms' own noise scales.
+ *
+ * Called with one argument this is the flat case above: T arms of iid Exp(1).
+ * That is the ONLY case in which the numbers it returns are the numbers noise
+ * actually produces, and the flat case is rarer than it looks — see
+ * `armNoiseScales` for what breaks it and how often.
+ *
+ * `scales` is a vector of per-arm noise means. The margin is scale-invariant
+ * under a scaling COMMON to every arm, so an envelope cancels and only the
+ * ratios matter; the vector is normalised to mean 1 on the way in and the
+ * cache is keyed on the rounded ratios.
+ */
+export function nullMargin(T, scales = null) {
+  let key = `${T}`;
+  let lam = null;
+  if (scales && scales.length === T) {
+    let m = 0;
+    for (let j = 0; j < T; j++) m += scales[j];
+    m = m > 0 ? m / T : 1;
+    lam = new Float64Array(T);
+    let flat = true;
+    for (let j = 0; j < T; j++) {
+      lam[j] = Math.max(1e-6, scales[j] / m);
+      if (Math.abs(lam[j] - 1) > 5e-4) flat = false;
+    }
+    if (!flat) key = `${T}|` + Array.from(lam, (v) => v.toFixed(3)).join(',');
+    else lam = null;
+  }
+  if (lam === null && T === 2) return { mean: 0.5, sd: Math.sqrt(1 / 12) };
+  if (nullMarginCache.has(key)) return nullMarginCache.get(key);
   let seed = 20260907 >>> 0;
   const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return (seed + 0.5) / 4294967296; };
   const draws = 40000;
@@ -654,7 +682,7 @@ export function nullMargin(T) {
   for (let i = 0; i < draws; i++) {
     let best = -1, second = -1;
     for (let j = 0; j < T; j++) {
-      const v = -Math.log(rnd());          // Exp(1)
+      const v = (lam ? lam[j] : 1) * -Math.log(rnd());   // Exp(lambda_j)
       if (v > best) { second = best; best = v; } else if (v > second) second = v;
     }
     const m = best + second > 0 ? (best - second) / (best + second) : 0;
@@ -662,9 +690,174 @@ export function nullMargin(T) {
   }
   const mean = sum / draws;
   const out = { mean, sd: Math.sqrt(Math.max(0, sum2 / draws - mean * mean)) };
-  nullMarginCache.set(T, out);
+  // Every distinct scale vector is its own entry and a long run would grow
+  // this without bound. The flat entries are the ones worth keeping.
+  if (nullMarginCache.size > 512) {
+    for (const k of nullMarginCache.keys()) if (k.includes('|')) nullMarginCache.delete(k);
+  }
+  nullMarginCache.set(key, out);
   return out;
 }
+
+/**
+ * How far a window's total power may stand above the region's median before it
+ * is treated as an atmospheric crash rather than as evidence, in dB.
+ *
+ * A crash is a short narrowband ring, and in every instantaneous sense it looks
+ * like a signal: one arm enormous, the rest at the floor, a decision margin of
+ * 1.00. What separates it from a symbol is that it is over in a window or two.
+ * Blanking it is what an HF receiver's noise blanker does, and it is exactly
+ * free under the null: for T arms of iid exponential power the normalised
+ * vector is Dirichlet and INDEPENDENT of the total, so discarding windows on
+ * the strength of their total cannot shift the margin's distribution.
+ *
+ * Measured over 30 eight-second regions per colour through an 8-arm bank at 50
+ * baud, as the window total's excursion above the region median:
+ *                p99      p99.9    windows over 12 dB
+ *   white        3.2 dB   4.0 dB   0.00%
+ *   pink         3.7      4.7      0.00%
+ *   faded        8.2      9.7      0.01%
+ *   bursty       7.5      8.4      1.61%
+ *   impulsive   26.5     29.7     18.67%
+ * ...and on real RTTY through Rayleigh fading at no noise, 0, -6 and -12 dB:
+ * p99.9 of 0.1, 2.9, 4.8 and 7.2 dB, and 0.00% over 12 dB at every one. So 12
+ * dB sits above everything a signal or an ordinary channel produces and below
+ * where the crashes live.
+ */
+export const CRASH_BLANK_DB = 12;
+const CRASH_BLANK_RATIO = Math.pow(10, CRASH_BLANK_DB / 10);
+
+/** The most an arm's quiet level may depart from the median arm's and still be
+ *  read as the band's noise rather than as the bank hearing itself, in dB.
+ *  The table beside its use is the evidence for 12. */
+const BAND_TILT_LIMIT_DB = 12;
+
+/**
+ * What level of NOISE each arm is sitting on, so the margin's null can be the
+ * one THESE arms produce rather than a flat one.
+ *
+ * This is the number every refusal test in this repository was missing, and
+ * missing it is what let these modules answer confidently on noise that was
+ * not white. The per-step margin is invariant to a scaling common to all arms
+ * — a fading or gating envelope cancels exactly — but not to a scaling that
+ * differs BETWEEN arms, and two ordinary things produce one.
+ *
+ * The first is the per-arm AGC above. Its gains are estimated from the data,
+ * and on noise alone it estimates something. Measured over 60 eight-second
+ * regions through a 4-arm bank at 100 baud, as the spread between its largest
+ * and smallest gain: 0.8 dB on white, 0.7 on pink, 1.9 on Rayleigh-faded, 9.7
+ * on impulsive, 10.1 on gated. Against the flat null a 10 dB spread carries
+ * the mean margin from the 0.302 four arms of noise give to 0.512 — 27
+ * flat-null standard errors of nothing at all. That is why `fskDemod`, told
+ * exactly where the tones were, accepted 97 of 100 static regions and 50 of
+ * 100 gated ones through that bank.
+ *
+ * The second is the band's own tilt. With the AGC switched off entirely, pink
+ * noise through that same 1200-1800 Hz bank still reads 0.321 against 0.302:
+ * the low arm simply has more noise in it than the high arm. Across the
+ * 1200-2600 Hz bank the 8-ary alphabet uses — better than an octave — the tilt
+ * measures 4.7 dB, and conditioning on the gains alone and ignoring it left 49
+ * of 150 pink regions accepted there.
+ *
+ * So the scale for arm j is the gain this code APPLIED to it — exact, not
+ * estimated — times the band level measured under it. Those are separated on
+ * purpose, and the separation is what the raw-winner selection below is for.
+ */
+export function armNoiseScales(trace, { keep = null, minSamples = 0 } = {}) {
+  const T = trace.tones.length;
+  const out = new Float64Array(T).fill(1);
+  const why = [];
+  if (!trace.steps) return { scales: out, measured: [], why };
+  const use = keep || Array.from({ length: trace.steps }, (_, i) => i);
+  if (use.length < 8) return { scales: out, measured: [], why: ['too few windows to read an arm noise level'] };
+
+  // Which arm led each surviving window, read BEFORE the AGC.
+  //
+  // Before, not after, and the difference is the whole estimator. The AGC's
+  // gains are a multiplier this code applied, so the null can be conditioned on
+  // them exactly; what it cannot know without measuring is the band's own tilt,
+  // and that has to be read off the raw arms. Selecting the quiet windows on
+  // the GAINED powers ties the two together: a boosted arm wins more, so the
+  // windows in which it is quiet are a deeper selection into its own lower
+  // tail, its level reads low, and the tilt the AGC introduced is estimated
+  // away rather than accounted for. Measured over 150 gated-noise regions
+  // through a 2-arm bank, selecting on the gained arms accepted 47 of them;
+  // selecting on the raw arms and multiplying the measured tilt back by the
+  // known gains accepted none.
+  const winner = new Int16Array(use.length);
+  for (let i = 0; i < use.length; i++) {
+    let best = -1, bi = 0;
+    for (let j = 0; j < T; j++) { const v = trace.raw[use[i] * T + j]; if (v > best) { best = v; bi = j; } }
+    winner[i] = bi;
+  }
+  // ...and the band is read only where the arm is INTERIOR-losing, by the same
+  // rule the AGC uses on the winning side and for the same reason. A Goertzel
+  // window is one symbol wide, so an arm reads the band under it only when the
+  // whole window lies inside a run belonging to somebody else.
+  //
+  // Reading it off the arm's lower tail instead does not work, and the way it
+  // fails is not small. RTTY's space runs are a single bit long, so the mark
+  // arm's window is nearly always straddling one and its low readings are the
+  // mark tone leaking into itself. Measured on a two-frame '$' off a noiseless
+  // recording, a plain 10th-percentile read of each arm called that 11.9 dB of
+  // arm-to-arm noise tilt and took the separation from z = 8.5 to z = 3.1 — a
+  // real transmission deleted by a number invented out of its own modulation.
+  // The interior rule reads 0.07 dB on the same recording, because a window
+  // centred inside a one-bit space run is exactly inside it: half the
+  // oversample either side is half a window, which is the width that makes
+  // this work at all.
+  const half = Math.max(1, Math.ceil(trace.oversample / 2));
+  const quiet = Array.from({ length: T }, () => []);
+  for (let i = half; i < use.length - half; i++) {
+    for (let j = 0; j < T; j++) {
+      let clean = true;
+      for (let k = i - half; k <= i + half && clean; k++) if (winner[k] === j) clean = false;
+      if (clean) quiet[j].push(trace.raw[use[i] * T + j]);
+    }
+  }
+  const need = minSamples || Math.max(8, Math.round(use.length * 0.01));
+  const raw = new Float64Array(T);
+  for (let j = 0; j < T; j++) {
+    if (quiet[j].length >= need) raw[j] = median(quiet[j]);
+    else why.push(`tone ${trace.tones[j].toFixed(1)} Hz was never clear of the decisions for a whole window (${quiet[j].length} of ${use.length}); the band's noise under it is unmeasured and its arm is conditioned on the gain it was given alone`);
+  }
+  // ...and a level is only the BAND's if it could be the band's. A channel does
+  // not change by 12 dB between two tones a few hundred hertz apart; what does
+  // is a bank reading its own skirts on a recording that has no noise in it.
+  // Measured as each arm's departure from the median arm, over 60 eight-second
+  // regions per colour and three bank widths, the largest any real noise
+  // produced was 8.3 dB (gated noise through a 2-arm bank); a NOISELESS 4-FSK
+  // stream on bin-centred tones produced 193 dB, because the arms that are not
+  // transmitting read numerical dust. Taken for noise that put a perfectly
+  // clean signal 31281 standard errors BELOW chance and refused it.
+  const seen = Array.from(raw).filter((v) => v > 0);
+  const ref = seen.length ? median(seen) : 0;
+  const level = new Float64Array(T);
+  let known = 0;
+  for (let j = 0; j < T; j++) {
+    if (!(raw[j] > 0) || !(ref > 0)) continue;
+    const dev = 10 * Math.log10(raw[j] / ref);
+    if (Math.abs(dev) > BAND_TILT_LIMIT_DB) {
+      why.push(`tone ${trace.tones[j].toFixed(1)} Hz reads ${dev.toFixed(0)} dB from the other arms when it is quiet, which is not a band tilt but this bank hearing itself; its arm is conditioned on the gain it was given alone`);
+      continue;
+    }
+    level[j] = raw[j]; known++;
+  }
+  // An arm whose floor could not be measured keeps the AGC's own gain as its
+  // scale: that gain is a multiplier this code APPLIED, not an estimate, so
+  // conditioning the null on it is exact even when nothing else is known.
+  const base = known ? median(Array.from(level).filter((v) => v > 0)) : 0;
+  for (let j = 0; j < T; j++) {
+    const band = level[j] > 0 && base > 0 ? level[j] / base : 1;
+    out[j] = band * trace.gains[j];
+  }
+  let m = 0;
+  for (let j = 0; j < T; j++) m += out[j];
+  m = m > 0 ? m / T : 1;
+  for (let j = 0; j < T; j++) out[j] = Math.max(1e-6, out[j] / m);
+  return { scales: out, measured: Array.from(level), why };
+}
+
 
 /**
  * How far the arm decisions stand above what noise alone would produce.
@@ -680,23 +873,73 @@ export function nullMargin(T) {
  * consecutive windows share all but one step of their samples. Non-overlapping
  * windows of white noise are independent, so nEff = steps / oversample.
  */
-export function armSeparation(trace) {
+/**
+ * `blankCrashes` and `conditionOnArmNoise` are here so a test can run this
+ * with either guard switched off and measure what it is worth; nothing in
+ * normal use should pass them. Both defend a false-accept rate, and the
+ * measurements are in test/cases-sigint-fsk.mjs.
+ */
+export function armSeparation(trace, { blankCrashes = true, conditionOnArmNoise = true } = {}) {
   if (!trace || !trace.steps) {
-    return { ok: false, separation: 0, chance: 0, z: 0, nEff: 0, reason: 'no steps to measure' };
+    // logP is 0 — p = 1 — rather than absent. A caller that reads it as a
+    // number gets "no evidence at all", which is the truth here; leaving it
+    // undefined made `presence.logP > Math.log(MAX_ABSENCE_P)` false and
+    // turned an unmeasurable region into an accepted one.
+    return { ok: false, separation: 0, chance: 0, z: 0, nEff: 0, logP: 0, reason: 'no steps to measure' };
   }
   const T = trace.tones.length;
+  // Blank the crashes first. `total` is per-window power summed over the arms;
+  // windows more than CRASH_BLANK_DB above the region's median of it are
+  // atmospheric and are not evidence about anything. See the constant for the
+  // table this threshold comes from, and for why the null does not move.
+  const total = new Float64Array(trace.steps);
+  for (let s = 0; s < trace.steps; s++) {
+    let v = 0;
+    for (let j = 0; j < T; j++) v += trace.power[s * T + j];
+    total[s] = v;
+  }
+  const medTotal = median(total);
+  const bar = blankCrashes && medTotal > 0 ? medTotal * CRASH_BLANK_RATIO : Infinity;
+  const keep = [];
+  for (let s = 0; s < trace.steps; s++) if (total[s] <= bar) keep.push(s);
+  const blanked = trace.steps - keep.length;
+  if (keep.length < 4) {
+    // Unreachable while the bar is a multiple of the MEDIAN total, which by
+    // construction leaves at least half the windows standing; kept as a floor
+    // so a future bar that is not median-based cannot fall through it.
+    return { ok: false, separation: 0, chance: 0, z: 0, nEff: 0, logP: 0, blanked, reason: 'every window in this region is a crash' };
+  }
   let sum = 0;
-  for (let s = 0; s < trace.steps; s++) sum += trace.margin[s];
-  const separation = sum / trace.steps;
-  const { mean, sd } = nullMargin(T);
-  const nEff = Math.max(1, trace.steps / Math.max(1, trace.oversample));
+  for (const s of keep) sum += trace.margin[s];
+  const separation = sum / keep.length;
+  // The null is conditioned on the arms' own noise scales rather than assumed
+  // flat. On white noise the scales come back within a per cent of each other
+  // and this is the flat null to three decimals; on the colours real HF
+  // actually has, it is the difference between refusing and typing.
+  const noise = conditionOnArmNoise
+    ? armNoiseScales(trace, { keep })
+    : { scales: new Float64Array(T).fill(1), measured: [], why: ['the arm-noise conditioning was switched off by the caller'] };
+  const scales = noise.scales;
+  const flat = nullMargin(T);
+  const { mean, sd } = nullMargin(T, scales);
+  const nEff = Math.max(1, keep.length / Math.max(1, trace.oversample));
   const se = sd / Math.sqrt(nEff);
   const z = se > 0 ? (separation - mean) / se : 0;
+  let tiltDb = 0;
+  for (let j = 0; j < T; j++) for (let k = 0; k < T; k++) {
+    tiltDb = Math.max(tiltDb, 10 * Math.log10(scales[j] / scales[k]));
+  }
   // The mean of nEff independent margins is normal by the central limit
   // theorem well before nEff reaches the few hundred a usable region gives, so
   // the tail is the normal one. Kept as a log: a clean region reaches z = 23,
   // whose tail is 1e-118 and does not survive being written as a number.
-  return { ok: true, separation, chance: mean, chanceSd: sd, nEff, se, z, logP: logNormalUpperTail(z) };
+  return {
+    ok: true, separation, chance: mean, chanceSd: sd, nEff, se, z,
+    scales: Array.from(scales), armTiltDb: tiltDb, flatChance: flat.mean,
+    blanked, blankedFraction: blanked / trace.steps, windowsUsed: keep.length,
+    unmeasuredArms: noise.why,
+    logP: logNormalUpperTail(z),
+  };
 }
 
 /**
@@ -797,8 +1040,18 @@ function concentration(times, f) {
  * silently in the caller's favour.
  */
 export function estimateBaud(times, {
-  minBaud = 10, maxBaud = 600, minConcentration = 0, maxP = 0.01, coarseSec = 6,
+  minBaud = 10, maxBaud = 600, minConcentration = 0, maxP = 1e-3, coarseSec = 6,
+  requireHalvesAgree = true,
 } = {}) {
+  // maxP is the Bonferroni'd Rayleigh tail over the whole scan, and it behaves
+  // like one: measured over 200 eight-second regions of each of five noise
+  // colours through 2- and 4-arm banks, a bar of 1e-2 accepted between 0 and 4
+  // of every 200 — 0.5% to 2.0%, which is the bar doing exactly what it says.
+  // The bar is 1e-3 because 1% of noise answering with a confident symbol rate
+  // is not a rate estimator, and every accepted noise region in that sweep sat
+  // between 1e-3 and 1e-2. On real material there is room to spare: the XPA2
+  // body reaches 0.47 concentration over hundreds of transitions, whose tail is
+  // past 1e-30.
   if (!times || times.length < 6) {
     return { ok: false, baud: null, reason: `only ${times ? times.length : 0} transitions; need at least 6` };
   }
@@ -980,13 +1233,23 @@ export function estimateBaud(times, {
     for (let i = period; i < rounded.length && same; i++) if (rounded[i] !== rounded[i - period]) same = false;
     if (same) { gapPeriod = period; break; }
   }
-  const ambiguous = gapPeriod !== null || unitGapFraction < 0.02;
+  // A rate is only NAMED when the two halves of the region measure the same
+  // one. On noise the concentration peak is a fluke of whichever half happened
+  // to carry it: measured over the same sweep, four white-noise regions through
+  // a 4-arm bank came back with a named symbol rate near 300 baud at
+  // concentrations of 0.12, and the halves disagreed on three of the four.
+  const halvesAgree = !requireHalvesAgree || (splitHalf ? splitHalf.agrees : false);
+  const ambiguous = gapPeriod !== null || unitGapFraction < 0.02 || !halvesAgree;
   const consistentWith = [];
   if (ambiguous) {
     for (let m = 1; m * chosen.f <= maxBaud && consistentWith.length < 6; m++) consistentWith.push(m * chosen.f);
   }
   const ambiguityReason = !ambiguous ? null
-    : gapPeriod !== null
+    : !halvesAgree
+      ? (splitHalf
+        ? `the two halves of this region measure ${splitHalf.baudFirst.toFixed(3)} and ${splitHalf.baudSecond.toFixed(3)} baud, further apart than the transitions can account for, so the grid rate is a property of one half and not of the region`
+        : 'there are too few transitions to measure this rate in each half of the region separately, so nothing here says the grid is the same throughout')
+      : gapPeriod !== null
       ? `the gaps between transitions repeat every ${gapPeriod} of them, so this is a fixed pattern and not traffic: its transitions are identical to those of a stream at any integer multiple of ${chosen.f.toFixed(3)} baud sending a correspondingly stretched pattern, and nothing in the instants says which`
       : `no two transitions anywhere in this region are one symbol apart at ${chosen.f.toFixed(3)} baud (${(unitGapFraction * 100).toFixed(1)}% of gaps), so the symbol rate may be any integer multiple of the grid measured here`;
 
@@ -1194,13 +1457,15 @@ export function fskDemod(x, sampleRate, {
   // an 8-tone bank, where chance is 0.211, it fired on perfectly good signals.
   // The level to beat depends on the number of arms and on nothing else.
   const presence = armSeparation(trace);
-  const chanceQuality = nullMargin(T).mean;
+  // The level chance gives on THESE arms, which is the flat null only when the
+  // arms carry the same amount of noise as each other.
+  const chanceQuality = presence.ok ? presence.chance : nullMargin(T).mean;
   if (presence.logP > Math.log(MAX_ABSENCE_P)) {
     return {
       ok: false, symbols: null, count: 0,
       tones: toneSet, baud: rate, order: T,
       quality, presence, timing, armSnrDb, trace, toneEstimate, baudEstimate,
-      reason: `no FSK signal in these arms: the mean decision margin is ${presence.separation.toFixed(3)} against the ${chanceQuality.toFixed(3)} that ${T} arms of pure noise give, ${presence.z.toFixed(1)} standard errors over ${Math.round(presence.nEff)} independent symbol windows, which chance beats with probability ${Math.exp(presence.logP).toExponential(1)}`,
+      reason: `no FSK signal in these arms: the mean decision margin is ${presence.separation.toFixed(3)} against the ${chanceQuality.toFixed(3)} that ${T} arms of pure noise give at the ${(presence.armTiltDb || 0).toFixed(1)} dB of arm-to-arm noise tilt this region carries, ${presence.z.toFixed(1)} standard errors over ${Math.round(presence.nEff)} independent symbol windows, which chance beats with probability ${Math.exp(presence.logP).toExponential(1)}`,
       warnings,
     };
   }

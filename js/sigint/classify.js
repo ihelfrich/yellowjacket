@@ -72,6 +72,12 @@ export const MIN_MODULATION_DEPTH = 0.02;
 // is the only feature that separates a data burst from speech at all: both are
 // wide, both are gapless, and both have a clock.
 export const SYLLABIC_RATIO = 1.15;
+// The block the envelope's depth is measured inside, short enough that a 0.4 Hz
+// fade (2.5 s) and a 6 Hz gate (170 ms) are both approximately constant across
+// one, long enough to hold enough independent envelope samples for a 10th and a
+// 90th percentile: at 8 kHz a 50 ms block is 400 samples, and even a band only
+// 200 Hz wide puts about 20 independent ones in it.
+export const LOCAL_BLOCK_SEC = 0.05;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const finite = (n, fb = 0) => (Number.isFinite(n) ? n : fb);
@@ -341,6 +347,24 @@ export function gapFraction(db) {
  * narrower than about `sampleRate * 4.5 / 1023` cannot be isolated exactly and
  * `notes` says so rather than the number quietly being wrong.
  */
+/**
+ * Harmonics of a periodicity's strongest rate that are themselves peaks. A rate
+ * whose interval jitters loses these; a clock keeps them.
+ */
+export function harmonicsOf(p, { tolerance = 0.06, upTo = 5, maxHz = MAX_MODULATION_HZ } = {}) {
+  if (!p || !p.rateHz || !Array.isArray(p.peaks)) return { found: 0, reachable: 0 };
+  // Only harmonics inside the search band can be found, and at a 50 Hz pulse
+  // rate against a 120 Hz ceiling that is exactly one of them. Counting found
+  // without counting reachable made a real pulse train fail its own test.
+  const reachable = Math.max(0, Math.min(upTo, Math.floor(maxHz / p.rateHz)) - 1);
+  let found = 0;
+  for (let k = 2; k <= reachable + 1; k++) {
+    const want = p.rateHz * k;
+    if (p.peaks.some((q) => Math.abs(q.rateHz - want) <= tolerance * want)) found++;
+  }
+  return { found, reachable };
+}
+
 export function extractFeatures(mono, sampleRate, detection, opts = {}) {
   const rate = finite(sampleRate);
   const notes = [];
@@ -386,6 +410,92 @@ export function extractFeatures(mono, sampleRate, detection, opts = {}) {
 
   const bLo = clamp(Math.floor(lowHz / spec.binHz), 1, spec.bins - 2);
   const bHi = clamp(Math.ceil(highHz / spec.binHz), bLo + 1, spec.bins - 1);
+
+  // What the whole band's level was doing, frame by frame, as a factor on the
+  // window's typical level. The line test below is a statement about the mean
+  // of `frames` Exp(1) draws, and that is only true if the level held still:
+  // measured on white noise under a 0.4 Hz fade, the raw mean spectrum carried
+  // one or two "lines" per window because the fade widens every bin's mean far
+  // beyond the 1/sqrt(frames) the threshold assumes. Dividing each frame by
+  // its own band level puts the null back. A narrowband emitter cannot move a
+  // median taken across hundreds of bins, so this leaves a carrier alone; a
+  // band-wide one moves it, and then the level really is common-mode and
+  // dividing it out is the right thing anyway.
+  const frameLevel = new Float64Array(spec.frames);
+  {
+    const rowBuf = new Float64Array(bHi - bLo + 1);
+    for (let t = 0; t < spec.frames; t++) {
+      const row = t * spec.bins;
+      for (let b = bLo; b <= bHi; b++) rowBuf[b - bLo] = spec.power[row + b];
+      frameLevel[t] = percentile(sortedCopy(rowBuf), 0.5);
+    }
+  }
+  const frameMid = percentile(sortedCopy(frameLevel), 0.5) || 1e-20;
+  const frameGain = new Float64Array(spec.frames);
+  for (let t = 0; t < spec.frames; t++) frameGain[t] = Math.max(1e-6, frameLevel[t] / frameMid);
+  // The mean spectrum on gain-normalised power, which is what the line test
+  // below runs on.
+  //
+  // A MEDIAN over frames was tried alongside it, on the reasoning that a crash
+  // puts its ringing into the mean of every bin it rang in and into the median
+  // of none. It is a true statement — measured on crash-ridden noise, 9 to 24
+  // lines in the mean and 0 to 2 in the median — and it changed no verdict on
+  // any colour at any seed, so it is not here. The per-bin sort it needed was
+  // the most expensive thing in this function.
+  const avgN = new Float64Array(spec.bins);
+  for (let b = bLo; b <= bHi; b++) {
+    let sum = 0;
+    for (let t = 0; t < spec.frames; t++) sum += spec.power[t * spec.bins + b] / frameGain[t];
+    avgN[b] = sum / spec.frames;
+  }
+
+  // How far the band's own SHAPE moves from frame to frame: the difference in
+  // dB between the mean power in its upper and lower half, spread 10th to 90th
+  // percentile across frames. The level cancels in the ratio, so a fade, a gate
+  // and a tilt all read nothing and only a change of shape registers. This is
+  // the one thing a talker has and a background does not.
+  //
+  // Measured on its own frame, not the fine one. The fine spectrum is 5 Hz per
+  // bin, which at 8 kHz is a 256 ms frame — longer than a phoneme, so it
+  // averages the shape change away: on the same synthesised speech the swing
+  // read 11.7 dB at a 32 ms frame and 2.9 dB at 256 ms, and two of five voice
+  // windows came back unclear because of it.
+  //
+  // Reported against its own null rather than in dB, because the null depends
+  // on how many bins are in each half. With B bins per half the half-means are
+  // Gamma(B)/B, so the tilt has standard deviation (10/ln10)*sqrt(2/B) dB and a
+  // 10-90 spread of 2*1.2816 of that. Measured on white noise the spread runs
+  // 1.41x that bound, which is what 50% frame overlap and the Hann main lobe
+  // leaving about half as many independent bins as there are bins predicts, so
+  // the null used here carries that factor. Measured over 30 windows per
+  // colour at a 32 ms frame: white 1.07, 1/f 1.16, fading 1.05, gated 1.07 —
+  // every stationary background inside 1.2 — against 3.1 to 3.6 on synthesised
+  // speech, 6.7 on an 18 wpm Morse carrier and 7.2 on atmospheric crashes,
+  // which move the shape because they are broadband events.
+  let tiltSwingDb = NaN, tiltSwingOverNull = NaN;
+  {
+    const tiltN = Math.max(128, nextPow2(Math.round(rate * 0.032)));
+    const tspec = slice.length >= tiltN * 8 ? spectrogram(slice, rate, { fftSize: tiltN, overlap: 0.5 }) : null;
+    const tLo = tspec ? clamp(Math.floor(lowHz / tspec.binHz), 1, tspec.bins - 2) : 0;
+    const tHi = tspec ? clamp(Math.ceil(highHz / tspec.binHz), tLo + 1, tspec.bins - 1) : 0;
+    const mid = (tLo + tHi) >> 1;
+    const perHalf = Math.min(mid - tLo, tHi - mid + 1);
+    if (tspec && perHalf >= 8) {
+      const tilt = new Float64Array(tspec.frames);
+      for (let t = 0; t < tspec.frames; t++) {
+        const row = t * tspec.bins;
+        let lo = 0, hi = 0;
+        for (let b = tLo; b < mid; b++) lo += tspec.power[row + b];
+        for (let b = mid; b <= tHi; b++) hi += tspec.power[row + b];
+        const a = hi / (tHi - mid + 1), c = lo / (mid - tLo);
+        tilt[t] = 10 * Math.log10(Math.max(1e-20, a) / Math.max(1e-20, c));
+      }
+      const st = sortedCopy(tilt);
+      tiltSwingDb = percentile(st, 0.9) - percentile(st, 0.1);
+      const nullDb = 1.41 * 2 * 1.2816 * (10 / Math.LN10) * Math.sqrt(2 / perHalf);
+      tiltSwingOverNull = tiltSwingDb / nullDb;
+    } else notes.push('too few bins either side of the band centre to say whether its shape changes over time');
+  }
   let total = 0, logSum = 0, count = 0, peakBin = bLo, peakVal = 0;
   for (let b = bLo; b <= bHi; b++) {
     const v = Math.max(1e-20, avg[b]);
@@ -412,15 +522,35 @@ export function extractFeatures(mono, sampleRate, detection, opts = {}) {
   // The same null the segmenter's line test uses, applied inside one band.
   const localWidth = Math.max(9, Math.round(200 / spec.binHz) | 1);
   const lineCut = gammaMeanThreshold(spec.frames, Math.log((bHi - bLo + 1) / 0.01));
-  const lines = [];
-  for (let b = bLo + 1; b < bHi; b++) {
-    if (avg[b] < avg[b - 1] || avg[b] <= avg[b + 1]) continue;
+  const localOf = (arr, b) => {
     const a = Math.max(bLo, b - localWidth), c = Math.min(bHi, b + localWidth);
-    const local = percentile(sortedCopy(avg.subarray(a, c + 1)), 0.5) || 1e-20;
-    if (avg[b] / local < lineCut) continue;
-    lines.push({ hz: b * spec.binHz, level: avg[b], over: avg[b] / local });
+    return percentile(sortedCopy(arr.subarray(a, c + 1)), 0.5) || 1e-20;
+  };
+  const lines = [];
+  const localLevel = new Float64Array(spec.bins);
+  for (let b = bLo; b <= bHi; b++) localLevel[b] = localOf(avgN, b);
+  for (let b = bLo + 1; b < bHi; b++) {
+    if (avgN[b] < avgN[b - 1] || avgN[b] <= avgN[b + 1]) continue;
+    if (avgN[b] / localLevel[b] < lineCut) continue;
+    lines.push({ hz: b * spec.binHz, level: avg[b], over: avgN[b] / localLevel[b] });
   }
   lines.sort((a, b) => b.level - a.level);
+
+  // Flatness AFTER the band's own tilt is divided out. Raw spectralFlatness
+  // answers "is this white", which is a question about the colour of the
+  // background and not about whether anything is transmitting: measured over
+  // 24 windows of 1/f noise it reads 0.65, at the exact edge of the cut the
+  // noise hypothesis used to draw, while white noise reads 0.98. Dividing each
+  // bin by the median of its own 200 Hz neighbourhood removes any tilt smooth
+  // on that scale and leaves the peaks, which is the thing actually being
+  // asked about.
+  let wLog = 0, wSum = 0, wN = 0;
+  for (let b = bLo; b <= bHi; b++) {
+    const r = Math.max(1e-20, avgN[b]) / localLevel[b];
+    wLog += Math.log(r); wSum += r; wN += 1;
+  }
+  const whitenedFlatness = wN ? Math.exp(wLog / wN) / (wSum / wN) : 1;
+
   // Keying puts a sideband either side of every tone. Cutting at 13 dB below
   // the strongest line keeps a tone set (whose members are comparable) and
   // drops the sidebands that would otherwise be counted as tones.
@@ -518,6 +648,34 @@ export function extractFeatures(mono, sampleRate, detection, opts = {}) {
 
   const envRate = periodicity(env, rate, opts);
 
+  // The envelope depth measured INSIDE short blocks, and the median of that
+  // over the loudest half of them.
+  //
+  // envDepth above is taken over the whole slice, so anything that moves the
+  // level slowly — a fade, a gate, the tilt of a coloured background — enters
+  // it and it stops being a statement about the noise. Rayleigh's 0.648 is a
+  // ratio of two quantiles of the SAME distribution, so it is scale-free: it
+  // holds inside every block of noise however the level wanders between them.
+  // Measured over 24 windows per colour: whole-slice envDepth reads 0.65 white,
+  // 0.65 1/f, 0.79 fading, 0.87 impulsive, 0.96 gated, while this reads
+  // 0.64-0.66 on all five. The loudest half is taken because that is where a
+  // signal would be: a keyed carrier's quiet blocks are noise and would drag a
+  // plain median back to 0.648, which is the one way this could be fooled.
+  const blockN = Math.max(64, Math.round(rate * LOCAL_BLOCK_SEC));
+  const blockDepth = [], blockLevel = [];
+  for (let at = 0; at + blockN <= env.length; at += blockN) {
+    const b = sortedCopy(env.subarray(at, at + blockN));
+    const lo = percentile(b, 0.10), hi = percentile(b, 0.90);
+    blockDepth.push(lo + hi > 0 ? (hi - lo) / (hi + lo) : 0);
+    blockLevel.push(percentile(b, 0.5));
+  }
+  let localEnvDepth = NaN;
+  if (blockDepth.length >= 4) {
+    const order = blockLevel.map((v, i) => i).sort((a, b) => blockLevel[b] - blockLevel[a]);
+    const loud = order.slice(0, Math.max(2, order.length >> 1)).map((i) => blockDepth[i]);
+    localEnvDepth = percentile(Float64Array.from(loud).sort(), 0.5);
+  } else notes.push(`the slice is shorter than four ${(LOCAL_BLOCK_SEC * 1000).toFixed(0)} ms blocks, so the envelope depth could not be measured free of the level's own drift`);
+
   // Instantaneous frequency, read only where the envelope says there is a
   // signal to read it from. Reading phase through a gap returns the noise's
   // phase, which is uniform and would smear any real shift into nothing.
@@ -547,14 +705,27 @@ export function extractFeatures(mono, sampleRate, detection, opts = {}) {
     startSec: from, endSec: to, durationSec: to - from, analysedSec: (i1 - i0) / rate,
     lowHz, highHz, centerHz, bandwidthHz: highHz - lowHz, occupied99Hz,
     snrDb: finite(d.snrDb, NaN), peakSnrDb: finite(d.peakSnrDb, NaN), maskDuty: finite(d.dutyCycle, NaN),
-    spectralFlatness, carrierRatio, sidebandSymmetry,
+    spectralFlatness, whitenedFlatness, tiltSwingDb, tiltSwingOverNull, carrierRatio, sidebandSymmetry,
     lineCount: strongLines.length, lines: strongLines, lineSpacingHz, lineSpacingRegularity,
     lineGridCount, lineGridZ, lineCut,
-    envDepth, envValleyDepth: envModes.valleyDepth, envModeCount: envModes.modeCount,
+    envDepth, localEnvDepth, envValleyDepth: envModes.valleyDepth, envModeCount: envModes.modeCount,
     envModeSeparationDb: envModes.separation || 0,
     envGapFraction: gap.fraction, envSpanDb: gap.spanDb, envKeyed,
     dutyCycle, dutySource,
     envRateHz: envRate.rateHz, envRateStrength: envRate.strength, envRateDepth: envRate.depth,
+    // How many harmonics of the strongest repetition rate stand above the
+    // floor. This is what separates a pulsed emitter from noise that happens
+    // to be switching: a radar's trigger is crystal-controlled, so its pulse
+    // train has a comb at 2R, 3R, 4R; jitter in the interval kills the higher
+    // harmonics first. Measured on gated white noise with random gate lengths
+    // at a 20 Hz mean rate, which every other pulsed-wideband test accepts:
+    // 0 harmonics, against 3 for a square fixed-interval train at the same rate
+    // and 1 for a band-limited one, which is what a real emitter looks like —
+    // so the bar is one harmonic, not two. `reachable` says how many fit below
+    // MAX_MODULATION_HZ at all: at a 50 Hz repetition rate only 100 and 150 do.
+    envRateHarmonics: harmonicsOf(envRate).found,
+    envRateHarmonicsReachable: harmonicsOf(envRate).reachable,
+
     // Anything switched on and off at rate R has its spectrum convolved with a
     // comb of spacing R, so a grid of evenly spaced lines is not evidence of a
     // tone set when the envelope is a low-duty train: the grid is the
@@ -630,6 +801,14 @@ export const HYPOTHESES = Object.freeze([
       { w: 2, why: 'what is keyed holds still: one tone, or a fixed harmonic comb', hold: (f) => f.ifSpreadHz < 60 || (f.lineGridCount >= 3 && f.lineSpacingRegularity > 0.6), has: (f) => f.ifSpreadHz > 0 },
       { w: 2, why: 'a keying rate stands clear of the floor', hold: (f) => f.envRateStrength >= 12 && f.envRateHz > 0.5 && f.envRateHz < 60, has: (f) => ok(f.envRateStrength) },
       { w: 2, why: 'one carrier, not a tone set', hold: (f) => f.lineGridCount < 3 || f.carrierRatio > 0.4, has: (f) => ok(f.lineCount) },
+      // Nothing here used to require that there be a carrier at all. White
+      // noise gated on and off at 6 Hz has a two-state envelope spanning
+      // 30 dB, a clean rate in the keying band and a switch rather than a
+      // sinusoid — every test above holds — and was claimed as a keyed carrier
+      // in 17 of 24 windows on a score of 0.75. It has no carrier: measured
+      // carrierRatio 0.006 against 0.83 for an 18 wpm Morse tone.
+      { w: 3, why: 'there is a carrier to key: one line carries the band, or the band is a line', hold: (f) => f.carrierRatio > 0.15 || f.occupied99Hz < 400, has: (f) => ok(f.carrierRatio) },
+      { w: 2, why: 'what is keyed is a signal rather than a burst of noise: its envelope is shallower than Rayleigh inside a block', hold: (f) => f.localEnvDepth < RAYLEIGH_DEPTH - 0.12, has: (f) => ok(f.localEnvDepth) },
     ],
   },
   {
@@ -654,6 +833,14 @@ export const HYPOTHESES = Object.freeze([
       { w: 2, why: 'the band is several tone spacings wide', hold: (f) => f.lineSpacingHz > 0 && f.occupied99Hz > 2.5 * f.lineSpacingHz, has: (f) => f.lineSpacingHz > 0 },
       { w: 1, why: 'the band is many symbol rates wide, as a tone set is', hold: (f) => f.bandwidthOverRate > 4, has: (f) => Number.isFinite(f.bandwidthOverRate) },
       { w: 2, why: 'the line grid is a tone set, not the comb a switched envelope makes on its own', hold: (f) => !f.pulsedEnvelope, has: (f) => ok(f.lineCount) && ok(f.envRateStrength) },
+      // Crashes ring, and the ringing of forty crashes at random frequencies
+      // fits a grid: measured, 14 of 24 windows of crash-ridden noise were
+      // claimed as a tone set on a score of 0.67. A tone set survives having
+      // the band divided by its own local level and a band of noise does not
+      // — 0.21 against 0.87-0.92 — and its envelope inside a block is a
+      // signal's rather than noise's.
+      { w: 2, why: 'the tones survive dividing the band by its own local level; a band of noise flattens to nothing', hold: (f) => f.whitenedFlatness < 0.6, has: (f) => ok(f.whitenedFlatness) },
+      { w: 2, why: 'the envelope inside a block is a signal\'s, not the Rayleigh of noise', hold: (f) => f.localEnvDepth < RAYLEIGH_DEPTH - 0.12, has: (f) => ok(f.localEnvDepth) },
     ],
   },
   {
@@ -662,9 +849,22 @@ export const HYPOTHESES = Object.freeze([
     tests: [
       { w: 3, why: 'no single line dominates', hold: (f) => f.carrierRatio < 0.2, has: (f) => ok(f.carrierRatio) },
       { w: 3, why: 'a speech-width band, roughly 300 Hz to 3 kHz', hold: (f) => f.occupied99Hz > 700 && f.occupied99Hz < 4000, has: (f) => ok(f.occupied99Hz) },
-      { w: 2, why: 'the envelope swings widely, as syllables do', hold: (f) => f.envDepth > 0.5, has: (f) => ok(f.envDepth) },
+      // "the envelope swings widely" used to be envDepth > 0.5 alone, and the
+      // envelope of band-limited noise is Rayleigh, whose depth is 0.648. So
+      // this test held on every window of nothing that was ever put to it. A
+      // syllable is a swing LARGER than the noise inside the band has of its
+      // own: measured, synthesised speech reads 0.98 against 0.66 inside a
+      // block, and every background reads within 0.15 of its own block depth.
+      { w: 2, why: 'the envelope swings more widely than the Rayleigh fluctuation inside a block, which is what a syllable is', hold: (f) => f.envDepth > 0.5 && f.envDepth > f.localEnvDepth + 0.15, has: (f) => ok(f.envDepth) && ok(f.localEnvDepth) },
       { w: 2, why: 'the envelope is not switched; syllables slide', hold: (f) => !f.envKeyed, has: (f) => ok(f.envGapFraction) },
       { w: 2, why: 'the envelope energy is syllabic: more at 2-8 Hz than above 12', hold: (f) => f.syllabicRatio > SYLLABIC_RATIO, has: (f) => f.syllabicRatio > 0 },
+      // Everything else this hypothesis asks is true of any wide band with no
+      // line in it, which is what a window of noise is. This is the test that
+      // is about speech: a talker moves through phonemes and the shape of the
+      // band moves with them, while a background only changes its level.
+      // Measured 6.4-11.6 dB on synthesised speech against 1.4-2.4 on all four
+      // stationary backgrounds.
+      { w: 3, why: 'the shape of the band moves from frame to frame by more than twice what its own counting noise gives, as a talker moving through phonemes does and a background does not', hold: (f) => f.tiltSwingOverNull > 2, has: (f) => ok(f.tiltSwingOverNull) },
       { w: 2, why: 'no steady clock; speech is not periodic', hold: (f) => f.envRateStrength < 25 && f.ifRateStrength < 25, has: (f) => ok(f.envRateStrength) },
       { w: 2, why: 'the spectrum is neither a line nor flat noise', hold: (f) => f.spectralFlatness > 0.03 && f.spectralFlatness < 0.6, has: (f) => ok(f.spectralFlatness) },
       { w: 1, why: 'no regular tone set', hold: (f) => f.lineGridCount < 3, has: (f) => ok(f.lineCount) },
@@ -715,6 +915,7 @@ export const HYPOTHESES = Object.freeze([
       { w: 2, why: 'on for a small fraction of the time', hold: (f) => f.dutyCycle < 0.6, has: (f) => ok(f.dutyCycle) },
       { w: 2, why: 'the envelope switches, and the off state falls away toward the noise', hold: (f) => f.envKeyed && f.envSpanDb > 15, has: (f) => f.envSpanDb > 0 },
       { w: 1, why: 'the band is noise-like inside rather than a repeated waveform', hold: (f) => f.spectralFlatness > 0.4, has: (f) => ok(f.spectralFlatness) },
+      { w: 3, why: 'the repetition keeps time: harmonics of the rate survive, which a jittered gate loses', hold: (f) => f.envRateHarmonics >= 1, has: (f) => f.envRateHarmonicsReachable >= 1 },
     ],
   },
   {
@@ -728,18 +929,70 @@ export const HYPOTHESES = Object.freeze([
       { w: 2, why: 'the envelope energy is not syllabic, so it is not speech', hold: (f) => f.syllabicRatio < SYLLABIC_RATIO, has: (f) => f.syllabicRatio > 0 },
       { w: 1, why: 'the band is many tone spacings wide', hold: (f) => f.lineSpacingHz > 0 && f.occupied99Hz > 4 * f.lineSpacingHz, has: (f) => f.lineSpacingHz > 0 },
       { w: 2, why: 'the line grid is a tone set, not the comb a switched envelope makes on its own', hold: (f) => !f.pulsedEnvelope, has: (f) => ok(f.lineCount) && ok(f.envRateStrength) },
+      { w: 2, why: 'the tones survive dividing the band by its own local level; a band of noise flattens to nothing', hold: (f) => f.whitenedFlatness < 0.6, has: (f) => ok(f.whitenedFlatness) },
     ],
   },
   {
+    // WHAT WENT WRONG HERE, stated because the old version of this block is
+    // the reason the module answered confidently on nothing.
+    //
+    // Every test this hypothesis used to carry was a test for WHITE, STILL
+    // noise: a flat spectrum, an envelope depth equal to Rayleigh's over the
+    // whole slice, one envelope state, no rate anywhere. Real HF has none of
+    // those. 1/f noise is not flat (0.65 measured, exactly on the old cut);
+    // noise under a 0.4 Hz fade has an envelope depth of 0.79 and a rate at
+    // the fade; noise gated at 6 Hz has a depth of 0.96, two states and a
+    // strong rate; noise carrying atmospheric crashes has nine to twenty-four
+    // discrete lines, which are the crashes ringing. So on four of the five
+    // colours this hypothesis scored below MIN_SCORE and the ranking handed
+    // the window to whatever was next. Measured over 24 windows per colour
+    // before this rewrite: 19 of 24 fading windows were claimed as speech, 17
+    // of 24 gated ones as a keyed carrier, 14 of 24 crash-ridden ones as a
+    // tone set.
+    //
+    // The tests below are the same question asked scale-free. Dividing each
+    // bin by the median of its neighbourhood removes any tilt; taking the
+    // envelope's depth inside a 50 ms block removes anything the level does
+    // between blocks; a Rayleigh depth is a ratio of two quantiles of one
+    // distribution and so does not care what the level is. What is left is
+    // the only thing that actually separates noise from a transmission: a
+    // transmission puts structure INSIDE the band, and noise of every colour
+    // does not.
+    //
+    // The one-sided Rayleigh test is deliberate. Impulses make an envelope
+    // deeper than Rayleigh, never shallower — measured 0.92 on crashes — so
+    // "at least as deep as noise" holds on all five colours while every
+    // transmission measured here reads 0.03 to 0.36. A band-limited NOISE
+    // emitter reads 0.63 and is called noise by this, which is the honest
+    // answer: nothing in the audio says a noise-like band is a transmission,
+    // and segment() reports it as a standing band for exactly that reason.
     id: 'noise',
     label: 'noise — nothing is transmitting here',
     tests: [
-      { w: 3, why: 'the spectrum is flat', hold: (f) => f.spectralFlatness > 0.65, has: (f) => ok(f.spectralFlatness) },
-      { w: 3, why: 'no discrete line stands above the local level', hold: (f) => f.lineCount === 0, has: (f) => ok(f.lineCount) },
-      { w: 2, why: `the envelope depth is Rayleigh's ${RAYLEIGH_DEPTH.toFixed(2)}, which is what noise gives`, hold: (f) => Math.abs(f.envDepth - RAYLEIGH_DEPTH) < 0.12, has: (f) => ok(f.envDepth) },
-      { w: 2, why: 'the envelope has one state', hold: (f) => !f.envKeyed, has: (f) => ok(f.envGapFraction) },
-      { w: 2, why: 'no rate stands above the floor', hold: (f) => f.envRateStrength < 12 && f.ifRateStrength < 12, has: (f) => ok(f.envRateStrength) },
+      { w: 3, why: 'no peak survives dividing each bin by the median of its own neighbourhood, so the band has colour but no structure', hold: (f) => f.whitenedFlatness > 0.65, has: (f) => ok(f.whitenedFlatness) },
+      { w: 3, why: `inside a ${(LOCAL_BLOCK_SEC * 1000).toFixed(0)} ms block the envelope is at least as deep as Rayleigh's ${RAYLEIGH_DEPTH.toFixed(2)}, whatever the level does between blocks`, hold: (f) => f.localEnvDepth > RAYLEIGH_DEPTH - 0.12, has: (f) => ok(f.localEnvDepth) },
+      { w: 2, why: 'no single line carries the band', hold: (f) => f.carrierRatio < 0.05, has: (f) => ok(f.carrierRatio) },
+      { w: 2, why: 'no discrete line stands above the local level', hold: (f) => f.lineCount === 0, has: (f) => ok(f.lineCount) },
       { w: 1, why: 'the instantaneous frequency wanders across the whole band', hold: (f) => f.ifSpreadHz > 0.2 * f.occupied99Hz, has: (f) => f.ifSpreadHz > 0 },
+      // The one thing a background does not have is a clock. A slow level
+      // change is not one: measured over 750 windows, 150 per colour, the
+      // fastest rate any of the five ever put above the periodicity floor was
+      // 5.41 Hz, and white, 1/f and crash-ridden noise never cleared the floor
+      // at all — only the fading and the gated backgrounds did, and both of
+      // those are the level moving. An incoherent train of NOISE bursts is
+      // noise in every other statistic here — flat, no line, Rayleigh inside a
+      // block — and this is the only test that separates it from a background,
+      // so it carries three weights: without it a 50 Hz burst train and a
+      // window of nothing scored 1.00 apiece and the answer was 'unclear'.
+      //
+      // The floor is 7 Hz and not the 5 the pulsed-wideband hypothesis uses.
+      // That is a measured gap and a stated cost: 5.41 Hz is the fastest a
+      // background reached and 9.92 Hz the slowest emitter this bench carries
+      // (a 10 Hz over-the-horizon synthetic, which reads low), so 7 leaves 1.3x
+      // on one side and 1.4x on the other. Below 7 Hz this hypothesis holds
+      // alongside pulsed-wide and the two tie, which comes back as 'unclear' —
+      // a genuine pulsed emitter running slower than 7 Hz will not be named.
+      { w: 3, why: 'nothing is switching the band at the 7-120 Hz rate a pulsed emitter runs at; a background changes its level, it does not keep time', hold: (f) => !(f.envRateStrength >= 12 && f.envRateHz >= 7 && f.envRateHz <= 120), has: (f) => ok(f.envRateStrength) },
     ],
   },
 ]);

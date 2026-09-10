@@ -155,23 +155,54 @@ export const SNR_FREQ_BLOCKS = 1;
 // inside one component see the variability inside that component; they cannot
 // see the part that is common to all of them — the mask boundary, which cells
 // were selected by a threshold on the very quantity being averaged, and the
-// floor estimate itself. Split-half check, a continuous 1500 Hz tone measured
-// separately in the first and second half of the window, 12/24/48 s windows at
-// four levels, 36 seeds each (432 pairs):
+// floor estimate itself. Split-half check on WHITE noise, a continuous 1500 Hz
+// tone measured separately in the first and second half of the window,
+// 12/24/48 s windows at four levels, 36 seeds each (432 pairs):
 //
 //   inflation 1.0   median |z| 1.16   95th 3.44   coverage at 2 SE  74.3%
 //   inflation 1.6   median |z| 0.73   95th 2.15   coverage at 2 SE  93.1%
 //   inflation 2.0   median |z| 0.58   95th 1.72   coverage at 2 SE  97.9%
 //   inflation 2.5   median |z| 0.46   95th 1.38   coverage at 2 SE  99.8%
 //
-// At 1.0 the bar is very nearly right on average and badly wrong in the tail,
-// which for an uncertainty is the same as being wrong: a quarter of the pairs
-// disagree by more than two of their own standard errors. 2 is the smallest of
-// these that reaches 95% pooled; the worst single condition (48 s at amplitude
-// 0.1) still reads a 95th percentile of 2.09 there rather than 2.00, and that
-// is stated rather than rounded away. The cost is a bar about twice as wide as
-// the block spread alone would suggest.
-export const SNR_SE_INFLATION = 2;
+// That table is the reason this constant was 2, and it is the reason the bar
+// then failed on the first background that was not white. Repeated on 1/f
+// noise, 24 s windows at four amplitudes, 24 seeds each, at inflation 2:
+// coverage of 63%, 54%, 58%, 58% against the 90% claimed, with a median |z|
+// near 1.85 at every amplitude — the bar half the size it needed to be, and
+// not a bias.
+//
+// WHERE THE MISSING VARIANCE IS, measured rather than guessed. The tone is
+// deterministic and identical in both halves, so all of the disagreement is in
+// the floor. The half-to-half standard deviation of snrDb at amplitude 0.15 is
+// 0.079 dB on white and 0.283 dB on 1/f, against a bar of 0.108 dB in both.
+// The floor at a bin is a running median over 65 neighbours, and the values in
+// that window are spread by the background's own tilt as well as by their
+// error: a wider spread is a lower density at the median, and the median of a
+// tilted set has a correspondingly larger variance. So the floor's error, the
+// one part of this that no arrangement of blocks INSIDE the component can see,
+// is a function of the background's colour.
+//
+// Two things were tried and one of them works. Batch means at increasing batch
+// size — the standard answer for a level that drifts on the window's own
+// timescale, and 1/f drifts on every timescale — moved 1/f's 95th percentile
+// from 4.38 to 3.71 and its coverage from 58% to 63%. It is not in the code,
+// because it did not fix this and a guard that does not earn its place is a
+// guard that rots. What is left is to widen, measured on 1/f at four
+// amplitudes over 24 seeds:
+//
+//   inflation 3.2   coverage at 2 SE  88%, 83%, 83%, 83%
+//   inflation 3.8   coverage at 2 SE  96%, 96%, 96%, 88%
+//   inflation 4.4   coverage at 2 SE  96%, 96%, 96%, 96%
+//
+// THE COST, stated because it is real and it is paid on every reading. On
+// white noise the bar is now about three times the half-to-half standard
+// deviation it is estimating rather than 1.4 times it, so a level a reader
+// could have been given to a tenth of a decibel is reported to three tenths.
+// An uncertainty that is too wide is the safe direction and it is still a
+// wrong number; if a later version can measure the floor's own error directly
+// — the residual scatter about the smoothed floor after the tilt is taken out
+// — this should come back down.
+export const SNR_SE_INFLATION = 4.4;
 // How many times a gap has to recur at the same length before the fade bridge
 // will treat it as a duty cycle rather than as a boundary between two events.
 // Two means three matching gaps in a row. Measured over 90 windows of white
@@ -180,14 +211,42 @@ export const SNR_SE_INFLATION = 2;
 // detections, at 2 it manufactured none, and a 50 Hz and a 25 Hz pulse train
 // survive at 2, 3 and 4 alike. See bridgeTime().
 export const REGULAR_GAPS = 2;
-// A frame in which the median of the WHOLE analysed band stands this far over
-// its own median across the window is a broadband event — a crash, a switch
-// transient, a receiver overload — and not a transmission, because a
-// transmission does not raise the band outside its own bins. Under the null
-// the band median is the median of a few hundred Exp(1) draws, which has a
-// relative standard error near 6%, so a factor of three is roughly thirty
-// standard errors and is never reached by chance.
+// A bin standing this far over its own floor TIMES THE BAND'S OWN LEVEL AT
+// THAT MOMENT is hot. Under the module's null that ratio is Exp(1), so a bin
+// is hot with probability exp(-3) = 4.98% and the count of hot bins in a frame
+// is Binomial at that rate.
+//
+// The denominator is the frame gain and not the window's median level, and
+// that is the whole of the difference between this guard and the one it
+// replaces. A carrier under a 0.4 Hz fade of 0.95 depth sees its band rise
+// 3.8x in power at the peak of every fade, which cleared a fixed 3x ratio
+// against the window median: measured, the old guard deleted a real 1500 Hz
+// carrier at amplitude 0.30 in 5 of 24 fading seeds. The frame gain is a
+// running median over 0.25 s, so it follows a 2.5 s fade and does not follow a
+// 2 ms crash, which is exactly the distinction being asked for.
 export const FLASH_RATIO = 3;
+// The share of the bins OUTSIDE a component that have to be hot at once before
+// that frame is a broadband event rather than an emission.
+//
+// Under the null the hot rate is 4.98% and the count is Binomial, so with 252
+// bins the standard deviation of the share is 1.37% and this cut is fifteen of
+// them. It is not set from that arithmetic, though, because the bins are not
+// independent — the Hann main lobe spans three of them — and the measured tail
+// is wider than Binomial says: over 7,488 frames each, the largest share any
+// frame of white noise reached is 0.123 and of 1/f noise 0.163. It is set from
+// the two measured distributions it has to sit between. On the other side, a
+// real 1500 Hz carrier at amplitude 0.30 under a 0.4 Hz 0.95-depth fade — the
+// signal the guard this replaces was deleting — reaches 0.159 across 12 seeds.
+// So 0.25 clears the widest background by 1.5x and the signal it must not
+// delete by 1.6x, and the crash frames of impulsive noise reach 0.94.
+export const FLASH_BIN_SHARE = 0.25;
+// Bins either side of a component excluded from that count as well, so a
+// strong emitter's own window leakage is not read as the band jumping.
+export const FLASH_GUARD_BINS = 3;
+// Fewest outside bins that can carry the question. Below this the component
+// covers so much of the analysed band that there is nothing left to ask about,
+// and FULL_BAND_FRACTION's confidence cap is what remains.
+export const FLASH_MIN_OUTSIDE_BINS = 20;
 // The share of a component's cells that may sit in such frames before the
 // component is a broadband event rather than an emission. Measured over 100
 // windows of white noise carrying 40 crashes of 2 ms at thirty times the noise
@@ -198,6 +257,25 @@ export const FLASH_RATIO = 3;
 // 0.15, and 0.069 at 5 s and 0.08 — the crashes land inside a long detection's
 // span too, which is why the cut is not tighter than this.
 export const FLASH_SHARE = 0.25;
+// And how many times the window's own rate of broadband frames that share has
+// to be. A component whose cells sit in flash frames at the rate at which
+// flash frames simply occur is not evidence of anything; one whose cells are
+// concentrated there is.
+//
+// Measured over 20 windows of the crash-ridden background, at 1.25, 1.5 and 2:
+// 139, 162 and 211 false components survive. Against that, a real 0.4 s tone
+// at amplitude 0.4 in the same background survives as its own narrow component
+// in 9, 9 and 9 of 12 seeds when the crashes are broadband clicks, and in 3, 3
+// and 4 of 12 when they are damped rings — so one of twelve narrow bursts is
+// lost between 2 and 1.5, and at 1.25 real bursts start going in numbers (the
+// same bursts read share/base as high as 4.4 when a crash lands inside their
+// own span). 1.5 is where that trade sits: measured over 30 windows of 20 s
+// against the guard it replaces, it is better on both colours that guard was
+// failing — 241 false components against 292 on crashes, 296 against 428 on a
+// gated background, and on the gated one the number claiming more than 0.5
+// confidence falls from 147 to 15 — and the burst it costs is still FOUND in
+// all 12 seeds, as part of a wider detection rather than as its own.
+export const FLASH_EXCESS = 1.5;
 // Ceilings on what a detection may claim while a named alternative explanation
 // is still live. These are bounds on a confidence, not probabilities of their
 // own: the reported confidence is the smallest of the false-alarm confidence
@@ -1029,14 +1107,39 @@ export function segment(mono, sampleRate, opts = {}) {
     // gets this wrong is the one that never read the doc comment.
     classifyOn: 'emissions',
   };
+  // The caveat an impulsive waveform earns, said whether or not anything was
+  // found. It used to be said only when nothing was found, which is exactly
+  // backwards: silence needs it because a pulse train shorter than a frame
+  // becomes its own floor and hides, but the windows that need it MORE are the
+  // ones where the crashes DID produce detections and nothing said so.
+  // Measured over 30 windows of noise carrying twelve ringing crashes a
+  // second, with every other guard in this file in place: 241 components
+  // survived, spanning a median 39% of the band for a median 0.45 s, and not
+  // one of them carried any note saying a crash train would produce the same
+  // thing. A crash is a damped ring, so it is narrowband by construction and
+  // the broadband guard cannot see it.
+  //
+  // It is a caveat and not a cap, and that is a measured decision rather than
+  // a soft one. A CAP would have to fire on a magnitude, and no magnitude
+  // separates the two things: excess kurtosis over 24 windows reads 29 to 35
+  // on a crash-ridden background and 65 on 30 s of white noise carrying one
+  // real 0.3 s tone at amplitude 1.0, with a real 50 Hz pulsed emitter at 15
+  // and an over-the-horizon synthetic at 10. A short transmission makes a
+  // waveform impulsive exactly as a crash does. So the honest act is to say
+  // that a crash train would produce these detections too, and to leave the
+  // number alone.
+  if (impulse.z > IMPULSIVE_Z) {
+    // Both halves are said every time, because both are true every time and
+    // the branch that used to choose between them chose on `present`, which is
+    // not the same question as whether anything was bounded: a 10 ms click
+    // makes a window present and produces no detections at all.
+    warnings.push(`the waveform is impulsive (excess kurtosis ${impulse.excessKurtosis.toFixed(1)}, z ${impulse.z.toFixed(0)}) ` +
+      `at a ${frameMs.toFixed(0)} ms frame. A pulse train shorter than the frame becomes its own floor and hides. ` +
+      'A crash is a damped ring, so it is narrowband and the broadband guard cannot see it, and a train of them ' +
+      'bridged together would produce detections like any reported here. Nothing measured says which this is — a ' +
+      'short transmission makes a waveform impulsive too');
+  }
   if (!presence.present) {
-    // The one case where silence needs a caveat attached to it: an impulsive
-    // waveform that produced no detections may be a pulse train hiding inside
-    // a frame longer than its own off-time.
-    if (impulse.z > IMPULSIVE_Z) {
-      warnings.push(`nothing detected, but the waveform is impulsive (excess kurtosis ${impulse.excessKurtosis.toFixed(1)}, ` +
-        `z ${impulse.z.toFixed(0)}) at a ${frameMs.toFixed(0)} ms frame; a pulse train shorter than the frame becomes its own floor`);
-    }
     return { ...base, components: [], emissions: [], costMs: Date.now() - t0 };
   }
 
@@ -1139,14 +1242,45 @@ export function segment(mono, sampleRate, opts = {}) {
   }
   const standingBin = new Uint8Array(bins);
   for (const s of fl.standingBands) for (let b = s.binLo; b <= s.binHi; b++) standingBin[b] = 1;
-  // Frames in which the whole band jumped at once. Nothing that fits in fewer
-  // than half the analysed bins can move a median taken across all of them, so
-  // for any component narrower than that this is a statement about the rest of
-  // the band and not about the component itself.
-  const flashFrame = new Uint8Array(frames);
-  if (fl.frameLevel && fl.frameLevelMid > 0) {
-    for (let t = 0; t < frames; t++) if (fl.frameLevel[t] > FLASH_RATIO * fl.frameLevelMid) flashFrame[t] = 1;
+  // Hot bins, and their running count along frequency in every frame.
+  //
+  // "The whole band jumped" used to be asked of the median across ALL the
+  // analysed bins, which meant it could only be asked of a component narrower
+  // than half of them — anything wider moves that median itself and the
+  // question becomes circular. So a component between half the band and the
+  // 80% at which FULL_BAND_FRACTION caps confidence was guarded by neither,
+  // and confident false detections lived in the gap: measured over 30 windows
+  // of noise carrying atmospheric crashes, 292 components survived, at
+  // confidence 0.80, and every one of them spanned between 0.52 and 0.77 of
+  // the band.
+  //
+  // Asking it of the bins OUTSIDE the component closes the gap, because then
+  // the question is fair at any width. The prefix count is what makes it cheap:
+  // the hot count either side of a component is two subtractions per frame.
+  const hotCum = new Int32Array(frames * (bins + 1));
+  for (let t = 0; t < frames; t++) {
+    const row = t * bins, cum = t * (bins + 1), g = fl.gain[t];
+    let run = 0;
+    for (let b = 0; b < bins; b++) {
+      hotCum[cum + b] = run;
+      if (b >= binLo && b <= binHi) {
+        const f = fl.floor[b] * g;
+        if (f > 0 && power[row + b] > FLASH_RATIO * f) run += 1;
+      }
+    }
+    hotCum[cum + bins] = run;
   }
+  const hotBetween = (t, b0, b1) => hotCum[t * (bins + 1) + b1 + 1] - hotCum[t * (bins + 1) + b0];
+  // Whether frame `t` is a broadband event as seen from OUTSIDE [b0, b1].
+  const flashOutside = (t, b0, b1) => {
+    const lo0 = binLo, lo1 = Math.min(binHi, b0 - 1 - FLASH_GUARD_BINS);
+    const hi0 = Math.max(binLo, b1 + 1 + FLASH_GUARD_BINS), hi1 = binHi;
+    let n = 0, h = 0;
+    if (lo1 >= lo0) { n += lo1 - lo0 + 1; h += hotBetween(t, lo0, lo1); }
+    if (hi1 >= hi0) { n += hi1 - hi0 + 1; h += hotBetween(t, hi0, hi1); }
+    if (n < FLASH_MIN_OUTSIDE_BINS) return null;   // nothing left to ask
+    return h > FLASH_BIN_SHARE * n;
+  };
   for (let t = 0; t < frames; t++) {
     const row = t * bins, g = fl.gain[t];
     for (let b = binLo; b <= binHi; b++) {
@@ -1163,7 +1297,47 @@ export function segment(mono, sampleRate, opts = {}) {
       if (lineBin[b]) a.hasLine = 1;
       if (fl.occupied[b]) a.elevated = 1;
       if (standingBin[b]) a.standing = 1;
-      if (flashFrame[t]) a.flashCells += 1;
+    }
+  }
+
+  // Second pass over the same cells, now that every component's own extent is
+  // known: how many of its cells arrived in frames when the band OUTSIDE it
+  // jumped. `flashAsked` records whether the question could be put at all.
+  // `flashBase` is the share of ALL the window's frames that are broadband
+  // events as seen from outside this component, and it is what makes the share
+  // below a statement about the component rather than about the window.
+  //
+  // Without it the guard deletes real signal wherever crashes are common. A
+  // continuous carrier spanning a whole window in a band where a quarter of
+  // the frames carry a crash has a quarter of ITS cells in crash frames too,
+  // simply by lying underneath them; measured, a 1500 Hz carrier at amplitude
+  // 0.30 — 25 dB in band — was found in 1 of 24 windows of crash-ridden noise.
+  // A component that IS a crash has essentially all of its cells there. The
+  // question is therefore whether the cells are concentrated in flash frames
+  // beyond the rate at which flash frames simply happen.
+  const flashAsked = new Uint8Array(acc.length);
+  const flashBase = new Float64Array(acc.length);
+  {
+    const cache = new Int8Array(frames);
+    for (let id = 0; id < acc.length; id++) {
+      const a = acc[id];
+      if (!a.cells) continue;
+      cache.fill(-1);
+      let asked = true, flashFrames = 0;
+      for (let t = 0; t < frames; t++) {
+        const v = flashOutside(t, a.b0, a.b1);
+        if (v === null) { asked = false; break; }
+        cache[t] = v ? 1 : 0;
+        if (v) flashFrames += 1;
+      }
+      flashAsked[id] = asked ? 1 : 0;
+      if (!asked) continue;
+      flashBase[id] = flashFrames / frames;
+      for (let t = a.t0; t <= a.t1; t++) {
+        if (cache[t] !== 1) continue;
+        const row = t * bins;
+        for (let b = a.b0; b <= a.b1; b++) if (kept[row + b] && final.lab[row + b] === id) a.flashCells += 1;
+      }
     }
   }
 
@@ -1217,15 +1391,24 @@ export function segment(mono, sampleRate, opts = {}) {
     const box = durFrames * (a.b1 - a.b0 + 1);
     const bandwidthHz = spec.freqOf(a.b1) + spec.binHz - spec.freqOf(a.b0);
     const fullBand = bandwidthHz >= FULL_BAND_FRACTION * bandSpanHz;
-    // A component that fits in fewer than half the analysed bins, but whose
-    // cells arrived mostly in frames when the WHOLE band jumped, is part of a
-    // broadband event and not an emission. The half-band condition is what
-    // makes that a fair question to ask: a signal narrower than half the bins
-    // cannot move a median taken across all of them, so the jump was something
-    // else. Measured, this is the last thing standing between the module and a
-    // 2% window-level false-accept rate on a crash-ridden band.
-    const narrow = (a.b1 - a.b0 + 1) < 0.5 * (binHi - binLo + 1);
-    if (narrow && a.flashCells > FLASH_SHARE * a.cells) continue;
+    // A component whose cells arrived mostly in frames when the band OUTSIDE it
+    // jumped is part of a broadband event and not an emission. Asking it of the
+    // outside bins is what makes it a fair question at any width; when the
+    // component leaves too few bins for the question, `flashAsked` is 0 and the
+    // only thing left is FULL_BAND_FRACTION's cap on confidence.
+    //
+    // The two guards partition the width axis and no longer leave a gap
+    // between them. Below FULL_BAND_FRACTION the question is put to the bins
+    // outside the component; at or above it there are not enough outside bins
+    // for the answer to mean anything and the full-band cap is what remains.
+    // Measured, the cost of getting that boundary wrong in the other
+    // direction: a 25 dB carrier in crash-ridden noise merges with the crashes
+    // into one component spanning 87% of the band, and asking the flash
+    // question of the 30 bins left above it — where the crashes, which ring
+    // between 200 and 2800 Hz, mostly are not — deleted the carrier with it in
+    // 23 of 24 seeds.
+    const flashShare = a.cells ? a.flashCells / a.cells : 0;
+    if (!fullBand && flashAsked[id] && flashShare > FLASH_SHARE && flashShare > FLASH_EXCESS * flashBase[id]) continue;
     const selfFloored = !!a.standing;
 
     // Block levels, in linear excess-over-floor units, then their spread.
@@ -1278,6 +1461,12 @@ export function segment(mono, sampleRate, opts = {}) {
       centerHz: spec.freqOf(a.b0) + bandwidthHz / 2,
       bandwidthHz,
       cells: a.cells, boxCells: box, dutyCycle: a.cells / box,
+      // The share of this component's cells that arrived in frames when the
+      // band outside it jumped, and null when the component left too few
+      // outside bins for the question to be put at all. A survivor with a
+      // share near FLASH_SHARE is one the guard nearly rejected.
+      flashShare: flashAsked[id] ? flashShare : null,
+      flashBase: flashAsked[id] ? flashBase[id] : null,
       // Both levels are excesses over floor[bin] * gain[frame]. When the bin's
       // floor is the signal's own — selfFloored — the number that survives is
       // the one that says what it is measured against, and snrDb is withheld.

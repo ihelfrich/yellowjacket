@@ -906,6 +906,16 @@ export function decodeCw(x, sampleRate, opts = {}) {
     agc = true,
     fadeDbPerUnit = 8,
     maxBoundaryDoubt = 0.15,
+    // The two gates for the fade that fades the TRANSMISSION while the
+    // receiver's own noise floor stays where it is. See `mixedSpaceClass` and
+    // `fadeDoubt` below; both are numbers so that a test can turn each off and
+    // show that the span it was catching comes back as confident wrong text.
+    maxSpaceClassExcessSd = 0.08,
+    fadeDoubtDepthDb = 10,
+    fadeMinConfidence = 0.955,
+    // The contrast below which key-down and key-up are the same noise. See
+    // `atTheNoiseSplit` below.
+    minKeyingSnrDb = 11.5,
     fadeOpts = {},
   } = opts;
   const warnings = [];
@@ -1063,6 +1073,11 @@ export function decodeCw(x, sampleRate, opts = {}) {
         hz: b,
         scatter: Number.isFinite(m.rawScatter) ? +m.rawScatter.toFixed(4) : null,
         shaped: m.shape ? m.shape.ok : false,
+        // The unit each bandwidth fitted. The spread of these across the
+        // bandwidths that fitted Morse-shaped timing is how much the answer
+        // depends on a choice the decoder made, which is a systematic error the
+        // fit's own standard error cannot see and the interval below uses.
+        ditMs: m.timing && m.timing.ok ? +(m.timing.ditSec * 1000).toFixed(3) : null,
         why: m.why || (m.shape && !m.shape.ok ? m.shape.bad.join(', ') : undefined),
       });
       if (m.scatter < pick.scatter) pick = m;
@@ -1099,7 +1114,28 @@ export function decodeCw(x, sampleRate, opts = {}) {
   const q = 1 / narrow.envRate;
   const quantSe = Math.sqrt(2) * (q / Math.sqrt(12)) / timing.ditSec
     / Math.sqrt(Math.max(1, timing.marks[0].count));
-  const sigmaDit = Math.max(Number.isFinite(fitSeDit) ? fitSeDit : 0, splitLogDit || 0, quantSe);
+  // The term that actually decides whether the interval covers, and the one
+  // that was missing: the answer depends on which filter the sweep chose, and
+  // that dependence is a systematic error no amount of counting run lengths can
+  // see. Every bandwidth in the sweep that fitted Morse-shaped timing is a
+  // defensible reading of the same span, so the scatter of their units is what
+  // the choice is worth. Measured over a 30-span grid (12/20/28 wpm x
+  // noiseless/+20/+10/+6/0 dB x 2 seeds) against the unit that was actually
+  // rendered: the fit's own standard error ran 0.0003-0.0083 in log units while
+  // the true error ran 0.0000-0.0240, so the published interval covered 13 of
+  // 30. The bandwidths' own scatter ran 0.009-0.021, and 1.25 times it covers
+  // 30 of 30 at a median width of x1.07 and a worst of x1.11.
+  const shapedDits = sweep.filter((e) => e.shaped && e.ditMs > 0).map((e) => Math.log(e.ditMs));
+  let filterSpread = 0;
+  if (shapedDits.length > 1) {
+    const mean = shapedDits.reduce((a, b) => a + b, 0) / shapedDits.length;
+    let ss = 0;
+    for (const v of shapedDits) ss += (v - mean) ** 2;
+    filterSpread = Math.sqrt(ss / (shapedDits.length - 1));
+  }
+  const sigmaDit = Math.max(
+    Number.isFinite(fitSeDit) ? fitSeDit : 0, splitLogDit || 0, quantSe, 1.25 * filterSpread,
+  );
   const ci = (v, sigma) => [v * Math.exp(-1.96 * sigma), v * Math.exp(1.96 * sigma)];
   const ditMsCi = ci(timing.ditSec * 1000, sigmaDit);
 
@@ -1122,6 +1158,14 @@ export function decodeCw(x, sampleRate, opts = {}) {
     ditFitSigmaLog: Number.isFinite(fitSeDit) ? fitSeDit : null,
     ditSplitSigmaLog: splitLogDit,
     ditWidened: splitLogDit !== null && splitLogDit > fitSeDit,
+    // Which of the four candidate sigmas the published interval is actually
+    // made of, so a reader can see whether the fit, the split-half test, the
+    // envelope's sample grid or the choice of filter is what it rests on.
+    ditFilterSigmaLog: filterSpread ? 1.25 * filterSpread : null,
+    ditSigmaLog: sigmaDit,
+    ditSigmaFrom: sigmaDit === (splitLogDit || 0) ? 'split-half'
+      : (sigmaDit === 1.25 * filterSpread ? 'filter choice'
+        : (sigmaDit === quantSe ? 'envelope sample grid' : 'the fit')),
     ratioFirst: bothHalves ? halves[0].dahDitRatio : null,
     ratioSecond: bothHalves ? halves[1].dahDitRatio : null,
     ratioSplitSigmaLog: splitLogRatio,
@@ -1192,25 +1236,134 @@ export function decodeCw(x, sampleRate, opts = {}) {
     warnings.push(`${doubtful} of ${chars.length} characters sit against a gap that does not fall into `
       + 'any fitted space class — elements are missing from this span, not merely uncertain');
   }
+
   const text = renderText(chars);
   const marked = renderMarked(chars);
   const known = chars.filter((c) => c.known).length;
   const meanConfidence = chars.length ? chars.reduce((s, c) => s + c.confidence, 0) / chars.length : 0;
+  // ---- the fade that fades the transmission and not the noise under it
+  //
+  // A fade applied to a whole recording takes the noise down with the signal,
+  // and the level tracker above reads it back perfectly. A real HF fade does
+  // not: propagation fades the transmission while the receiver's own noise
+  // floor stays where it is, so the nulls put elements UNDER the noise and they
+  // are not received at all. Measured on 'DE VVV TEST' at 18 wpm under a 0.8 Hz
+  // fade with an independent floor, 5 depths x 3 signal-to-noise ratios x 3
+  // seeds: 16 of 45 spans came back with `ok: true` and the wrong message, and
+  // the boundary-doubt gate above read 0% on 7 of them, because the gaps left
+  // by a swallowed character land inside the fitted word-gap class instead of
+  // outside every class. Two things separate those spans from every span that
+  // decoded exactly, and both are measurements the fit already makes.
+  //
+  // One. The word-gap class stops being one class. A gap left where a character
+  // was lost is 7 units plus whatever the character was, so the top space class
+  // becomes a mixture of real word gaps and longer ones and its log scatter
+  // jumps, while the character-gap class beneath it stays tight. Over 77
+  // correct decodes — clean, 0 dB, Farnsworth, a 4:1 fist, +-25% spacing
+  // jitter, a 97% fade with no noise — that excess scatter never exceeded
+  // 0.048; over 19 wrong ones it reached 0.250, and 10 of them cleared 0.15.
+  // The excess and not the scatter itself is the test, because a sloppy hand
+  // widens every space class together: measured at +-20% gap jitter the top
+  // class scatters 0.118 and the message still reads exactly.
+  //
+  // Two. Element doubt inside a fade means something it does not mean outside
+  // one. A 40%-jitter hand fist reads perfectly at a mean confidence of 0.55
+  // with no fade at all, so confidence alone is not a gate — applied to every
+  // span it refuses a fifth of the correct decodes. Conditioned on the key-down
+  // level having swung more than `fadeDoubtDepthDb` across the span it is a
+  // different statistic. Measured over the 168-span depth x noise x seed grid
+  // plus 24 unfaded controls, on the spans that survived every other gate: 29
+  // came back wrong, their mean confidence topping out at 0.9528, while the 43
+  // correct reads that carried a fade over 10 dB ran 0.8533 to 0.9927. The two
+  // populations overlap, so the bar is set at the top of the wrong one: it
+  // refuses all 29 and costs 4 of 163 correct reads, which are the four faded
+  // spans below 0.955. Refusing 2.5% of what it could have read is the price of
+  // no confident wrong message anywhere in the grid, and it is the right way
+  // round: this returns `ok: false` and a reason, not a plausible sentence.
+  const spaceClasses = timing.spaces;
+  const spaceExcessSd = spaceClasses.length >= 2
+    ? spaceClasses[spaceClasses.length - 1].logSd - spaceClasses[spaceClasses.length - 2].logSd
+    : 0;
+  const mixedSpaceClass = timingPlausible && spaceExcessSd > maxSpaceClassExcessSd;
+  if (mixedSpaceClass) {
+    warnings.push(`the longest space class scatters ${spaceExcessSd.toFixed(3)} in log units more than the `
+      + 'class below it — it is holding two populations, which is what a gap left by a lost character does');
+  }
+  const fadeDepth = fit.fade ? fit.fade.depthDb : 0;
+  const fadeDoubt = timingPlausible && fadeDepth > fadeDoubtDepthDb && meanConfidence < fadeMinConfidence;
+  if (fadeDoubt) {
+    warnings.push(`the key-down level swings ${fadeDepth.toFixed(0)} dB and the elements read out of it average `
+      + `${meanConfidence.toFixed(2)} confidence — in a fade that is elements lost in the nulls, not a wobbly fist`);
+  }
+  const elementsLost = mixedSpaceClass || fadeDoubt;
+
+  // ---- keying that is only a threshold split of a noise envelope
+  //
+  // The structural test above — two mark classes a factor of three apart and
+  // several standard deviations clear of each other — is what keeps white
+  // Gaussian noise from being read, and on white it works: 0 answers in 150
+  // seeds. Coloured noise is a different question, because two of these
+  // colours have in time exactly the structure that test looks for. Noise gated
+  // on and off at 6 Hz has run lengths by construction; noise under a Rayleigh
+  // envelope has a level that moves like a fade. Measured with every other gate
+  // in place, over 150 seeds per colour at 3 s and at 6 s — 1,500 spans: those
+  // two produced 27 confident decodes between them, 25 gated and 2 faded, and
+  // came back as "T T CME AE", "TETNATA", "RO K", "TNMTNTTN TT ME". White, pink
+  // and impulsive produced none.
+  //
+  // What every one of them has in common is not the scatter of the fitted
+  // classes. A 40%-jitter hand fist has scatter of 0.20 in log units and reads
+  // its message exactly, against 0.08-0.27 for the noise seeds that were read,
+  // so refusing on looseness costs 48 of 373 correct decodes and is not a gate.
+  // What they have in common is the contrast: the mean power inside the runs
+  // called key-down against the mean power inside the runs called key-up. For
+  // real keying that is the decision signal-to-noise ratio. For a threshold
+  // dropped into a noise envelope it is a property of the envelope's own
+  // distribution and nothing else — the same fact `fadeTrack` above rests on,
+  // that a Rayleigh envelope shows about 10 dB between its own upper and lower
+  // deciles whether there is keying under it or not. So a split that shows
+  // roughly that much has measured the distribution, not a transmission.
+  //
+  // Measured: over 373 spans that decoded exactly — three messages x 12/20/30
+  // wpm x +20 dB down to -8 dB carrier to noise in 4 kHz x 2 seeds x 0, 20% and
+  // 40% element jitter, plus short spans — the contrast ran 10.9 dB at worst
+  // with a median of 14.9 and a fifth percentile of 12.3. Over the 27 noise
+  // seeds that survived every other gate it ran 11.4 dB at best. The bar sits
+  // between them: it refuses all 27 and costs 4 of the 373, which are 40%-
+  // jittered fists at -4 dB and below.
+  const atTheNoiseSplit = timingPlausible && Number.isFinite(keyingSnrDb) && keyingSnrDb < minKeyingSnrDb;
+  if (atTheNoiseSplit) {
+    warnings.push(`the runs called key-down hold only ${keyingSnrDb.toFixed(1)} dB more power than the runs called `
+      + 'key-up, which is about what a threshold dropped into a noise envelope gives on its own');
+  }
 
   const wpmChar = wpmFor(timing.ditSec);
   const elapsed = chars.length ? (chars[chars.length - 1].endSec - chars[0].startSec) : 0;
   const wpmOverall = elapsed > 0 ? 1.2 * unitsOf(chars) / elapsed : NaN;
 
   return {
-    ok: timingPlausible && !tooManyUncertain,
+    ok: timingPlausible && !tooManyUncertain && !elementsLost && !atTheNoiseSplit,
     reason: !timingPlausible
       ? `fitted timing is not Morse-shaped: ${shape.bad.join(', ')}`
       : (tooManyUncertain
         ? `${(boundaryDoubt * 100).toFixed(0)}% of the characters sit against a gap of no fitted class, `
           + 'so elements are missing from this span'
-        : undefined),
+        : (mixedSpaceClass
+          ? `the longest space class scatters ${spaceExcessSd.toFixed(3)} more than the class below it, `
+            + 'so it is holding both word gaps and gaps left where a character was lost'
+          : (fadeDoubt
+            ? `the key-down level swings ${fadeDepth.toFixed(0)} dB and what was read out of it averages `
+              + `${meanConfidence.toFixed(2)} confidence, so elements went under the noise in the nulls`
+            : (atTheNoiseSplit
+              ? `the runs called key-down hold only ${keyingSnrDb.toFixed(1)} dB more power than the runs called `
+                + 'key-up, which is a threshold split of a noise envelope rather than keying'
+              : undefined)))),
     timingPlausible,
     boundaryDoubt,
+    spaceExcessSd,
+    mixedSpaceClass,
+    fadeDoubt,
+    atTheNoiseSplit,
     tone: { hz: tone.hz, snrDb: tone.snrDb, analysisBinHz: tone.binHz },
     filterHz: narrow.bandwidthHz,
     filterReason: `${(narrow.bandwidthHz * timing.ditSec).toFixed(1)} / (unit ${(timing.ditSec * 1000).toFixed(0)} ms), the tightest-fitting of ${sweep.length} bandwidths tried`,
@@ -1239,7 +1392,7 @@ export function decodeCw(x, sampleRate, opts = {}) {
     dahDitRatio: timing.dahDitRatio,
     markScatter: timing.marks.map((g) => ({ ms: g.centre * 1000, n: g.count, logSd: g.logSd })),
     spacing: {
-      classes: timing.spaces.map((g) => ({ ms: g.centre * 1000, n: g.count, units: g.centre / timing.ditSec })),
+      classes: timing.spaces.map((g) => ({ ms: g.centre * 1000, n: g.count, units: g.centre / timing.ditSec, logSd: g.logSd })),
       ratios: timing.spaceRatios,
     },
     text,
@@ -1264,7 +1417,7 @@ export function decodeCw(x, sampleRate, opts = {}) {
 export function renderCw(text, {
   wpm = 20, sampleRate = 8000, toneHz = 700, riseMs = 5, amplitude = 0.5,
   farnsworthWpm = null, leadSec = 0.3, tailSec = 0.3, snrDb = null, ditJitter = 0,
-  dahUnits = 3, seed = 1,
+  dahUnits = 3, seed = 1, gapJitter = 0,
 } = {}) {
   const unit = ditSecondsFor(wpm);
   let rng = seed >>> 0;
@@ -1275,7 +1428,10 @@ export function renderCw(text, {
   const up = String(text).toUpperCase();
   for (let i = 0; i < up.length; i++) {
     const ch = up[i];
-    if (ch === ' ') { segs.push({ on: false, sec: 7 * unit, gap: 7 }); units += 7; gapWeight += 7; continue; }
+    if (ch === ' ') {
+      const j = gapJitter ? 1 + (rand() * 2 - 1) * gapJitter : 1;
+      segs.push({ on: false, sec: 7 * unit * j, gap: 7 }); units += 7; gapWeight += 7; continue;
+    }
     const pat = charToMorse(ch);
     if (!pat) continue;
     for (let e = 0; e < pat.length; e++) {
@@ -1289,7 +1445,15 @@ export function renderCw(text, {
       }
     }
     const next = up[i + 1];
-    if (next !== undefined && next !== ' ') { segs.push({ on: false, sec: 3 * unit, gap: 3 }); units += 3; gapWeight += 3; }
+    // `gapJitter` wobbles the character and word gaps the way a hand does.
+    // `ditJitter` only ever moved the elements and the gaps INSIDE a character,
+    // so a sender whose spacing is sloppy but whose elements are not could not
+    // be rendered at all, and the cost of any gate that reads the scatter of
+    // the fitted space classes could not be measured. It can now.
+    if (next !== undefined && next !== ' ') {
+      const j = gapJitter ? 1 + (rand() * 2 - 1) * gapJitter : 1;
+      segs.push({ on: false, sec: 3 * unit * j, gap: 3 }); units += 3; gapWeight += 3;
+    }
   }
   // Farnsworth: characters keyed at `wpm`, the gaps between them stretched
   // until the whole message takes the time `farnsworthWpm` implies. The extra

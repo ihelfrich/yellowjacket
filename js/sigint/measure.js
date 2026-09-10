@@ -90,6 +90,68 @@ export const PARABOLIC_BIAS_BINS = 0.016;
 // failing it. See `symbolRateRefusesOnNoise`.
 export const SYMBOL_MIN_RATIO = 8;
 
+// The local floor is a median over neighbouring bins, and a median estimates
+// the background only where the background is FLAT across the window. At the
+// two edges of the searched span the old window was one-sided — at the lowest
+// searched bin it took its median entirely from bins ABOVE the peak — and the
+// spectrum of |first difference| of a noise envelope is not flat there. It is a
+// falling pedestal.
+//
+// Measured, on three seconds of gated noise (test/noise-colours.mjs `bursty`,
+// seed 4008, envelope channel): the transition spectrum reads 57.2 dB at the
+// lowest searched bin, 51.8 at bin 20, 42.6 at bin 40, 33.4 at bin 130 and
+// 26.8 by bin 1500. The one-sided median over bins 17..145 returned 36.1 dB —
+// the pedestal's value somewhere near bin 80 — so the pedestal's own edge stood
+// 21 dB above "its" floor and was reported as 4.15 Bd. Across 150 seeds of each
+// of the five colours this happened on 49 of 150 gated-noise inputs, and every
+// single false accept in all 750 sat within 8 bins of the bottom of the span.
+//
+// So the window is symmetric about the bin under test, and bins whose window
+// cannot be made symmetric are not searched at all. For a background that is
+// log-linear in bin number — which a 1/f pedestal is — the median of a
+// symmetric set of cells is exactly the background at the centre, whatever the
+// slope. That is the property the old window did not have.
+//
+// The guard is the line's own half-mainlobe: a Hann-windowed sinusoid is four
+// bins wide null-to-null, so three bins either side keeps a real line out of
+// its own floor estimate. See `localFloorIsSymmetricAboutTheBinUnderTest`.
+export const SYMBOL_FLOOR_GUARD_BINS = 3;
+// Cells per side. Nine each side is 18 in the floor's median at the very bottom
+// of the span against 252 in mid-span; the relative SD of a median of 18
+// exponential samples is about 17%, so the floor there is roughly +/- 1.4 dB
+// noisier. That cost is paid where the alternative was a 21 dB bias.
+export const SYMBOL_FLOOR_MIN_CELLS = 8;
+// Bins 0-2 hold the residual of the mean removal and the Hann window's own
+// leakage of it, so the floor's support starts at bin 3.
+export const SYMBOL_FLOOR_LOW_BIN = 3;
+// The full width of the floor's window, in bins. The magnitudes are computed
+// half of this either side of the searched span so that the bins at its two
+// edges have a window that can be made symmetric.
+export const SYMBOL_FLOOR_WINDOW_BINS = 257;
+
+// Is the periodicity a clock, or is it the envelope of impulsive noise?
+//
+// A crash train has genuine periodicity — atmospheric noise on the low bands is
+// a Poisson series of decaying rings, and its envelope has structure a
+// symbol-rate estimator is built to find. The two are separable in the
+// waveform, before any of this analysis runs, because a symbol clock keys a
+// carrier and a crash does not: the fourth moment of the waveform is 3 for
+// anything Gaussian and enormous for a series of spikes.
+//
+// Measured with `describe()` from test/noise-colours.mjs, at 8 kHz over six
+// seconds, seed 11: white 3.0, pink 3.0, faded 4.6, bursty 6.1, impulsive 34.1.
+// Adding an emission pulls the figure DOWN — a sine on its own is 1.5 — so this
+// fires exactly when the crashes dominate what is being measured, which is when
+// the measurement is least trustworthy. A bar of 10 sits above every colour in
+// that set except impulsive and a factor of 3.4 below impulsive itself.
+//
+// It is a WARNING and a cap on confidence, not a refusal. Measured cost of
+// refusing instead: a 25 Bd on-off keyed carrier under crashes at amplitude 0.5
+// is found in 11 of 20 seeds, and all 11 would have been thrown away. A real
+// emission under atmospheric noise is a real emission. See
+// `impulsiveMaterialIsFlaggedAndCapped`.
+export const IMPULSIVE_KURTOSIS = 10;
+
 // The gate for calling an instantaneous-frequency histogram bimodal is the
 // depth of the valley between its two modes, NOT Ashman's D.
 //
@@ -552,6 +614,14 @@ export function bandwidths(spec, stats, { lo, hi }, { dbDown = XDB_DOWN, folds =
       {
         lowHz: xLowHz, highHz: xHighHz, dbDown: usedDown, requestedDbDown: dbDown,
         limitedByNoise,
+        // The two terms the uncertainty is built from, reported so that which
+        // one is carrying it is visible rather than inferred. `occupied99` has
+        // reported them since it was written; the x-dB width did not, and the
+        // half-spread term inside it was therefore defended by no test at all.
+        // See `bothWidthsCarryTheirHalfSpread`.
+        foldWidths: foldWidths.x.slice(),
+        foldScatterHz: scatter(foldWidths.x),
+        halfSpreadHz: xHalfSpread,
         clipped: left.clipped || right.clipped,
         contiguousLowHz: (lo + contigLo) * binHz,
         contiguousHighHz: (lo + contigHi) * binHz,
@@ -938,24 +1008,51 @@ export function fskShift(mono, sampleRate, { from, to, lowHz, highHz }, precompu
  * slope. Against one, a pure tone in noise produced a confident 6.1 baud at
  * 195x. A local floor tracks the pedestal and the same input reads a few x.
  */
-function localFloor(mag, first, last, { window = 257, stride = 64 } = {}) {
+function localFloor(mag, first, last, {
+  window = SYMBOL_FLOOR_WINDOW_BINS, stride = 64, guard = SYMBOL_FLOOR_GUARD_BINS,
+  minCells = SYMBOL_FLOOR_MIN_CELLS, low = first, high = last,
+} = {}) {
   const half = window >> 1;
+  // Anchors are dense where the window is short. The window's reach is what
+  // limits how fast the floor can follow the background, and at low bin numbers
+  // the reach is small BECAUSE the background is changing fast there; a fixed
+  // stride of 64 would interpolate the floor straight across the steepest part
+  // of the pedestal. The stride is a quarter of the reach, so the floor is
+  // sampled about four times per window everywhere.
   const anchors = [];
-  for (let k = first; k <= last; k += stride) anchors.push(k);
+  for (let k = first; k <= last;) {
+    anchors.push(k);
+    const reach = Math.min(half, k - low, high - k);
+    k += Math.max(2, Math.min(stride, reach >> 2));
+  }
   if (anchors[anchors.length - 1] !== last) anchors.push(last);
+  const cells = [];
   const vals = anchors.map((k) => {
-    const lo = Math.max(first, k - half), hi = Math.min(last, k + half);
-    return median(mag.subarray(lo, hi + 1)) || 1e-300;
+    // Symmetric by construction: the same number of bins each side, with the
+    // line's own mainlobe cut out of the middle.
+    const d = Math.min(half, k - low, high - k);
+    if (d < guard + minCells) return null;
+    cells.length = 0;
+    for (let i = k - d; i <= k - guard; i++) cells.push(mag[i]);
+    for (let i = k + guard; i <= k + d; i++) cells.push(mag[i]);
+    return median(cells) || 1e-300;
   });
-  const out = new Float64Array(last + 2);
+  const flo = new Float64Array(last + 2);
+  const supported = new Uint8Array(last + 2);
   for (let a = 0; a < anchors.length - 1; a++) {
     const k0 = anchors[a], k1 = anchors[a + 1];
+    const v0 = vals[a], v1 = vals[a + 1];
+    if (v0 == null || v1 == null) continue;
+    // Interpolated in the LOG domain, because a 1/f pedestal is a straight
+    // line there and a straight line in the linear domain sits above it.
+    const l0 = Math.log(v0), l1 = Math.log(v1);
     for (let k = k0; k <= k1; k++) {
       const t = k1 === k0 ? 0 : (k - k0) / (k1 - k0);
-      out[k] = vals[a] * (1 - t) + vals[a + 1] * t;
+      flo[k] = Math.exp(l0 * (1 - t) + l1 * t);
+      supported[k] = 1;
     }
   }
-  return out;
+  return { flo, supported };
 }
 
 /**
@@ -975,14 +1072,89 @@ function summaryDisagrees(results, alphaStep, ratioOf) {
   return Math.abs(r - Math.round(r)) > 0.06 * Math.round(r);
 }
 
+// The stopband the decimator's anti-alias filter is designed to.
+export const ANTIALIAS_DB = 60;
+
+/**
+ * The decimation in front of the symbol-rate search, as numbers a test can
+ * check rather than as arithmetic buried in the estimator.
+ *
+ * The search runs up to `top` baud, so the transition sequences are taken down
+ * to about 6 x top and everything that could fold into [0, top] has to be gone
+ * before the samples are dropped. What CAN fold into the searched span is
+ * exactly the band [decRate - top, decRate + top], and its lower edge —
+ * `firstAliasHz` — is the least attenuated point of it, because a windowed
+ * sinc's stopband ripple decays with frequency. That edge is where a test of
+ * this filter belongs; a pin deeper into the stopband passes on a filter that
+ * is already failing at the edge. Measured with the filter replaced by the
+ * block sum it used to be: a modulation whose line lands on `firstAliasHz`
+ * comes back at 1085x its local floor, against 86x for a pin at 600 Hz.
+ */
+export function decimationDesign(rate, top, regionSamples = Infinity) {
+  const L = Math.max(1, Math.floor(rate / (6 * top)));
+  const decRate = rate / L;
+  // Kaiser's own design rule: taps ~ (A - 8) / (2.285 * 2pi * df) for a
+  // stopband A dB down across a transition of df cycles per sample. Passband
+  // edge 1/(6L), stopband edge 1/(2L), so df = 1/(3L) and the cutoff sits at
+  // 1/(3L) — which is decRate/3, two octaves above the top of the search.
+  let taps = L === 1 ? 1
+    : Math.ceil((ANTIALIAS_DB - 8) * 3 * L / (2.285 * 2 * Math.PI)) | 1;
+  // The filter's own fill costs (taps-1) samples of the region. Capping it at a
+  // quarter of the region keeps that under 25% at the price of a wider
+  // transition band; on every rate and bandwidth in this bench the cap does not
+  // bite (it would need a region shorter than about 11 x taps).
+  const tapCap = Number.isFinite(regionSamples)
+    ? Math.max(9, (regionSamples >> 2) | 1) : Infinity;
+  if (taps > tapCap) taps = tapCap;
+  return {
+    L, decRate, taps, halfTaps: (taps - 1) >> 1,
+    cutoff: 1 / (3 * L),
+    passbandHz: top,
+    stopbandHz: decRate / 2,
+    // The lowest frequency that folds into [0, top], and so the weakest point
+    // of the stopband that matters.
+    firstAliasHz: decRate - top,
+    capped: taps === tapCap,
+  };
+}
+
+/**
+ * The waveform's fourth standardised moment over the analysed region.
+ *
+ * 3 for anything Gaussian, 1.5 for a pure sine, and tens to hundreds for a
+ * series of impulses. Computed on the RAW samples, before any band-limiting,
+ * because the question it answers — is this material a crash train? — is about
+ * the material and not about the band.
+ */
+export function waveformKurtosis(mono, from, to) {
+  const a = Math.max(0, Math.min(mono.length, from | 0));
+  const b = Math.max(a, Math.min(mono.length, to | 0));
+  const n = b - a;
+  if (n < 8) return null;
+  let m = 0;
+  for (let i = a; i < b; i++) m += mono[i];
+  m /= n;
+  let s2 = 0, s4 = 0;
+  for (let i = a; i < b; i++) {
+    const d = mono[i] - m;
+    const d2 = d * d;
+    s2 += d2; s4 += d2 * d2;
+  }
+  s2 /= n; s4 /= n;
+  return s2 > 0 ? s4 / (s2 * s2) : null;
+}
+
 /** Peak-to-local-floor ratio near an index, and where the local peak sits. */
 function ratioNear(res, at, span = 1) {
   let best = -1, idx = at;
   for (let i = Math.max(res.first, at - span); i <= Math.min(res.last, at + span); i++) {
+    // A bin with no symmetric floor has no ratio. It is not evidence either
+    // way, and counting it as zero is what keeps it from becoming evidence.
+    if (!res.supported[i]) continue;
     const r = res.mag[i] / (res.flo[i] || 1e-300);
     if (r > best) { best = r; idx = i; }
   }
-  return { ratio: best, index: idx };
+  return { ratio: best < 0 ? 0 : best, index: idx };
 }
 
 /**
@@ -1112,23 +1284,9 @@ export function symbolRate(mono, sampleRate, {
   // costs taps/L multiply-accumulates per input sample and does not grow with
   // L; `filter` from js/dsp/analytic.js computes all `n` outputs and would do
   // L times the work to be thrown away.
-  const L = Math.max(1, Math.floor(rate / (6 * top)));
-  const decRate = rate / L;
-  // Kaiser's own design rule: taps ~ (A - 8) / (2.285 * 2pi * df) for a
-  // stopband A dB down across a transition of df cycles per sample. Passband
-  // edge 1/(6L), stopband edge 1/(2L), so df = 1/(3L) and the cutoff sits at
-  // 1/(3L) — which is decRate/3, two octaves above the top of the search.
-  const ANTIALIAS_DB = 60;
-  let taps = L === 1 ? 1
-    : Math.ceil((ANTIALIAS_DB - 8) * 3 * L / (2.285 * 2 * Math.PI)) | 1;
-  // The filter's own fill costs (taps-1) samples of the region. Capping it at a
-  // quarter of the region keeps that under 25% at the price of a wider
-  // transition band; on every rate and bandwidth in this bench the cap does not
-  // bite (it would need a region shorter than about 11 x taps).
-  const tapCap = Math.max(9, (n >> 2) | 1);
-  if (taps > tapCap) taps = tapCap;
-  const halfTaps = (taps - 1) >> 1;
-  const h = L === 1 ? null : firLowpass(taps, 1 / (3 * L), ANTIALIAS_DB);
+  const design = decimationDesign(rate, top, n);
+  const { L, decRate, taps, halfTaps } = design;
+  const h = L === 1 ? null : firLowpass(taps, design.cutoff, ANTIALIAS_DB);
   const m = L === 1 ? n : Math.floor((n - 1 - 2 * halfTaps) / L) + 1;
   if (m < 64) return unmeasured('Bd', 'fewer than 64 decimated samples in the region');
 
@@ -1188,15 +1346,25 @@ export function symbolRate(mono, sampleRate, {
     const im = new Float64Array(fftLen);
     for (let i = 0; i < count; i++) re[i] = (x[offset + i] - mean) * w2[i];
     engine.forward(re, im);
-    const mag = new Float64Array(f1 + 2);
-    for (let k = Math.max(1, f0 - 1); k <= f1 + 1; k++) mag[k] = Math.hypot(re[k], im[k]);
-    const flo = localFloor(mag, f0, f1);
-    let k = f0, best = -1;
+    // The magnitudes are computed WIDER than the searched span, because the
+    // floor under the lowest searched bin has to come from bins on both sides
+    // of it and the bins below f0 are perfectly good spectrum — they are simply
+    // slower than the slowest rate anyone asked about.
+    const reach = (SYMBOL_FLOOR_WINDOW_BINS >> 1) + 1;
+    const magLow = Math.max(SYMBOL_FLOOR_LOW_BIN, f0 - reach);
+    const magHigh = Math.min((fftLen >> 1) - 1, f1 + reach);
+    const mag = new Float64Array(magHigh + 2);
+    for (let k = magLow; k <= magHigh; k++) mag[k] = Math.hypot(re[k], im[k]);
+    const { flo, supported } = localFloor(mag, f0, f1, { low: magLow, high: magHigh });
+    let k = -1, best = -1;
     for (let i = f0; i <= f1; i++) {
+      if (!supported[i]) continue;
       const r = mag[i] / (flo[i] || 1e-300);
       if (r > best) { best = r; k = i; }
     }
-    const res = { index: k, ratio: best, mag, flo, step, first: f0, last: f1 };
+    // Every bin of the span was too close to an edge for a symmetric floor.
+    if (k < 0) return null;
+    const res = { index: k, ratio: best, mag, flo, supported, step, first: f0, last: f1 };
     res.fundamental = fundamentalOf(res);
     return res;
   };
@@ -1240,6 +1408,11 @@ export function symbolRate(mono, sampleRate, {
   const ratioOf = (a, b) => (a > b ? a / b : b / a);
   const disagreeing = summaryDisagrees(results, alphaStep, ratioOf);
 
+  // Clock or crash train? The discriminant is the waveform's own fourth moment,
+  // measured before any of this analysis touched it. See IMPULSIVE_KURTOSIS.
+  const kurtosis = waveformKurtosis(mono, from, to);
+  const impulsiveMaterial = kurtosis != null && kurtosis > IMPULSIVE_KURTOSIS;
+
   // A real symbol clock is in both halves of the region at the same rate. An
   // artefact of band-limited noise is in neither half twice. This is what
   // separates a clock from a coincidence, and it is also where the honest part
@@ -1273,6 +1446,87 @@ export function symbolRate(mono, sampleRate, {
       { channels: summary, searchedHz: searched, alphaStep, wholeRegionHz: hz });
   }
   const halfSpread = Math.abs(halves[0].impliedFundamental - halves[1].impliedFundamental) / 2;
+
+  // Does the line survive when the rectifier is taken out of the path?
+  //
+  // The three transition channels are the MODULUS of a first difference, and a
+  // modulus is a rectifier. Rectifying a sinusoid at F produces harmonics at
+  // 2F, 4F, 6F ... without end, decaying only as 1/(4j^2-1), and they are
+  // produced on the existing sample grid — so every one of them above rate/2
+  // folds straight back into the baseband BEFORE the decimator's anti-alias
+  // filter is reached. No amount of stopband attenuation touches this: the
+  // filter sits downstream of the fold. Raising ANTIALIAS_DB from 60 to 110
+  // was measured to change none of the cases below by a single bin.
+  //
+  // Measured, sweeping a 1500 Hz carrier amplitude-modulated at every integer
+  // rate from 200 to 380 Hz (543 searches, no keying anywhere in any of them):
+  // 13 came back at 'good' or 'strong'. A 240 Hz modulation was reported as
+  // 159.96 Bd at 3870x its local floor with two harmonics and a confidence of
+  // 'strong'; 288 Hz as 63.99 Bd at 3579x with three. Every reported rate
+  // matched |2 x modHz x j - k x rate| for integer j, k to the second decimal,
+  // which is what identifies the mechanism: 2 x 240 x 17 = 8160, and 8160 -
+  // 8000 = 160.
+  //
+  // The square of the same difference has no such series. Squaring a sinusoid
+  // at F gives DC and 2F and nothing else, so a squared channel is band-limited
+  // to twice the bandwidth of what went into it and cannot fold at all (while
+  // the analysis band is under rate/4, which is where the guarantee holds). A
+  // real symbol clock is an impulse train on the symbol lattice either way, so
+  // its comb is in both. A rectification fold is in the modulus alone.
+  //
+  // The veto is applied to the ENVELOPE channel only, and that restriction is
+  // measured rather than assumed. Over 73 real keyed detections on the envelope
+  // channel — 25 and 60 Bd on-off keying and 45.45 and 100 Bd FSK, at four
+  // amplitudes, in all five colours of test/noise-colours.mjs — the squared
+  // channel's ratio at the same line never fell below 8.21, while the AM tones
+  // above sit at a median of 2.2. On the FREQUENCY channel the statistic
+  // carries no information at all: squaring amplifies the heavy tail of
+  // instantaneous-frequency noise, so a real 45.45 Bd teleprinter standing
+  // 14.8x in the modulus stands 2.8x in the square, and the AM tones stand 19x
+  // to 32x — the separation is not merely weaker there, it is inverted. So the
+  // frequency and phase channels are NOT covered by this guard, and a fold that
+  // wins on one of them would still be reported.
+  //
+  // The test is RELATIVE, not absolute, and that was measured rather than
+  // chosen. For a real clock the squared channel reads essentially the same
+  // peak-to-floor ratio as the modulus channel: over the 73 real detections the
+  // ratio of the two ran 0.75 to 1.23 with a median of 1.04. For a fold it
+  // reads a small fraction — over 144 folds it never exceeded 0.250, and the
+  // 240 Hz tone reported at 159.96 Bd stood 3870x in the modulus against 5.2x
+  // in the square, a ratio of 0.0013. At 0.4 the bar has 1.9x in hand below the
+  // worst real case and 1.6x above the worst fold.
+  //
+  // An absolute floor on the squared ratio was tried alongside this and then
+  // removed: over the same 144 folds it caught nothing the relative test did
+  // not, and no test could be made to fail by deleting it.
+  const SQUARED_MIN_FRACTION = 0.4;
+  let sqRatio = null;
+  if (w.channel === 'envelope') {
+    const squared = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const k = guard + i;
+      const d = (amp[k] - amp[k - 1]) / ampMean;
+      squared[i] = d * d;
+    }
+    const sq = search(decimate(squared), 0, m, size);
+    sqRatio = sq ? ratioNear(sq, fundamental, 2).ratio : 0;
+    const survives = sqRatio >= SQUARED_MIN_FRACTION * w.ratio;
+    if (!survives) {
+      return unmeasured('Bd',
+        'a line at ' + hz.toFixed(2) + ' Bd stands ' + w.ratio.toFixed(1) + 'x above its local '
+        + 'floor in the modulus of the envelope first difference, but only ' + sqRatio.toFixed(1)
+        + 'x in the SQUARE of the same difference, which is band-limited and cannot alias. A '
+        + 'symbol clock is an impulse train in both and reads about the same ratio in each; a '
+        + 'line that lives only in the modulus is a harmonic of something faster, folded about '
+        + 'the sample rate by the rectifier itself',
+        {
+          channels: summary, searchedHz: searched, alphaStep, wholeRegionHz: hz,
+          squaredChannelRatio: sqRatio, modulusChannelRatio: w.ratio,
+          squaredMinFraction: SQUARED_MIN_FRACTION,
+        });
+    }
+  }
+
 
   // Each half sees half the data, so its own SD is sqrt(2) times the full
   // estimate's and the SD of their difference is twice it: |h1-h2|/2 estimates
@@ -1308,6 +1562,40 @@ export function symbolRate(mono, sampleRate, {
           ? 'the transition channels peak at frequencies with no integer relation, which means '
             + 'the band holds more than one thing. Narrow the region to the emission and measure '
             + 'again before believing this rate.'
+          : null,
+        // Clock, or the envelope of impulsive noise? The reader is told which
+        // kind of material this was, measured on the raw waveform before any
+        // of the analysis touched it. It is not a cap on the level: a Poisson
+        // crash train has a FLAT expected spectrum and cannot manufacture a
+        // harmonic comb, so a full comb under crashes is still a full comb.
+        // Nothing measured here justified demoting one, and a guard that
+        // cannot be made to fire is a guard that rots.
+        // How the same line stands in the SQUARE of the envelope difference,
+        // which cannot alias. Null on the frequency and phase channels, where
+        // the statistic was measured to carry no information.
+        squaredChannelRatio: sqRatio,
+        waveformKurtosis: kurtosis,
+        impulsiveMaterial,
+        impulsiveNote: impulsiveMaterial
+          ? 'the waveform\'s kurtosis is ' + kurtosis.toFixed(1) + ', against 3.0 for anything '
+            + 'Gaussian and 1.5 for a pure sine: this material is a series of impulses, which '
+            + 'is what atmospheric noise on the low bands is. A crash train carries periodicity '
+            + 'of its own, so check that this rate belongs to the emission and not to the '
+            + 'static before quoting it.'
+          : null,
+        // Where in the searched span the line sits, and a warning when it sits
+        // at the bottom of it. This is where a line has to be told apart from
+        // the pedestal it stands on rather than from a flat floor, and it is
+        // where every false accept measured on noise lived: over 750 noise-only
+        // inputs across five colours, all 85 that were given a rate sat within
+        // 8 bins of the lowest searched bin. See SYMBOL_FLOOR_GUARD_BINS.
+        binsAboveSlowestSearched: fundamental - first,
+        atBottomOfSearchedSpan: fundamental < 2 * first,
+        bottomOfSpanNote: fundamental < 2 * first
+          ? 'this line sits within an octave of ' + (first * alphaStep).toFixed(2) + ' Bd, the '
+            + 'slowest rate searched, where the transition spectrum is a falling pedestal rather '
+            + 'than a flat floor and a line has to be told apart from the shoulder it stands on. '
+            + 'Search from a higher minBaud, or over a narrower band, before quoting a rate here.'
           : null,
         halves,
         halfSpreadBd: halfSpread,

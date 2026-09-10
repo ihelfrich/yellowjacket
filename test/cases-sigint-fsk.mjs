@@ -7,9 +7,10 @@ import assert from 'node:assert/strict';
 import {
   estimateTones, estimateBaud, toneTrace, transitions, recoverTiming,
   fskDemod, describeFsk, powerSpectrum, leakageCeilingDb, gridFit,
-  armSeparation, nullMargin, AGC_CLAMP_DB,
+  armSeparation, nullMargin, AGC_CLAMP_DB, CRASH_BLANK_DB,
 } from '../js/sigint/decode/fsk.js';
 import { decodeRtty, encodeIta2, BAUD, SHIFT_HZ, AFSK_PAIRS } from '../js/sigint/decode/rtty.js';
+import { COLOURS, describe } from './noise-colours.mjs';
 
 const SR = 8000;   // what an HF receiver's audio actually carries
 
@@ -85,6 +86,40 @@ const sigmaFor = (snrDb, amp = 1) => Math.sqrt((amp * amp / 2) / Math.pow(10, sn
 
 const lcg = (seed) => { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; };
 
+// --- noise that is not white ------------------------------------------------
+//
+// Every refusal test in this file used to run on `noiseInto` alone, which is
+// one flat white generator, and flat white is the single colour under which
+// the nulls these modules derive actually hold. Measured against the shared
+// generators in test/noise-colours.mjs, before the arm-noise conditioning and
+// the crash blanker went in: `fskDemod`, told exactly where the tones were,
+// accepted 0 of 100 white regions and 97 of 100 impulsive ones through a
+// 4-arm bank, 50 of 100 gated ones, and 35 of 100 pink ones through an 8-arm
+// bank. Not one of those is a hard case. They are ordinary HF.
+const COLOUR_NAMES = Object.keys(COLOURS);
+
+/** A region of one named colour, at the same unit sigma the white refusal
+ *  tests have always used, so the two are comparable. */
+function noiseRegion(colour, seconds, seed, sigma = 1) {
+  return COLOURS[colour](Math.round(seconds * SR), { sigma, seed });
+}
+
+/** ...and the same colour laid over a signal already in `x`. */
+function colourInto(x, colour, sigma, seed) {
+  const nz = COLOURS[colour](x.length, { sigma, seed });
+  for (let i = 0; i < x.length; i++) x[i] += nz[i];
+  return x;
+}
+
+/** The banks these sweeps run through: the RTTY pair, a 4-ary alphabet, and
+ *  the 8-ary one the polytone material uses. The hole was never the same size
+ *  in all three — pink noise only bites a bank wide enough to hear its tilt. */
+const BANKS = [
+  { order: 2, tones: [2125, 2295], baud: BAUD },
+  { order: 4, tones: [1200, 1400, 1600, 1800], baud: 100 },
+  { order: 8, tones: [1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600], baud: 50 },
+];
+
 /** Audio for a run of RTTY characters given as literal 5-bit strings in
  *  TRANSMISSION order (bit 1 first), framed by hand: one space start bit, the
  *  five data bits, then 1.5 mark stop bits. Nothing here consults the decoder's
@@ -146,12 +181,26 @@ export const cases = [
     assert.ok(Math.abs(est.tones[0] - 1500) < 4, `carrier read ${est.tones[0]}`);
   },
 
-  async function refusesToFindTonesInNoise() {
-    const x = new Float64Array(SR * 2);
-    noiseInto(x, 1, 7);
-    const est = estimateTones(x, SR);
-    assert.equal(est.ok, false, `claimed tones ${JSON.stringify(est.tones)}`);
-    assert.ok(est.reason.length > 10);
+  async function refusesToFindTonesInNoiseOfEveryColour() {
+    // ...and the generators really are the colours they claim to be, checked
+    // here so this sweep cannot pass because one of them quietly turned white.
+    const white = describe(noiseRegion('white', 6, 11), SR);
+    const pink = describe(noiseRegion('pink', 6, 11), SR);
+    const impulsive = describe(noiseRegion('impulsive', 6, 11), SR);
+    assert.ok(pink.tiltDbPerDecade < -6,
+      `pink noise tilted ${pink.tiltDbPerDecade.toFixed(1)} dB/decade, which is not pink`);
+    assert.ok(Math.abs(white.tiltDbPerDecade) < 4, `white tilted ${white.tiltDbPerDecade.toFixed(1)} dB/decade`);
+    assert.ok(impulsive.kurtosis > 15, `impulsive noise had kurtosis ${impulsive.kurtosis.toFixed(1)}, which is not impulsive`);
+
+    const claimed = [];
+    for (const colour of COLOUR_NAMES) {
+      for (let seed = 1; seed <= 6; seed++) {
+        const est = estimateTones(noiseRegion(colour, 2, seed), SR);
+        if (est.ok) claimed.push(`${colour} seed ${seed}: ${JSON.stringify(est.tones)}`);
+        assert.ok(est.reason && est.reason.length > 10, `${colour} seed ${seed} refused without saying why`);
+      }
+    }
+    assert.deepEqual(claimed, [], `tones were found in noise: ${claimed.join(' | ')}`);
   },
 
   async function findsAnEightToneGridAndItsSpacing() {
@@ -321,12 +370,18 @@ export const cases = [
     for (let i = 0; i < 4; i++) assert.ok(Math.abs(r.tones[i] - tones[i]) < 6);
   },
 
-  async function refusesToDemodulateNoise() {
-    const x = new Float64Array(SR * 2);
-    noiseInto(x, 1, 31);
-    const r = fskDemod(x, SR, {});
-    assert.equal(r.ok, false);
-    assert.ok(r.reason && r.reason.length > 10, r.reason);
+  async function refusesToDemodulateNoiseOfEveryColour() {
+    // Blind: no tones given, no rate given. Nothing here may come back with a
+    // symbol count and a description.
+    const accepted = [];
+    for (const colour of COLOUR_NAMES) {
+      for (let seed = 31; seed <= 36; seed++) {
+        const r = fskDemod(noiseRegion(colour, 2, seed), SR, {});
+        if (r.ok) accepted.push(`${colour} seed ${seed}: ${describeFsk(r)}`);
+        assert.ok(r.reason && r.reason.length > 10, `${colour} seed ${seed}: ${r.reason}`);
+      }
+    }
+    assert.deepEqual(accepted, [], `${accepted.length} noise regions were demodulated: ${accepted.join(' | ')}`);
   },
 
   // --- RTTY ----------------------------------------------------------------
@@ -551,21 +606,125 @@ export const cases = [
   // 'EKDXHR...' on five seeds out of five. A teleprinter decoder that types out
   // of hiss is worse than no decoder, because a person will believe it.
 
-  async function refusesToTypeTextOutOfHiss() {
-    // Twenty-four independent regions of white noise, each told exactly where
-    // the tones are. Not one may come back as a decode.
+  async function refusesToTypeTextOutOfHissOfEveryColour() {
+    // Eight independent regions of each of the five colours, every one told
+    // exactly where the tones are. Not one may come back as a decode.
+    //
+    // The white column was always clean and always beside the point. Measured
+    // over 300 regions per colour against the code as it stood before this
+    // wave: white 0, pink 0, faded 0, gated 0, and impulsive 3 — 'K=K' at
+    // z = 18.5, 'VQVFVAVKVU=VGPGQMVXP' at z = 4.9, and a twenty-character
+    // string beginning 'F JCMQ'. After: 0 of 300 on all five.
     const accepted = [];
-    for (let seed = 1; seed <= 24; seed++) {
-      const x = new Float64Array(SR * 8);
-      noiseInto(x, 1, seed);
-      const r = decodeRtty(x, SR, { markHz: 2125, spaceHz: 2295 });
-      if (r.ok) accepted.push(`seed ${seed}: '${r.text.slice(0, 24)}'`);
-      assert.equal(r.text, '', `seed ${seed} returned text from noise: '${r.text}'`);
-      assert.ok(r.reason && /no RTTY signal/.test(r.reason), `seed ${seed} gave no reason: ${r.reason}`);
-      // The refusal has to be legible, not just a flag.
-      assert.ok(r.presence.failed.length > 0, `seed ${seed} refused without saying which test failed`);
+    for (const colour of COLOUR_NAMES) {
+      for (let seed = 1; seed <= 8; seed++) {
+        const r = decodeRtty(noiseRegion(colour, 4, seed), SR, { markHz: 2125, spaceHz: 2295 });
+        if (r.ok) accepted.push(`${colour} seed ${seed}: '${r.text.slice(0, 24)}'`);
+        assert.equal(r.text, '', `${colour} seed ${seed} returned text from noise: '${r.text}'`);
+        assert.ok(r.reason && /no RTTY signal/.test(r.reason), `${colour} seed ${seed} gave no reason: ${r.reason}`);
+        // The refusal has to be legible, not just a flag.
+        assert.ok(r.presence.failed.length > 0, `${colour} seed ${seed} refused without saying which test failed`);
+      }
     }
-    assert.deepEqual(accepted, [], `${accepted.length} of 24 noise seeds were accepted as RTTY: ${accepted.join(' | ')}`);
+    assert.deepEqual(accepted, [], `${accepted.length} noise regions were accepted as RTTY: ${accepted.join(' | ')}`);
+  },
+
+  async function theArmNullIsTheOneTheseArmsProduceAndNotAFlatOne() {
+    // The margin's null depends on the arms' relative noise levels and on
+    // nothing else, and those levels are neither equal nor known in advance.
+    // Two things make them unequal: the per-arm AGC, whose gains are a
+    // multiplier this code applied and can therefore be conditioned on
+    // exactly; and the band's own tilt, which has to be measured.
+    //
+    // Measured over 60 eight-second regions through a 4-arm bank at 100 baud,
+    // as the spread of the gains the AGC derived from noise ALONE: 0.8 dB on
+    // white, 0.7 on pink, 1.9 on Rayleigh-faded, 9.7 on impulsive, 10.1 on
+    // gated. Against a flat null a 10 dB spread carries the mean margin from
+    // the 0.302 four arms of noise give to 0.512, which is 27 flat-null
+    // standard errors of nothing at all.
+    for (const bank of BANKS) {
+      for (const colour of COLOUR_NAMES) {
+        for (let seed = 1; seed <= 4; seed++) {
+          const trace = toneTrace(noiseRegion(colour, 4, seed), SR,
+            { tones: bank.tones, baud: bank.baud, oversample: 8 });
+          const a = armSeparation(trace);
+          // One-sided on purpose. A large negative z means the conditioning
+          // over-corrected, which costs sensitivity and is measured in
+          // `saysWhatTheseGatesCostInEveryColour`; it is not a bench reading
+          // traffic out of hiss, which is what this test is about. Gated noise
+          // through a 4-arm bank reaches -12.6 on one of these seeds, where
+          // the AGC derived 12.8 dB of tilt from four seconds of nothing.
+          assert.ok(a.z < 6,
+            `${bank.order} arms of ${colour} noise reached z = ${a.z.toFixed(1)} `
+            + `(margin ${a.separation.toFixed(3)} against ${a.chance.toFixed(3)}, `
+            + `${a.armTiltDb.toFixed(1)} dB of arm tilt, flat null ${a.flatChance.toFixed(3)})`);
+          // ...and the conditioning is what did it. With the null forced flat
+          // the same regions come through: measured over 8 seeds per colour
+          // at 4 seconds, 2 of 8 gated at 2 arms, 6 of 8 impulsive and 1 of 8
+          // gated at 4 arms, 5 of 8 impulsive at 8 arms.
+          assert.ok(a.scales.length === bank.order);
+        }
+      }
+    }
+  },
+
+  async function theArmNullConditioningIsLoadBearing() {
+    // The same regions with the conditioning switched off. If this ever stops
+    // finding false accepts, the conditioning has stopped doing anything and
+    // the test above is passing for the wrong reason.
+    let flatAccepts = 0, conditionedAccepts = 0;
+    for (const bank of BANKS) {
+      for (const colour of ['impulsive', 'bursty']) {
+        for (let seed = 1; seed <= 8; seed++) {
+          const trace = toneTrace(noiseRegion(colour, 4, seed), SR,
+            { tones: bank.tones, baud: bank.baud, oversample: 8 });
+          if (armSeparation(trace, { conditionOnArmNoise: false }).z > 6) flatAccepts++;
+          if (armSeparation(trace).z > 6) conditionedAccepts++;
+        }
+      }
+    }
+    assert.ok(flatAccepts >= 8,
+      `a flat null found only ${flatAccepts} false accepts in 48 regions of impulsive and gated noise; `
+      + 'either the generators changed or the conditioning is no longer worth anything');
+    assert.equal(conditionedAccepts, 0,
+      `the conditioned null accepted ${conditionedAccepts} of the same 48 regions`);
+  },
+
+  async function crashesAreBlankedAndThatIsWhatQuietensAWideBankInStatic() {
+    // A crash is a short narrowband ring and in every instantaneous sense it
+    // is a signal: one arm enormous, the rest at the floor, a margin of 1.00.
+    // What it is not is persistent. Windows more than CRASH_BLANK_DB above the
+    // region's median total are discarded, which is free under the null —
+    // for iid exponential arms the normalised vector is Dirichlet and
+    // independent of the total, so selecting on the total cannot move the
+    // margin's distribution.
+    assert.equal(CRASH_BLANK_DB, 12);
+    const bank = BANKS[2];
+    let blankedOn = 0, withoutBlanking = 0, withBlanking = 0;
+    for (let seed = 1; seed <= 8; seed++) {
+      const trace = toneTrace(noiseRegion('impulsive', 4, seed), SR,
+        { tones: bank.tones, baud: bank.baud, oversample: 8 });
+      const a = armSeparation(trace);
+      blankedOn += a.blankedFraction;
+      if (armSeparation(trace, { blankCrashes: false }).z > 6) withoutBlanking++;
+      if (a.z > 6) withBlanking++;
+    }
+    assert.ok(blankedOn / 8 > 0.03,
+      `only ${((blankedOn / 8) * 100).toFixed(1)}% of windows were blanked in static; the blanker is not firing`);
+    assert.ok(withoutBlanking >= 4,
+      `without blanking only ${withoutBlanking} of 8 static regions were accepted; the guard is not load-bearing`);
+    assert.equal(withBlanking, 0, `${withBlanking} of 8 static regions survived the blanker`);
+    // ...and it takes nothing off a channel that is merely fading. Measured
+    // over 30 regions per colour through this bank, as the fraction of windows
+    // more than 12 dB over the region median: white 0.00%, pink 0.00%,
+    // faded 0.01%, gated 1.61%, impulsive 18.67%; and on real RTTY through
+    // Rayleigh fading at no noise, 0, -6 and -12 dB, 0.00% at every one.
+    for (const colour of ['white', 'pink', 'faded']) {
+      const trace = toneTrace(noiseRegion(colour, 4, 3), SR,
+        { tones: bank.tones, baud: bank.baud, oversample: 8 });
+      assert.ok(armSeparation(trace).blankedFraction < 0.01,
+        `${colour} noise had ${(armSeparation(trace).blankedFraction * 100).toFixed(2)}% of its windows blanked`);
+    }
   },
 
   async function theNullEachPresenceTestAssumesIsTheOneNoiseActuallyProduces() {
@@ -715,20 +874,27 @@ export const cases = [
     assert.ok(Math.abs(nullMargin(2).mean - 0.5) < 1e-12);
     assert.ok(Math.abs(nullMargin(8).mean - 0.211) < 0.01,
       `eight arms of noise average ${nullMargin(8).mean.toFixed(3)}`);
-    for (const [order, tones, baud] of [
-      [2, [2125, 2295], BAUD],
-      [8, [1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600], 50],
-    ]) {
-      for (let seed = 1; seed <= 6; seed++) {
-        const x = new Float64Array(SR * 8);
-        noiseInto(x, 1, seed);
-        const r = fskDemod(x, SR, { tones, baud });
-        assert.equal(r.ok, false, `${order}-arm bank, seed ${seed}: claimed ${r.count} symbols out of noise`);
-        assert.equal(r.symbols, null);
-        assert.match(r.reason, /no FSK signal in these arms/);
-        assert.match(describeFsk(r), /^no FSK:/);
+    // Every bank, every colour. The white column was never the problem.
+    // Measured over 100 regions per cell against the code as it stood before
+    // this wave, told the tones and the rate:
+    //                white   pink   faded   impulsive   gated
+    //   2 arms         0/100  0/100   0/100     4/100    34/100
+    //   4 arms         0/100  0/100   4/100    97/100    50/100
+    //   8 arms         0/100 35/100   0/100   100/100     0/100
+    // After: 0 in every cell but 8-arm impulsive, which is 1 in 200.
+    const accepted = [];
+    for (const bank of BANKS) {
+      for (const colour of COLOUR_NAMES) {
+        for (let seed = 1; seed <= 4; seed++) {
+          const r = fskDemod(noiseRegion(colour, 4, seed), SR, { tones: bank.tones, baud: bank.baud });
+          if (r.ok) { accepted.push(`${bank.order}-arm ${colour} seed ${seed}: ${describeFsk(r)}`); continue; }
+          assert.equal(r.symbols, null);
+          assert.match(r.reason, /no FSK signal in these arms/);
+          assert.match(describeFsk(r), /^no FSK:/);
+        }
       }
     }
+    assert.deepEqual(accepted, [], `${accepted.length} noise regions were demodulated: ${accepted.join(' | ')}`);
     // ...and it still demodulates a real stream that sits well down in noise.
     const rnd = lcg(31);
     const tones = [1200, 1400, 1600, 1800];
@@ -964,5 +1130,302 @@ export const cases = [
     const t = recoverTiming([0.1, 0.2], 45.45);
     assert.equal(t.ok, false);
     assert.match(t.reason, /unrecoverable/);
+  },
+
+  // --- where the arm noise floor is read from, and why it matters ----------
+
+  async function theQuietWindowsArePickedBeforeTheAgcAndNotAfter() {
+    // The arm-noise scale has two parts: the AGC's gains, which this code
+    // applied and can be conditioned on exactly, and the band's own tilt,
+    // which has to be measured off the quiet windows. Selecting those windows
+    // on the GAINED arms ties the two together — a boosted arm wins more, so
+    // the windows where it is quiet are a deeper selection into its own lower
+    // tail, its level reads low, and the tilt the AGC introduced is estimated
+    // away instead of accounted for.
+    //
+    // Measured on gated noise at 4 seconds, with the selection made on the
+    // gained arms instead of the raw ones: a 2-arm region where the AGC took
+    // 19.1 dB of gain out of nothing came back with 0.0 dB of arm tilt and
+    // z = 18.4; a 4-arm region with 21.5 dB of gain came back with 1.8 dB and
+    // z = 49.1. Over twelve seeds, gained selection accepted 3 of 12 at two
+    // arms and 2 of 12 at four; raw selection accepted none of either.
+    for (const [bankIndex, seed] of [[0, 3], [1, 5]]) {
+      const bank = BANKS[bankIndex];
+      const trace = toneTrace(noiseRegion('bursty', 4, seed), SR,
+        { tones: bank.tones, baud: bank.baud, oversample: 8 });
+      const gainSpreadDb = 10 * Math.log10(Math.max(...trace.gains) / Math.min(...trace.gains));
+      assert.ok(gainSpreadDb > 15,
+        `this seed is meant to be one where the AGC invents a large tilt; it took only ${gainSpreadDb.toFixed(1)} dB`);
+      const a = armSeparation(trace);
+      assert.ok(a.armTiltDb >= gainSpreadDb - 0.5,
+        `the AGC applied ${gainSpreadDb.toFixed(1)} dB of tilt and the null was conditioned on only `
+        + `${a.armTiltDb.toFixed(1)} dB of it; the quiet windows are being picked after the gains, not before`);
+      assert.ok(a.z < 6, `gated noise reached z = ${a.z.toFixed(1)}`);
+    }
+  },
+
+  async function theArmNoiseFloorIsReadWhereTheArmIsClearAndNotWhereItIsBusy() {
+    // A Goertzel window is one symbol wide, so an arm only ever reads the band
+    // under it when the whole window lies inside somebody else's run. RTTY's
+    // space runs are a single bit long, so the mark arm's window always
+    // straddles one: its lowest readings are the mark tone leaking into itself.
+    //
+    // Measured on a two-frame '$' off a NOISELESS recording, with the floor
+    // taken as a plain 10th percentile of each arm instead: 11.9 dB of
+    // arm-to-arm tilt invented out of the modulation, and a real transmission
+    // taken from z = 8.5 to z = 3.1 — deleted by its own run lengths.
+    const x = synthRtty('$', { variant: 'us' });
+    const trace = toneTrace(x, SR, { tones: [2125, 2295], baud: BAUD, oversample: 8 });
+    const a = armSeparation(trace);
+    assert.ok(a.armTiltDb < 2,
+      `a noiseless two-frame burst was credited with ${a.armTiltDb.toFixed(1)} dB of arm noise tilt`);
+    assert.ok(a.z > 5, `the arms should separate cleanly on a noiseless signal; z = ${a.z.toFixed(1)}`);
+    // ...and here is the number the rule this one replaced would have given,
+    // computed from the same trace so the comparison is not a claim: the
+    // straight 10th percentile of each arm's power series.
+    const lowTail = (j) => {
+      const col = [];
+      for (let step = 0; step < trace.steps; step++) col.push(trace.power[step * 2 + j]);
+      col.sort((u, v) => u - v);
+      return col[Math.floor(col.length * 0.10)];
+    };
+    const quantileTiltDb = Math.abs(10 * Math.log10(lowTail(0) / lowTail(1)));
+    assert.ok(quantileTiltDb > 8,
+      `the plain low-quantile read of this recording gave only ${quantileTiltDb.toFixed(1)} dB of tilt; `
+      + 'this test is meant to be one where it goes badly wrong');
+    assert.ok(quantileTiltDb > a.armTiltDb + 6,
+      `the interior rule read ${a.armTiltDb.toFixed(1)} dB and a plain quantile ${quantileTiltDb.toFixed(1)} dB; `
+      + 'they are close enough that the interior rule is no longer doing anything');
+  },
+
+  async function aBankHearingItselfIsNotABandTilt() {
+    // On a noiseless N-FSK stream on bin-centred tones the arms that are not
+    // transmitting read numerical dust, and the quiet levels differ between
+    // them by 193 dB. Taken for a band tilt that put a perfectly clean signal
+    // 31281 standard errors BELOW chance and refused it. A channel does not
+    // change by 12 dB between two tones a few hundred hertz apart.
+    const tones = [1200, 1400, 1600, 1800];
+    const rnd = lcg(7);
+    const symbols = Array.from({ length: 500 }, () => Math.floor(rnd() * 4));
+    const x = synthMfsk(symbols, tones, { baud: 100 });
+    const trace = toneTrace(x, SR, { tones, baud: 100, oversample: 8 });
+    const a = armSeparation(trace);
+    assert.ok(a.armTiltDb < 12,
+      `a noiseless 4-FSK stream was credited with ${a.armTiltDb.toFixed(1)} dB of band tilt`);
+    assert.ok(a.z > 20, `a clean 4-FSK stream reached only z = ${a.z.toFixed(1)}`);
+    assert.ok(a.unmeasuredArms.some((w) => /hearing itself/.test(w)),
+      `no arm was recognised as reading the bank rather than the band: ${JSON.stringify(a.unmeasuredArms)}`);
+    // ...and the same bank with real noise in it measures a real, small tilt.
+    const y = synthMfsk(symbols, tones, { baud: 100 });
+    noiseInto(y, sigmaFor(0), 21);
+    const withNoise = armSeparation(toneTrace(y, SR, { tones, baud: 100, oversample: 8 }));
+    assert.ok(withNoise.unmeasuredArms.length === 0,
+      `an arm was refused a measurement on a region that has noise in it: ${JSON.stringify(withNoise.unmeasuredArms)}`);
+    assert.ok(withNoise.armTiltDb < 4, `${withNoise.armTiltDb.toFixed(1)} dB of tilt on white noise`);
+  },
+
+  // --- the symbol-rate bar -------------------------------------------------
+
+  async function theSymbolRateBarAndItsSplitHalfAreBothLoadBearing() {
+    // The Rayleigh bar behaves like the false-accept rate it claims to be:
+    // measured over 200 six- and eight-second regions of each of five colours
+    // through 2- and 4-arm banks, a bar of 1e-2 accepted between 0 and 4 of
+    // every 200 — 0.5% to 2.0%. At 1e-3 the whole sweep gives 1 in 2000, and
+    // no colour names a symbol rate at all.
+    //
+    // Naming a rate takes more than passing the bar. On noise the peak is a
+    // fluke of whichever half of the region happened to carry it, so the two
+    // halves have to agree before a number is put on it.
+    const decisive = [];
+    for (const [colour, seed] of [['pink', 29], ['faded', 10], ['impulsive', 10]]) {
+      const bank = BANKS[1];
+      const trace = toneTrace(noiseRegion(colour, 6, seed), SR,
+        { tones: bank.tones, baud: bank.baud, oversample: 16 });
+      const times = transitions(trace);
+      const strict = estimateBaud(times, {});
+      const loose = estimateBaud(times, { maxP: 1e-2 });
+      const unchecked = estimateBaud(times, { maxP: 1e-2, requireHalvesAgree: false });
+      assert.equal(strict.ok, false,
+        `${colour} noise was given a symbol rate of ${strict.baud && strict.baud.toFixed(1)} baud`);
+      assert.equal(strict.symbolRate, null);
+      if (loose.ok) decisive.push(colour);
+      // ...and with the split-half check dropped it puts a number on it.
+      assert.ok(unchecked.symbolRate != null,
+        `${colour} seed ${seed} is meant to be a seed where the split-half check is what refuses the name`);
+      assert.ok(unchecked.concentration < 0.25,
+        `this seed should be a weak fluke, not a real grid; R = ${unchecked.concentration.toFixed(2)}`);
+    }
+    assert.equal(decisive.length, 3,
+      `the 1e-3 bar was decisive on only ${decisive.length} of 3 seeds; either the generators changed or the bar is doing nothing`);
+    // ...and a real stream still measures, with a named rate and halves that agree.
+    const rnd = lcg(3);
+    const tones = [1200, 1400, 1600, 1800];
+    const symbols = Array.from({ length: 600 }, () => Math.floor(rnd() * 4));
+    const good = estimateBaud(transitions(toneTrace(synthMfsk(symbols, tones, { baud: 100 }), SR,
+      { tones, baud: 100, oversample: 16 })), {});
+    assert.equal(good.ok, true, good.reason || '');
+    assert.ok(good.symbolRate != null, `a clean 4-FSK stream was refused a symbol rate: ${good.reason}`);
+    assert.ok(Math.abs(good.symbolRate - 100) < 0.5, `read ${good.symbolRate.toFixed(3)} baud for a 100 baud stream`);
+  },
+
+  // --- the three tests in the RTTY panel, each pinned separately -----------
+
+  async function theFrameClockTestIsWhatRefusesAMarkHeavyStreamOnALooseClock() {
+    // A 2-FSK stream that is mark-heavy and NOT on a regular clock passes the
+    // other two tests by construction: the arms separate perfectly, and a mark
+    // is there 6.5 bits after most start edges because marks are most of what
+    // is there. Only the frame clock can say this is not a teleprinter.
+    //
+    // Measured over ten seeds at three mark fractions, with the frame-clock
+    // test dropped from the panel: 30 of 30 accepted, typing strings like
+    // 'MOOLPMVOMEMLOGWLQVOGCUTMLMFOMV'. With it in the panel, 26 of 30 refuse.
+    const markHeavy = (seed, p) => {
+      const rnd = lcg(seed);
+      const segs = [];
+      for (let i = 0; i < 700; i++) segs.push({ hz: rnd() < p ? 2125 : 2295, bits: 0.6 + rnd() * 1.3 });
+      return fromSegments(segs, { rate: SR, baud: BAUD, amp: 1 });
+    };
+    let withClock = 0, withoutClock = 0;
+    for (const [seed, p] of [[1, 0.82], [2, 0.82], [5, 0.75], [8, 0.9], [9, 0.82], [10, 0.75]]) {
+      const x = markHeavy(seed, p);
+      const o = { markHz: 2125, spaceHz: 2295 };
+      if (decodeRtty(x, SR, o).ok) withClock++;
+      if (decodeRtty(x, SR, { ...o, requireFrameClock: false }).ok) withoutClock++;
+    }
+    assert.equal(withoutClock, 6,
+      `without the frame-clock test only ${withoutClock} of 6 mark-heavy streams were accepted; the guard is not load-bearing`);
+    assert.equal(withClock, 0,
+      `${withClock} of 6 mark-heavy streams on a loose clock were read as RTTY`);
+  },
+
+  async function theJointBarIsWhatKeepsThreeWeakTestsFromBecomingText() {
+    // Three tests each at p = 0.05 combine, by Fisher, to about 6e-3. That
+    // passes a bar of 1e-2 and fails one of 1e-9, and the difference is
+    // whether a six-character message at -12 dB comes back as 'RYRYRY' or as
+    // 'RERYRY', 'RYGYGY' or 'TSJYDY' — which is what the loose bar returned on
+    // 47 of 480 short weak transmissions across three colours.
+    const msg = 'RYRYRY';
+    let looseWrong = 0, looseRight = 0, strictAccepts = 0;
+    for (const [colour, snrDb, seed] of [['white', -12, 1], ['white', -12, 4], ['white', -12, 8], ['white', -15, 5]]) {
+      const x = synthRtty(msg, {});
+      colourInto(x, colour, sigmaFor(snrDb), seed * 13 + 5);
+      const o = { markHz: 2125, spaceHz: 2295 };
+      const strict = decodeRtty(x, SR, o);
+      const loose = decodeRtty(x, SR, { ...o, maxJointLogP: Math.log(1e-2) });
+      if (strict.ok) strictAccepts++;
+      if (loose.ok) { if (loose.text === msg) looseRight++; else looseWrong++; }
+      // Whatever it does, the strict build never types the wrong thing.
+      assert.ok(!strict.ok || strict.text === msg,
+        `the strict bar typed '${strict.text}' for a transmission that said '${msg}'`);
+    }
+    assert.ok(looseWrong >= 3,
+      `the loose bar produced only ${looseWrong} wrong decodes; either the generators changed or the joint bar is doing nothing`);
+    assert.equal(strictAccepts, 0,
+      `${strictAccepts} of these four were accepted at 1e-9; they are meant to be the cases the joint bar catches`);
+    assert.equal(looseRight, 0);
+  },
+
+  async function thePerArmSnrBarWidensWhenTheHalvesDisagreeAndThatIsLoadBearing() {
+    // A quartile-based error bar describes a homogeneous region. When the SNR
+    // steps partway through — a fade, an operator turning the drive up — the
+    // two halves measure different numbers and the bar has to cover that or it
+    // is a claim rather than a measurement.
+    const tones = [1200, 1400, 1600, 1800];
+    const build = (stepDb) => {
+      const rnd = lcg(3);
+      const spb = SR / 100;
+      const n = 600 * spb;
+      const x = new Float64Array(n);
+      let phase = 0, sym = 0;
+      for (let i = 0; i < n; i++) {
+        if (i % spb === 0) sym = Math.floor(rnd() * 4);
+        phase += 2 * Math.PI * tones[sym] / SR;
+        x[i] = (i < n / 2 ? 1 : Math.pow(10, -stepDb / 20)) * Math.cos(phase);
+      }
+      noiseInto(x, 0.35, 99);
+      return x;
+    };
+    const flat = toneTrace(build(0), SR, { tones, baud: 100, oversample: 8 });
+    const stepped = toneTrace(build(12), SR, { tones, baud: 100, oversample: 8 });
+    // Measured: flat reads 14.0 dB with a bar of 0.53 and halves 14.7/13.3;
+    // stepped reads 10.8 dB with a bar of 3.17 and halves 14.2/7.8.
+    assert.equal(flat.armSnrSplitHalf.agrees, true,
+      `a homogeneous region's halves disagreed: ${flat.armSnrSplitHalf.firstDb.toFixed(1)} vs ${flat.armSnrSplitHalf.secondDb.toFixed(1)} dB`);
+    assert.equal(stepped.armSnrSplitHalf.agrees, false,
+      'a region whose SNR steps 12 dB halfway through must not report halves that agree');
+    assert.ok(stepped.armSnrSeDb >= stepped.armSnrSplitHalf.differenceDb / 2 - 1e-9,
+      `the halves differ by ${stepped.armSnrSplitHalf.differenceDb.toFixed(2)} dB and the bar is only `
+      + `+/-${stepped.armSnrSeDb.toFixed(2)} dB; the widener is not firing`);
+    assert.ok(stepped.armSnrSeDb > 3 * flat.armSnrSeDb,
+      `the stepped region's bar (${stepped.armSnrSeDb.toFixed(2)} dB) is no wider than the flat region's `
+      + `(${flat.armSnrSeDb.toFixed(2)} dB), which is what it would be if the widener were removed`);
+    assert.match(stepped.warnings.join(' '), /further apart than the quartile-based error bar allowed/);
+  },
+
+  // --- and what all of it costs -------------------------------------------
+
+  async function saysWhatTheseGatesCostInEveryColour() {
+    // A gate that refuses everything is not a fix. This is the price of the
+    // arm-noise conditioning and the crash blanker, measured on the same
+    // material in the same five colours, four seeds a point.
+    //
+    // Where it costs NOTHING: RTTY and 4-FSK are still found at -9 dB in
+    // every colour, and exact RTTY text still comes back at -3 dB in white,
+    // pink, Rayleigh-faded and gated noise. Measured over twelve seeds a
+    // point, before and after are identical at every point of the RTTY ladder
+    // in all five colours.
+    //
+    // Where it costs SOMETHING, and this is the whole of it:
+    //   - 4-FSK in Rayleigh fading loses about 3 dB at the bottom. Signal
+    //     present with noise-alone at 0 of 12 on the same seeds: before
+    //     12/12 at -15 dB and 3/12 at -18; after 12/12 at -12, 6/12 at -15
+    //     and 0/12 at -18. That is a real detection, really lost.
+    //   - 4-FSK in static appears to lose everything below -12 dB, and does
+    //     not. On the same seeds with the SIGNAL REMOVED, the old code
+    //     answered 12 of 12 at every SNR from -9 to -18 dB: it was reading the
+    //     crashes, not the traffic. The new code finds the signal 12/12 at
+    //     -9 dB and the crashes 0/12, which is the first time either number
+    //     has meant anything.
+    const msg = 'CQ CQ DE VVV THE QUICK BROWN FOX RYRYRYRY DE TEST TEST';
+    const tones = [1200, 1400, 1600, 1800];
+    const rnd = lcg(3);
+    const symbols = Array.from({ length: 600 }, () => Math.floor(rnd() * 4));
+
+    for (const colour of COLOUR_NAMES) {
+      let present = 0, demodulated = 0, exact = 0;
+      for (let seed = 1; seed <= 4; seed++) {
+        const r = colourInto(synthRtty(msg, {}), colour, sigmaFor(-9), seed * 97 + 3);
+        const got = decodeRtty(r, SR, { markHz: 2125, spaceHz: 2295 });
+        if (got.ok) present++;
+        const f = colourInto(synthMfsk(symbols, tones, { baud: 100 }), colour, sigmaFor(-9), seed * 97 + 3);
+        if (fskDemod(f, SR, { tones, baud: 100 }).ok) demodulated++;
+        const clean = colourInto(synthRtty(msg, {}), colour, sigmaFor(-3), seed * 97 + 3);
+        if (decodeRtty(clean, SR, { markHz: 2125, spaceHz: 2295 }).text === msg) exact++;
+      }
+      assert.equal(present, 4, `RTTY at -9 dB in ${colour} noise was found only ${present} times in 4`);
+      assert.equal(demodulated, 4, `4-FSK at -9 dB in ${colour} noise was demodulated only ${demodulated} times in 4`);
+      // Static corrupts characters long before it stops the signal being
+      // found, which is the honest answer and not a failure of the gate.
+      if (colour !== 'impulsive') {
+        assert.equal(exact, 4, `RTTY at -3 dB in ${colour} noise read back exactly only ${exact} times in 4`);
+      } else {
+        assert.equal(exact, 0, 'static at -3 dB is expected to break characters while the signal is still found');
+      }
+    }
+
+    // ...and the bottom of the range, where it does stop. Pink and gated noise
+    // are absent from this list because they put little power at the tones and
+    // the signal really is still there at -18 dB in both.
+    for (const [colour, snrDb] of [['white', -18], ['faded', -18], ['impulsive', -15]]) {
+      let stillClaimed = 0;
+      for (let seed = 1; seed <= 4; seed++) {
+        const x = colourInto(synthRtty(msg, {}), colour, sigmaFor(snrDb), seed * 97 + 3);
+        const got = decodeRtty(x, SR, { markHz: 2125, spaceHz: 2295 });
+        if (got.ok) stillClaimed++;
+        assert.ok(!got.ok || got.text !== '', 'an accepted decode must carry text');
+      }
+      assert.equal(stillClaimed, 0,
+        `${stillClaimed} of 4 regions at ${snrDb} dB in ${colour} noise were still called RTTY`);
+    }
   },
 ];

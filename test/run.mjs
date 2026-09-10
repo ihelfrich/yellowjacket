@@ -685,6 +685,9 @@ import { NAME as sigSegmentName, cases as sigSegmentCases } from './cases-sigint
 import { NAME as sigCwName, cases as sigCwCases } from './cases-sigint-cw.mjs';
 import { NAME as sigFskName, cases as sigFskCases } from './cases-sigint-fsk.mjs';
 import { NAME as sigTdoaName, cases as sigTdoaCases } from './cases-sigint-tdoa.mjs';
+import { NAME as noiseColoursName, cases as noiseColoursCases } from './cases-noise-colours.mjs';
+import { NAME as refusalBudgetName, cases as refusalBudgetCases } from './cases-refusal-budget.mjs';
+import { NAME as sigPanelName, cases as sigPanelCases } from './cases-sigint-panel.mjs';
 
 function repairFixture() {
   const sr = 48000;
@@ -6834,6 +6837,9 @@ const groups = [
   [sigCwName, sigCwCases],
   [sigFskName, sigFskCases],
   [sigTdoaName, sigTdoaCases],
+  [noiseColoursName, noiseColoursCases],
+  [refusalBudgetName, refusalBudgetCases],
+  [sigPanelName, sigPanelCases],
 ];
 
 for (const [name, cases] of groups) {

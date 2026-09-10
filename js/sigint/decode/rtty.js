@@ -36,8 +36,14 @@ export const AFSK_PAIRS = Object.freeze({
 // the table is in test/cases-sigint-fsk.mjs, which fails if these stop
 // separating. The gate costs nothing above -12 dB in 4 kHz on that material.
 /** Joint false-accept rate the three tests must beat together, by Fisher.
- *  Measured: 200 independent eight-second regions of white noise through a
- *  2125/2295 bank produced 0 accepts, the best of them reaching e^-9.4. */
+ *  Measured: 300 independent eight-second regions of EACH of the five colours
+ *  in test/noise-colours.mjs, through a 2125/2295 bank, produce 0 accepts. On
+ *  the code as it stood before the arm-noise conditioning went into
+ *  `armSeparation`, the same sweep accepted 3 of the 300 impulsive regions and
+ *  typed 'K=K', 'VQVFVAVKVU=VGPGQMVXP' and a twenty-character string out of
+ *  them. The bar is also what separates a weak six-character transmission from
+ *  a confident misreading of one: at 1e-2 the same audio comes back as
+ *  'RERYRY', 'RYGYGY' or 'TSJYDY' where the traffic said 'RYRYRY'. */
 const MAX_JOINT_LOG_P = Math.log(1e-9);
 /** ...and no single test may point the other way while the others carry it.
  *  This is what stops a steady carrier — which separates its arms perfectly,
@@ -335,6 +341,9 @@ export function decodeRtty(x, sampleRate, {
   oversample = 16, start = 0, length = 0, agc = true, minStopMargin = 0,
   estimateBaudFromSignal = false,
   maxJointLogP = MAX_JOINT_LOG_P, maxSingleLogP = MAX_SINGLE_LOG_P,
+  // Here so a test can drop the frame-clock test from the panel and measure
+  // what it is worth. Nothing in normal use should pass it.
+  requireFrameClock = true,
   requireSignal = true,
 } = {}) {
   const warnings = [];
@@ -457,18 +466,18 @@ export function decodeRtty(x, sampleRate, {
     {
       name: 'arm separation',
       logP: chosen.separation.logP,
-      says: `mean arm margin ${chosen.separation.separation.toFixed(3)} against the ${chosen.separation.chance.toFixed(3)} that two arms of pure noise give, ${chosen.separation.z.toFixed(1)} standard errors over ${Math.round(chosen.separation.nEff)} independent symbol windows`,
+      says: `mean arm margin ${chosen.separation.separation.toFixed(3)} against the ${chosen.separation.chance.toFixed(3)} that two arms of pure noise give at the ${(chosen.separation.armTiltDb || 0).toFixed(1)} dB of arm-to-arm noise tilt this region carries, ${chosen.separation.z.toFixed(1)} standard errors over ${Math.round(chosen.separation.nEff)} independent symbol windows`,
     },
     {
       name: 'stop bit',
       logP: chosen.stopLogP,
       says: `${chosen.stopPassed} of ${chosen.stopTrials} candidate frames carried a mark 6.5 bits after their start edge, a rate of ${chosen.stopRate.toFixed(3)} against the 0.500 a fair coin gives`,
     },
-    {
+    ...(requireFrameClock ? [{
       name: 'frame clock',
       logP: chosen.gridLogP,
       says: `${chosen.frames} character start instants concentrate at R = ${chosen.gridness.toFixed(3)} on the ${(rate / 7.5).toFixed(2)} Hz frame rate`,
-    },
+    }] : []),
   ];
   const jointLogP = fisherLogP(tests.map((t) => t.logP));
   const failed = [];
@@ -476,7 +485,7 @@ export function decodeRtty(x, sampleRate, {
     if (t.logP > maxSingleLogP) failed.push(`the ${t.name} test finds nothing: ${t.says}, which chance alone would beat with probability ${Math.exp(t.logP).toExponential(1)}`);
   }
   if (jointLogP > maxJointLogP) {
-    failed.push(`the three tests together reach only p = ${Math.exp(jointLogP).toExponential(1)}, short of the ${Math.exp(maxJointLogP).toExponential(0)} required (${tests.map((t) => `${t.name} ${Math.exp(t.logP).toExponential(1)}`).join(', ')})`);
+    failed.push(`the ${tests.length} tests together reach only p = ${Math.exp(jointLogP).toExponential(1)}, short of the ${Math.exp(maxJointLogP).toExponential(0)} required (${tests.map((t) => `${t.name} ${Math.exp(t.logP).toExponential(1)}`).join(', ')})`);
   }
   const signalPresent = failed.length === 0;
   // Present is not the same as readable. Between about -6 and -12 dB in 4 kHz

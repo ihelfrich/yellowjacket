@@ -18,6 +18,13 @@ import {
   renderVoiceLike, dtmfPair, measureToneHz, schemeFit,
   DTMF_LOW, DTMF_HIGH, SELCALL_SETS, Q24,
 } from '../js/sigint/decode/tones.js';
+// Refusal is tested on five colours of noise, not on one. Every analytic null
+// these decoders lean on — two Goertzel arms iid exponential, a per-arm gain
+// with no tilt to invent, a percentile floor flat across frequency — holds
+// under white Gaussian and under nothing else. Real HF is pink, it fades, it
+// crashes, and it comes in bursts. `describe` is asserted on below so a
+// generator that quietly turned white cannot make these tests pass by default.
+import { COLOURS, everyColour, describe } from './noise-colours.mjs';
 
 const SR = 8000;
 
@@ -89,6 +96,54 @@ const renderTones = (freqs, { toneMs = 100, amplitude = 0.4, leadMs = 40, tailMs
       x[pos + i] = a * amplitude * Math.sin(2 * Math.PI * hz * (pos + i) / SR);
     }
     pos += tn;
+  }
+  return x;
+};
+
+// The same list of tones, but each one swept across its own duration instead of
+// held. A selcall tone is one frequency for its whole length; this is what a
+// signal that is NOT that looks like — an MFSK symbol, a heterodyne walking
+// through the band, an unstable oscillator — and it is what defeated the
+// self-calibrated fit tolerance, because a tone that disagrees with its own
+// first half looks to a half-window rule exactly like a tone that is hard to
+// measure. `driftFraction` is the half-width of the sweep as a fraction of the
+// nominal, so 0.008 sweeps +-0.8% across the tone. The phase is accumulated
+// rather than computed from a fixed frequency, or the sweep would be a phase
+// discontinuity at every sample and would splatter across the whole bank.
+const renderDrifting = (freqs, { toneMs = 100, driftFraction = 0, amplitude = 0.4, leadMs = 40, tailMs = 40 } = {}) => {
+  const tn = Math.round(toneMs * SR / 1000), lead = Math.round(leadMs * SR / 1000);
+  const total = lead + Math.round(tailMs * SR / 1000) + freqs.length * tn;
+  const x = new Float32Array(total);
+  const edge = Math.round(0.002 * SR);
+  let pos = lead, phase = 0;
+  for (const hz of freqs) {
+    for (let i = 0; i < tn && pos + i < total; i++) {
+      let a = 1;
+      if (i < edge) a = 0.5 * (1 - Math.cos(Math.PI * i / edge));
+      else if (i > tn - edge) a = 0.5 * (1 - Math.cos(Math.PI * (tn - i) / edge));
+      phase += 2 * Math.PI * hz * (1 + driftFraction * (2 * i / tn - 1)) / SR;
+      x[pos + i] = a * amplitude * Math.sin(phase);
+    }
+    pos += tn;
+  }
+  return x;
+};
+
+// One continuous sweep across the selcall band, with no tone boundaries in it
+// at all. Nothing in it is a selcall tone and every window of it is close to
+// one, which is the case the tolerance ceiling exists for.
+const chirp = (f0, f1, seconds, { amplitude = 0.4, leadMs = 40, tailMs = 40 } = {}) => {
+  const n = Math.round(seconds * SR), lead = Math.round(leadMs * SR / 1000);
+  const total = lead + n + Math.round(tailMs * SR / 1000);
+  const x = new Float32Array(total);
+  const edge = Math.round(0.002 * SR);
+  let phase = 0;
+  for (let i = 0; i < n; i++) {
+    phase += 2 * Math.PI * (f0 + (f1 - f0) * i / n) / SR;
+    let a = 1;
+    if (i < edge) a = 0.5 * (1 - Math.cos(Math.PI * i / edge));
+    else if (i > n - edge) a = 0.5 * (1 - Math.cos(Math.PI * (n - i) / edge));
+    x[lead + i] = a * amplitude * Math.sin(phase);
   }
   return x;
 };
@@ -267,10 +322,47 @@ export const cases = [
     assert.ok(/dah\/dit/.test(r.reason), `reason was "${r.reason}"`);
   },
 
-  async function refusesNoiseInsteadOfReadingIt() {
-    const r = decodeCw(noise(6, 11), SR);
-    assert.equal(r.ok, false, `noise decoded as "${r.text}"`);
-    assert.ok(typeof r.reason === 'string' && r.reason.length > 10, 'the refusal must say why');
+  async function theNoiseColoursAreTheColoursTheyClaimToBe() {
+    // The generator is the instrument here, so it is calibrated before it is
+    // used. Measured at 8 kHz over 6 s at seed 11: white reads a tilt of
+    // +1.1 dB/decade with kurtosis 3.0 and 0.4 dB of level swing; pink -11.3 /
+    // 3.0 / 5.5; faded -1.7 / 4.6 / 8.0; impulsive +7.3 / 34.1 / 9.7; bursty
+    // +0.2 / 6.1 / 4.8. A test that passed because the "pink" noise was
+    // accidentally white would be worse than no test at all.
+    const d = Object.fromEntries(everyColour(6 * SR, 11).map(({ name, x }) => [name, describe(x, SR)]));
+    assert.ok(Math.abs(d.white.tiltDbPerDecade) < 4, `white tilts ${d.white.tiltDbPerDecade.toFixed(1)} dB/decade`);
+    assert.ok(d.pink.tiltDbPerDecade < -6, `pink tilts only ${d.pink.tiltDbPerDecade.toFixed(1)} dB/decade`);
+    assert.ok(d.faded.swingDb > 6, `faded swings only ${d.faded.swingDb.toFixed(1)} dB`);
+    assert.ok(d.impulsive.kurtosis > 12, `impulsive has kurtosis ${d.impulsive.kurtosis.toFixed(1)}`);
+    assert.ok(d.bursty.swingDb > 3 && d.bursty.kurtosis > 4,
+      `bursty measures swing ${d.bursty.swingDb.toFixed(1)} dB, kurtosis ${d.bursty.kurtosis.toFixed(1)}`);
+    // And white must be the flat one, or the comparison below means nothing.
+    assert.ok(d.white.swingDb < 2 && Math.abs(d.white.kurtosis - 3) < 0.6,
+      `white measures swing ${d.white.swingDb.toFixed(1)} dB, kurtosis ${d.white.kurtosis.toFixed(1)}`);
+  },
+
+  async function refusesEveryColourOfNoiseInsteadOfReadingIt() {
+    // The measurement this case exists for, made over 150 seeds per colour at
+    // two span lengths before anything was changed. At 6 s: white 0/150, pink
+    // 0/150, faded 1/150, impulsive 0/150, bursty 7/150 — coming back as
+    // "T T CME AE", "TETNATA", "TNMTNTTN TT ME". At 3 s, where fewer runs let
+    // the classes fit tighter by chance, bursty gave 5/150 more: "T GANM",
+    // "N TIT", "RO K". Three gates took all of them — the word-gap class
+    // scattering more than the class below it, element confidence inside a
+    // tracked fade, and a key-down / key-up contrast no better than a threshold
+    // dropped into a noise envelope — and the sweep now measures 0/150 on all
+    // five colours at both lengths, 1,500 spans with no answer in any of them.
+    // The sweep here is smaller so the suite stays affordable; the seeds are
+    // the first six of that run, and they include two that used to be read.
+    const answered = [];
+    for (const [name, gen] of Object.entries(COLOURS)) {
+      for (let seed = 1000; seed < 1006; seed++) {
+        const r = decodeCw(gen(3 * SR, { seed }), SR);
+        if (r.ok) answered.push(`${name} seed ${seed}: "${r.text}"`);
+        if (!r.ok) assert.ok(typeof r.reason === 'string' && r.reason.length > 10, `${name} refused without saying why`);
+      }
+    }
+    assert.deepEqual(answered, [], `noise was decoded: ${answered.join(' | ')}`);
   },
 
   async function refusesASteadyUnkeyedCarrier() {
@@ -328,11 +420,16 @@ export const cases = [
 
   async function theSquelchLeavesASpanItCannotJudgeAlone() {
     // Fed nothing but chatter, the reference scale comes from the chatter, so
-    // muting everything would be circular. It declines and says so.
-    const e = cwEnvelope(noise(3, 31), SR, { toneHz: 700, bandwidthHz: 300, envRate: 1000 });
-    const k = keyStates(e.env, e.envRate, { windowSec: 1.5 });
-    const sq = squelchIncoherent(k.state, e.envRate, { windowSec: 1 });
-    assert.ok(sq.muted < 0.9, 'the squelch must not delete a whole span on its own reference');
+    // muting everything would be circular. It declines and says so — on every
+    // colour, because the scale it compares against is the span's own and a
+    // bursty or fading span is exactly where a scale drawn from the loud part
+    // could delete the quiet part.
+    for (const { name, x } of everyColour(3 * SR, 31)) {
+      const e = cwEnvelope(x, SR, { toneHz: 700, bandwidthHz: 300, envRate: 1000 });
+      const k = keyStates(e.env, e.envRate, { windowSec: 1.5 });
+      const sq = squelchIncoherent(k.state, e.envRate, { windowSec: 1 });
+      assert.ok(sq.muted < 0.9, `${name}: the squelch deleted ${(sq.muted * 100).toFixed(0)}% of a span on its own reference`);
+    }
   },
 
   // ------------------------------------------------------------------- DTMF
@@ -399,9 +496,96 @@ export const cases = [
     const worked = r.rejected.offFrequency + r.rejected.dominance + r.rejected.harmonic;
     assert.ok(worked > r.frames * 0.5,
       `the purity gates should be doing the work: ${JSON.stringify(r.rejected)}`);
-    // A second voice, different pitch and vowels, in case the first was lucky.
+
+    // One pitch is one sample of one. A glottal source at 130 Hz puts a
+    // harmonic every 130 Hz, and whether one of them lands on a bank frequency
+    // while another lands on the octave the harmonic gate is watching is a
+    // property of that pitch and not of the detector. So the pitch is swept
+    // across the speech range instead. Measured over f0 = 80 to 250 Hz in 5 Hz
+    // steps x three vowel inventories x four seeds — 420 spans — the detector
+    // produced a digit in 0 of them, and over 80 to 250 in 10 Hz steps x four
+    // jitters (including a perfectly periodic source) x two seeds x two levels,
+    // 0 of 288, with no run ever reaching the duration gate. The sweep below is
+    // the coarse version of the first of those.
+    const spoke = [];
+    for (let f0 = 80; f0 <= 250; f0 += 20) {
+      for (const seed of [3, 9]) {
+        const s = renderVoiceLike({ sampleRate: SR, seconds: 2, seed, f0 });
+        const d = detectDtmf(s.samples, SR);
+        if (d.digits.length) spoke.push(`f0 ${f0} seed ${seed}: "${d.sequence}"`);
+      }
+    }
+    assert.deepEqual(spoke, [], `speech produced digits: ${spoke.join(' | ')}`);
+    // A second vowel inventory, in case the first was lucky.
     const v2 = renderVoiceLike({ sampleRate: SR, seconds: 4, seed: 9, f0: 190, vowels: [[520, 1190, 2390], [300, 2200, 3000], [660, 1720, 2410]] });
     assert.equal(detectDtmf(v2.samples, SR).digits.length, 0);
+  },
+
+  async function stillFindsRealSignalInEveryColour() {
+    // The other side of every refusal above, and the reason it is a fix rather
+    // than a mute button. The signal is rendered clean and the colour is added
+    // at a level set to a stated carrier-to-noise ratio in the full audio band,
+    // so the number means the same thing on every colour.
+    //
+    // Measured, taking "found" as the exact message in at least 3 of 4 seeds:
+    // Morse at 20 wpm is read down to -3 dB in white, -6 dB in pink, 0 dB
+    // against a Rayleigh-faded floor and +6 dB against impulsive crashes and
+    // against gated noise. DTMF holds every digit to +6 dB in white, pink and
+    // gated noise, +9 dB faded, +15 dB impulsive. A CCIR-1 call holds to +6 dB
+    // in white and gated noise, +9 dB in pink and faded, +12 dB impulsive.
+    // Impulsive noise costs the most everywhere, which is what a crash shorter
+    // than an analysis frame does to any of these.
+    //
+    // The bar below is +12 dB, comfortably inside all of those, so this case
+    // fails if a later gate starts refusing signal rather than noise.
+    const rms = (v) => { let t = 0; for (const q of v) t += q * q; return Math.sqrt(t / v.length); };
+    const mix = (clean, gen, snrDb, seed, carrierRms) => {
+      const n = gen(clean.length, { seed, sigma: 0.05 });
+      const k = (carrierRms / Math.pow(10, snrDb / 20)) / (rms(n) || 1e-12);
+      return Float32Array.from(clean, (v, i) => v + k * n[i]);
+    };
+    const msg = 'PARIS ABC DE VVV';
+    const cw = renderCw(msg, { wpm: 20, sampleRate: SR, toneHz: 700, amplitude: 0.5 }).samples;
+    const dtmf = renderDtmf('19*', { sampleRate: SR, amplitude: 0.35 }).samples;
+    const sel = renderSelcall('120079', { set: 'CCIR1', sampleRate: SR, amplitude: 0.4 }).samples;
+    for (const [name, gen] of Object.entries(COLOURS)) {
+      const r = decodeCw(mix(cw, gen, 12, 1, 0.5 / Math.SQRT2), SR);
+      assert.ok(r.ok, `${name} at +12 dB refused a real signal: ${r.reason}`);
+      assert.equal(r.text, msg, `${name} at +12 dB read "${r.text}"`);
+      assert.equal(detectDtmf(mix(dtmf, gen, 15, 1, 0.35), SR).sequence, '19*',
+        `${name} lost DTMF digits at +15 dB`);
+      assert.equal(detectSelcall(mix(sel, gen, 12, 1, 0.4 / Math.SQRT2), SR, { set: 'CCIR1' }).sequences.join(''), '120079',
+        `${name} lost the CCIR-1 call at +12 dB`);
+    }
+  },
+
+  async function findsNoDigitsInAnyColourOfNoise() {
+    // Measured over 150 seeds per colour on 6 s spans: 0 digits on white, pink,
+    // Rayleigh-faded, impulsive and gated noise alike. The DTMF gates hold
+    // across colour because none of them is a level test — the frequency,
+    // twist, purity and harmonic gates all ask about the shape of one frame,
+    // and a tilt or a fade or a crash changes the level rather than the shape.
+    // It is recorded here so that a later loosening of any of them shows up.
+    const spoke = [];
+    for (const [name, gen] of Object.entries(COLOURS)) {
+      for (let seed = 1000; seed < 1012; seed++) {
+        const x = gen(3 * SR, { seed });
+        const d = detectDtmf(x, SR);
+        if (d.digits.length) spoke.push(`${name} ${seed}: "${d.sequence}"`);
+        for (const set of ['CCIR1', 'ZVEI1']) {
+          const q = detectSelcall(x, SR, { set });
+          if (q.calls.length) spoke.push(`${name} ${seed} ${set}: ${JSON.stringify(q.sequences)}`);
+        }
+      }
+    }
+    assert.deepEqual(spoke, [], `noise produced signalling: ${spoke.join(' | ')}`);
+    // And the detector must actually have run on all of it, not skipped it on
+    // level: an empty digit list because nothing was loud enough would say
+    // nothing about the gates that matter.
+    const r = detectDtmf(COLOURS.pink(3 * SR, { seed: 1000 }), SR);
+    assert.ok(r.frames > 200, `only ${r.frames} frames examined`);
+    assert.ok(r.rejected.level < r.frames * 0.5,
+      `the level gate did the work rather than the purity gates: ${JSON.stringify(r.rejected)}`);
   },
 
   async function dropsDigitsRatherThanInventingThemInNoise() {
@@ -413,6 +597,16 @@ export const cases = [
       for (const d of r.digits) assert.ok(seq.includes(d.digit), `invented a ${d.digit} at 0 dB`);
     }
     assert.equal(detectDtmf(renderDtmf(seq, { snrDb: 12, seed: 5 }).samples, SR).sequence, seq);
+    // The same question asked with noise that is not white. The digits are
+    // rendered clean and the colour is added at a measured level, so what is
+    // being tested is the gates and not the renderer's own noise model.
+    for (const [name, gen] of Object.entries(COLOURS)) {
+      const clean = renderDtmf(seq, { sampleRate: SR }).samples;
+      const n = gen(clean.length, { seed: 7, sigma: 0.09 });
+      const x = Float32Array.from(clean, (v, i) => v + n[i]);
+      const r = detectDtmf(x, SR);
+      for (const d of r.digits) assert.ok(seq.includes(d.digit), `${name} invented a ${d.digit}`);
+    }
   },
 
   // ---------------------------------------------------------------- selcall
@@ -450,11 +644,21 @@ export const cases = [
   },
 
   async function findsNoSelcallInSpeech() {
-    const v = renderVoiceLike({ sampleRate: SR, seconds: 4, seed: 5 });
-    for (const set of ['CCIR1', 'ZVEI1']) {
-      const r = detectSelcall(v.samples, SR, { set });
-      assert.equal(r.calls.length, 0, `${set} found ${JSON.stringify(r.sequences)} in speech`);
+    // Swept across the speech pitch range for the same reason the DTMF case is:
+    // which harmonic of the glottal source lands on a table entry depends on
+    // f0, so one pitch tests one accident. Measured over f0 = 80 to 250 Hz in
+    // 10 Hz steps x three seeds x both sets — 108 spans — 0 calls.
+    const found = [];
+    for (let f0 = 80; f0 <= 250; f0 += 20) {
+      for (const seed of [5, 9]) {
+        const v = renderVoiceLike({ sampleRate: SR, seconds: 2, seed, f0 });
+        for (const set of ['CCIR1', 'ZVEI1']) {
+          const r = detectSelcall(v.samples, SR, { set });
+          if (r.calls.length) found.push(`${set} f0 ${f0} seed ${seed}: ${JSON.stringify(r.sequences)}`);
+        }
+      }
     }
+    assert.deepEqual(found, [], `speech produced calls: ${found.join(' | ')}`);
   },
 
   async function namesTheAlternativeSetsRatherThanPickingOneSilently() {
@@ -481,8 +685,13 @@ export const cases = [
     const x = faded(msg, { wpm: 18 });
 
     // The old behaviour, still reachable, and still exactly as bad — this is
-    // the control, not a hypothetical.
-    const untracked = decodeCw(x, SR, { agc: false, maxBoundaryDoubt: 1 });
+    // the control, not a hypothetical. Every gate added since has to be turned
+    // off by hand to see it, which is itself the record of what they catch.
+    const ALL_OFF = {
+      agc: false, maxBoundaryDoubt: 1, maxSpaceClassExcessSd: 99,
+      fadeDoubtDepthDb: 999, minKeyingSnrDb: -99,
+    };
+    const untracked = decodeCw(x, SR, ALL_OFF);
     assert.notEqual(untracked.text, msg, 'the untracked slicer is supposed to fail here');
     assert.equal(untracked.ok, true, 'and to fail while saying it succeeded, which is the point');
 
@@ -506,33 +715,111 @@ export const cases = [
   },
 
   async function refusesAFadeThatTookTheSignalUnderTheNoise() {
-    // The same fade with a receiver noise floor under it. Now the nulls are not
-    // merely quiet, they are below the noise, and the elements keyed there were
-    // never received at all — no amount of tracking recovers them. What must
-    // not happen is a confident wrong message, and the gate that stops it is
-    // the fraction of characters whose surrounding gaps do not fall into the
-    // fitted classes: a lost dit widens the gap either side of it, and both
-    // characters sharing that boundary carry the doubt.
-    let refusedOrFlagged = 0;
-    for (const snrDb of [30, 20]) {
-      for (const seed of [1, 2, 3]) {
-        const x = faded('DE VVV TEST', { wpm: 18, snrDb, seed });
-        const r = decodeCw(x, SR);
-        if (!r.ok || r.text === 'DE VVV TEST') { refusedOrFlagged++; continue; }
-        // If it does return text it must at least not be confident about it.
-        assert.ok(r.meanConfidence < 0.85,
-          `+${snrDb} dB seed ${seed} returned "${r.text}" at confidence ${r.meanConfidence.toFixed(2)}`);
+    // The realistic fade, and the one the previous fix did not cover. A fade
+    // applied to a whole recording takes the noise down with the signal and the
+    // level tracker reads it straight back. Propagation does not work that way:
+    // it fades the TRANSMISSION while the receiver's own noise floor stays
+    // exactly where it is, so the signal-to-noise ratio moves through the fade
+    // cycle and the elements keyed in the nulls were never received at all.
+    // `faded` above builds that case — the fade multiplies the signal, the noise
+    // is added afterwards.
+    //
+    // Measured over the whole 7 depths x 4 signal-to-noise ratios x 6 seeds
+    // grid before the gates below existed: 168 spans, of which 29 came back
+    // with `ok: true` and the wrong message — "T E I EV A E EST" for
+    // "DE VVV TEST", "G VVV NST", "DE VVV TESTE" — at mean confidences up to
+    // 0.95, and the boundary-doubt gate read 0% on nearly all of them. After:
+    // 0 of 168 wrong, and 85 read exactly against 89 before — the price is
+    // those 4, all of them at 13 dB of fade or more. The grid below is the
+    // affordable corner of that one — 5 depths x 4 ratios x 2 seeds — on which
+    // 18 of 40 read exactly, 22 are refused and none is confidently wrong.
+    //
+    // Where the boundary sits, measured on this grid: exact at every seed
+    // through an 80% fade (13 dB) at +30 dB and better, and through a 99% fade
+    // (26 dB) at +40 dB; the first refusals appear at 80% and +20 dB; from 90%
+    // and +20 dB down every seed is refused.
+    const msg = 'DE VVV TEST';
+    let wrongAndConfident = 0, refused = 0, exact = 0;
+    const bad = [];
+    for (const depth of [0, 0.8, 0.9, 0.95, 0.99]) {
+      for (const snrDb of [40, 30, 20, 10]) {
+        for (const seed of [1, 2]) {
+          const r = decodeCw(faded(msg, { wpm: 18, depth, snrDb, seed }), SR);
+          if (!r.ok) { refused++; continue; }
+          if (r.text === msg) { exact++; continue; }
+          wrongAndConfident++;
+          bad.push(`${(depth * 100).toFixed(0)}% at +${snrDb} dB seed ${seed}: "${r.text}" at ${r.meanConfidence.toFixed(2)}`);
+        }
       }
     }
-    assert.ok(refusedOrFlagged >= 4, `only ${refusedOrFlagged} of 6 buried-null spans were refused`);
+    assert.equal(wrongAndConfident, 0, `confident wrong reads: ${bad.join(' | ')}`);
+    // And it must not have got there by refusing everything: the shallow and
+    // strong end of the grid still reads.
+    assert.ok(exact >= 16, `only ${exact} of ${exact + refused} spans were read at all`);
 
-    // With the gate disabled — which is the behaviour before it existed — the
-    // same span comes back as a wrong message with `ok: true`.
-    const x = faded('DE VVV TEST', { wpm: 18, snrDb: 20, seed: 1 });
-    const ungated = decodeCw(x, SR, { maxBoundaryDoubt: 1 });
-    assert.equal(ungated.ok, true);
-    assert.notEqual(ungated.text, 'DE VVV TEST');
-    assert.equal(decodeCw(x, SR).ok, false, 'the gate must refuse what the ungated read accepts');
+    // Each gate pinned by turning it off, because a guard no test defends rots.
+    // First: the word-gap class that has become a mixture of real word gaps and
+    // the gaps left where a character was swallowed.
+    const mixture = faded(msg, { wpm: 18, depth: 0.97, snrDb: 10, seed: 1 });
+    const mixOff = decodeCw(mixture, SR, { maxSpaceClassExcessSd: 99, fadeDoubtDepthDb: 999, minKeyingSnrDb: -99 });
+    assert.equal(mixOff.ok, true, 'with the gates off this span is supposed to come back confident');
+    assert.notEqual(mixOff.text, msg, `and wrong; it read "${mixOff.text}"`);
+    const mixOn = decodeCw(mixture, SR, { fadeDoubtDepthDb: 999, minKeyingSnrDb: -99 });
+    assert.equal(mixOn.ok, false, 'the space-class gate alone must refuse it');
+    assert.ok(mixOn.mixedSpaceClass && mixOn.spaceExcessSd > 0.08,
+      `excess scatter was ${mixOn.spaceExcessSd.toFixed(3)}`);
+    assert.ok(/holding both word gaps/.test(mixOn.reason), mixOn.reason);
+
+    // Second: elements read out of the weak half of a fade cycle. This span's
+    // classes are tight — the gate above sees nothing wrong with it — and the
+    // message is still wrong.
+    const nulled = faded(msg, { wpm: 18, depth: 0.9, snrDb: 20, seed: 1 });
+    const fadeOff = decodeCw(nulled, SR, { maxSpaceClassExcessSd: 99, fadeDoubtDepthDb: 999, minKeyingSnrDb: -99 });
+    assert.equal(fadeOff.ok, true, 'with the gates off this span is supposed to come back confident');
+    assert.notEqual(fadeOff.text, msg, `and wrong; it read "${fadeOff.text}"`);
+    assert.ok(fadeOff.spaceExcessSd < 0.08,
+      `this span is supposed to be the one the class-scatter gate cannot see: ${fadeOff.spaceExcessSd.toFixed(3)}`);
+    const fadeOn = decodeCw(nulled, SR, { maxSpaceClassExcessSd: 99, minKeyingSnrDb: -99 });
+    assert.equal(fadeOn.ok, false, 'the fade-confidence gate alone must refuse it');
+    assert.ok(fadeOn.fadeDoubt && fadeOn.fadeDepthDb > 10 && fadeOn.meanConfidence < 0.955,
+      `fade ${fadeOn.fadeDepthDb.toFixed(0)} dB at confidence ${fadeOn.meanConfidence.toFixed(3)}`);
+    assert.ok(/went under the noise/.test(fadeOn.reason), fadeOn.reason);
+
+    // And the gate must not fire on a fade the receiver heard all of: the same
+    // 97% fade with no noise under it still reads, which is the case the level
+    // tracker was built for.
+    const noNoise = decodeCw(faded(msg, { wpm: 18, depth: 0.97 }), SR);
+    assert.ok(noNoise.ok && noNoise.text === msg, `a noiseless 97% fade must still read: ${noNoise.reason || noNoise.text}`);
+    assert.ok(noNoise.meanConfidence > 0.955,
+      `and by a margin: ${noNoise.meanConfidence.toFixed(3)} against a bar of 0.955`);
+  },
+
+  async function aSloppySenderIsNotAMixedClass() {
+    // The cost of the space-class gate, measured on the thing it could plausibly
+    // hurt: a hand whose SPACING wobbles, which `ditJitter` could not render
+    // because it only ever moved the elements and the gaps inside a character.
+    // `gapJitter` moves the character and word gaps, which is what a straight
+    // key actually does. Measured across five seeds: at +-10% every space class
+    // scatters about 0.06 in log units and the message reads exactly; at +-20%
+    // the top class reaches 0.118, still reads exactly, and still clears the
+    // gate because what the gate reads is the EXCESS over the class below it
+    // and a sloppy hand widens every class together.
+    const msg = 'CQ CQ DE W1AW K';
+    for (const gapJitter of [0.1, 0.2]) {
+      for (const seed of [1, 2, 3]) {
+        const r = decodeCw(renderCw(msg, { wpm: 18, sampleRate: SR, toneHz: 700, gapJitter, seed }).samples, SR);
+        assert.ok(r.ok, `+-${gapJitter * 100}% spacing seed ${seed} refused: ${r.reason}`);
+        assert.equal(r.text, msg, `+-${gapJitter * 100}% spacing seed ${seed} read "${r.text}"`);
+        assert.equal(r.mixedSpaceClass, false, `excess scatter ${r.spaceExcessSd.toFixed(3)}`);
+      }
+    }
+    // The gaps really are being jittered, or this measures nothing: at +-20%
+    // the fitted space classes must be visibly wider than a machine's.
+    const sloppy = decodeCw(renderCw(msg, { wpm: 18, sampleRate: SR, toneHz: 700, gapJitter: 0.2, seed: 1 }).samples, SR);
+    const machine = decodeCw(renderCw(msg, { wpm: 18, sampleRate: SR, toneHz: 700 }).samples, SR);
+    const widest = (r) => Math.max(...r.spacing.classes.map((c) => c.logSd));
+    assert.ok(widest(sloppy) > 0.05, `a +-20% hand scattered only ${widest(sloppy).toFixed(3)}`);
+    assert.ok(widest(machine) < 0.01, `a machine scattered ${widest(machine).toFixed(3)}`);
   },
 
   async function theFadeTrackerCannotLiftNoiseIntoSignal() {
@@ -540,17 +827,96 @@ export const cases = [
     // whether it is safe is what bounds that division. Fed nothing but noise,
     // the tracked level must stay at its floor rather than following the noise
     // up and handing the slicer a normalised signal that looks keyed.
-    const e = cwEnvelope(noise(6, 17), SR, { toneHz: 700, bandwidthHz: 400, envRate: 2000 });
-    const ft = fadeTrack(e.env, e.envRate, { unitSec: 0.06 });
-    assert.ok(ft, 'six seconds is long enough to track');
-    assert.ok(ft.anchors < ft.blocks * 0.25,
-      `noise gave the tracker ${ft.anchors} anchors out of ${ft.blocks} blocks`);
-    assert.ok(ft.depthDb < 12, `and ${ft.depthDb.toFixed(1)} dB of imaginary fade`);
-    // And the decode over the same noise still refuses, tracker or no tracker.
-    for (const seed of [11, 12, 13, 14]) {
-      const r = decodeCw(noise(6, seed), SR);
-      assert.equal(r.ok, false, `noise seed ${seed} decoded as "${r.text}"`);
+    // Asked on every colour, and the answer is not the same on every colour —
+    // which is worth recording rather than asserting away. The bound is a
+    // percentile floor: a block may anchor the level tracker only if its 90th
+    // percentile clears its own 10th by 16 dB, and the reason 16 is enough is
+    // that a Rayleigh envelope shows about 10 dB between its deciles whether
+    // there is keying under it or not. That is a fact about white Gaussian
+    // noise. Measured at 6 s, seed 17, the tracker anchors on 2% of blocks
+    // under white and 8% under pink and invents 0.0 and 1.0 dB of fade — and
+    // then 26% under Rayleigh-faded noise (7.3 dB), 39% under atmospheric
+    // crashes (19.3 dB) and 70% under gated noise (4.4 dB). A crash lasting a
+    // good fraction of a block raises that block's 90th percentile without
+    // touching its 10th, so the anchoring test is not measuring what it was
+    // derived to measure.
+    //
+    // So the strict bound is asserted where its argument holds, the measured
+    // behaviour is pinned where it does not, and the invariant that actually
+    // matters — no text out of any of it — is asserted separately below. The
+    // cost of the inflated depth is real but small: it feeds the fade-
+    // confidence gate, and disabling that gate recovers one span in a 5 colour
+    // x 6 ratio x 4 seed recall grid, at +12 dB against impulsive noise.
+    const tracked = {};
+    for (const { name, x } of everyColour(6 * SR, 17)) {
+      const e = cwEnvelope(x, SR, { toneHz: 700, bandwidthHz: 400, envRate: 2000 });
+      const ft = fadeTrack(e.env, e.envRate, { unitSec: 0.06 });
+      assert.ok(ft, `${name}: six seconds is long enough to track`);
+      tracked[name] = { fraction: ft.anchors / ft.blocks, depthDb: ft.depthDb };
     }
+    for (const name of ['white', 'pink']) {
+      assert.ok(tracked[name].fraction < 0.25,
+        `${name} gave the tracker ${(tracked[name].fraction * 100).toFixed(0)}% of its blocks as anchors`);
+      assert.ok(tracked[name].depthDb < 12, `${name}: ${tracked[name].depthDb.toFixed(1)} dB of imaginary fade`);
+    }
+    assert.ok(tracked.impulsive.depthDb > 12,
+      `impulsive noise is supposed to defeat this bound — it reported ${tracked.impulsive.depthDb.toFixed(1)} dB, `
+      + 'so either the generator or the tracker has changed and the note above needs re-measuring');
+    assert.ok(tracked.bursty.fraction > 0.5,
+      `gated noise anchored only ${(tracked.bursty.fraction * 100).toFixed(0)}% of its blocks`);
+    // And the decode over the same noise still refuses, tracker or no tracker —
+    // on every colour, not only on the white one the tracker's null was
+    // derived under. Rayleigh-faded noise has a level that moves like a fade
+    // and gated noise has run-length structure by construction, which is why
+    // those two are the colours that used to be read.
+    for (const [name, gen] of Object.entries(COLOURS)) {
+      for (let seed = 1010; seed < 1013; seed++) {
+        const r = decodeCw(gen(4 * SR, { seed }), SR);
+        assert.equal(r.ok, false, `${name} seed ${seed} decoded as "${r.text}"`);
+      }
+    }
+  },
+
+  async function keyingThatIsOnlyAThresholdSplitOfNoiseIsRefused() {
+    // The gate that took the last of the coloured-noise false accepts, pinned
+    // by turning it off. It is not a gate on looseness: a 40%-jitter hand fist
+    // clusters its run lengths no better than these noise seeds do — 0.20 in
+    // log units against 0.08 to 0.27 — and reads its message exactly. It is a
+    // gate on contrast, and the reason the number is where it is comes from the
+    // envelope's own distribution rather than from this recording: a Rayleigh
+    // envelope shows about 10 dB between its upper and lower deciles whether
+    // there is keying under it or not, so a key-down / key-up power ratio near
+    // that has measured the noise and not a transmission.
+    // Five of the 27 spans that answered when this gate alone was disabled —
+    // 25 of them gated noise, 2 Rayleigh-faded, none white, pink or impulsive.
+    const seeds = [['bursty', 1008, 3], ['bursty', 1021, 3], ['bursty', 1053, 3], ['bursty', 1042, 6], ['faded', 1010, 6]];
+    const answered = [];
+    for (const [name, seed, secs] of seeds) {
+      const x = COLOURS[name](secs * SR, { seed });
+      const off = decodeCw(x, SR, { minKeyingSnrDb: -99 });
+      if (off.ok) answered.push(`${name} ${secs}s ${seed}: "${off.text}" at ${off.keyingSnrDb.toFixed(1)} dB, scatter ${off.runScatter.toFixed(3)}`);
+      const on = decodeCw(x, SR);
+      assert.equal(on.ok, false, `${name} ${secs}s seed ${seed} decoded as "${on.text}"`);
+    }
+    assert.equal(answered.length, seeds.length,
+      `with the gate off every one of these seeds must come back as text, or the gate pins nothing: ${answered.join(' | ')}`);
+    const said = decodeCw(COLOURS.bursty(3 * SR, { seed: 1008 }), SR).reason;
+    assert.ok(/threshold split of a noise envelope/.test(said), said);
+
+    // And what it costs, stated rather than hoped for. Over 373 spans that
+    // decoded exactly across three messages, three speeds, +20 dB down to -8 dB
+    // and three element jitters, the contrast ran 10.9 dB at worst with a
+    // median of 14.9; the bar at 11.5 dB costs 4 of those 373, all of them
+    // 40%-jittered fists at -4 dB and below. Both ends are pinned here.
+    const msg = 'PARIS ABC 123 DE VVV';
+    const weak = decodeCw(renderCw(msg, { wpm: 20, sampleRate: SR, toneHz: 700, snrDb: -4, seed: 4 }).samples, SR);
+    assert.ok(weak.ok && weak.text === msg, `a clean signal at -4 dB must still read: ${weak.reason}`);
+    assert.ok(weak.keyingSnrDb > 11.5,
+      `and its contrast must clear the bar: ${weak.keyingSnrDb.toFixed(1)} dB`);
+    const fist = decodeCw(renderCw('CQ CQ DE W1AW K', { wpm: 18, sampleRate: SR, toneHz: 700, ditJitter: 0.4, seed: 3 }).samples, SR);
+    assert.ok(fist.ok && fist.text === 'CQ CQ DE W1AW K', `a 40% fist must still read: ${fist.reason}`);
+    assert.ok(fist.runScatter > 0.12 && fist.keyingSnrDb > 20,
+      `it survives on contrast, not on tightness: scatter ${fist.runScatter.toFixed(3)} at ${fist.keyingSnrDb.toFixed(1)} dB`);
   },
 
   // -------------------------------------------------------------- confidence
@@ -637,6 +1003,89 @@ export const cases = [
       assert.ok(r.wpmCi[0] < r.wpm && r.wpm < r.wpmCi[1], `${name} speed outside its own interval`);
     }
   },
+
+  async function theUnitsIntervalCoversTheUnitThatWasActuallySent() {
+    // Passing a split-half test is not the same as covering. The split-half
+    // test asks whether the two halves of the span agree with each other, and
+    // two halves of the same biased measurement agree perfectly. What settles
+    // an interval is whether it contains the truth, and here the truth is known
+    // by construction: 1.2 s / wpm, by the definition of PARIS.
+    //
+    // Measured over this 30-span grid before the interval was changed: it
+    // covered 13. The error against the rendered unit ran to 0.0240 in log
+    // units — a 2.4% bias at 28 wpm and 0 dB — while the fit's own standard
+    // error ran 0.0003 to 0.0083, thirty times too small to reach it. What was
+    // missing is that the answer depends on which filter the sweep chose, and
+    // the sweep already measures that: every bandwidth that fitted Morse-shaped
+    // timing is a defensible reading of the same span, and the scatter of their
+    // units is what the choice is worth. With 1.25 times it in the interval,
+    // coverage is 30 of 30 at a median width of x1.07 and a worst of x1.11.
+    let covered = 0, tested = 0, worst = 0;
+    const missed = [];
+    for (const wpm of [12, 20, 28]) {
+      for (const snrDb of [null, 20, 10, 6, 0]) {
+        for (const seed of [1, 2]) {
+          const s = renderCw('PARIS ABC 123 DE VVV TEST', { wpm, sampleRate: SR, toneHz: 700, snrDb, seed });
+          const r = decodeCw(s.samples, SR);
+          assert.ok(r.ok, `${wpm} wpm at ${snrDb} dB refused: ${r.reason}`);
+          tested++;
+          const truth = 1200 / wpm;
+          const [lo, hi] = r.ditMsCi;
+          worst = Math.max(worst, hi / lo);
+          if (truth >= lo && truth <= hi) { covered++; continue; }
+          missed.push(`${wpm} wpm ${snrDb} dB seed ${seed}: ${truth.toFixed(2)} outside [${lo.toFixed(2)}, ${hi.toFixed(2)}]`);
+        }
+      }
+    }
+    assert.equal(tested, 30, `the grid should be 30 spans, was ${tested}`);
+    assert.ok(covered >= 27, `a 95% interval covered ${covered} of ${tested}: ${missed.join(' | ')}`);
+    // An interval wide enough to cover everything by being useless is the other
+    // failure. A 30 wpm signal is 40 ms a unit; x1.11 is +-2 ms.
+    assert.ok(worst < 1.15, `the widest interval was x${worst.toFixed(3)}`);
+    // And the reader is told which of the four candidate errors it rests on.
+    const r = decodeCw(renderCw('PARIS ABC 123 DE VVV TEST', { wpm: 20, sampleRate: SR, toneHz: 700 }).samples, SR);
+    assert.equal(r.splitHalf.ditSigmaFrom, 'filter choice',
+      `a clean machine-keyed span should rest on the filter choice, not on ${r.splitHalf.ditSigmaFrom}`);
+    assert.ok(r.splitHalf.ditSigmaLog > r.splitHalf.ditFitSigmaLog,
+      'and the fit\'s own error bar should be the smaller of the two');
+    // Turning that term off puts the coverage back where it was, which is what
+    // pins it: the same clean span then reports an interval that excludes 60 ms.
+    const shaped = r.filterSweep.filter((q) => q.shaped && q.ditMs);
+    assert.ok(shaped.length > 1, `only ${shaped.length} bandwidths fitted Morse-shaped timing`);
+    const spread = Math.max(...shaped.map((q) => q.ditMs)) / Math.min(...shaped.map((q) => q.ditMs));
+    assert.ok(spread > 1.02, `the bandwidths' units spread only x${spread.toFixed(4)}, so the term is doing nothing`);
+  },
+
+  async function theSplitHalfWideningIsWhatItSaysItIs() {
+    // The widening inside the unit estimate, pinned. A sender who changes speed
+    // half way through is one measurement of two different things, and the two
+    // halves then disagree by far more than the fit's own error bar — which is
+    // exactly the case the split-half test exists for and the case no test
+    // covered. Rendered here as 20 wpm followed by 16 wpm, back to back.
+    const a = renderCw('PARIS ABC DE VVV', { wpm: 20, sampleRate: SR, toneHz: 700, tailSec: 0.05 });
+    const b = renderCw('PARIS ABC DE VVV', { wpm: 16, sampleRate: SR, toneHz: 700, leadSec: 0.05 });
+    const x = new Float32Array(a.samples.length + b.samples.length);
+    x.set(a.samples, 0);
+    x.set(b.samples, a.samples.length);
+    const r = decodeCw(x, SR, { maxSpaceClassExcessSd: 99, fadeDoubtDepthDb: 999, minKeyingSnrDb: -99 });
+    assert.equal(r.splitHalf.tested, true, 'the span must be long enough to split');
+    // The two halves must actually measure different units, or this pins nothing.
+    const ratio = r.splitHalf.ditMsSecond / r.splitHalf.ditMsFirst;
+    assert.ok(ratio > 1.1, `the halves measured ${r.splitHalf.ditMsFirst.toFixed(1)} and `
+      + `${r.splitHalf.ditMsSecond.toFixed(1)} ms, a ratio of ${ratio.toFixed(3)}`);
+    assert.equal(r.splitHalf.ditWidened, true, 'and the interval must say it was widened');
+    assert.equal(r.splitHalf.ditSigmaFrom, 'split-half',
+      `the published sigma should come from the split-half test, not from ${r.splitHalf.ditSigmaFrom}`);
+    assert.ok(r.splitHalf.ditSplitSigmaLog > r.splitHalf.ditFitSigmaLog * 5,
+      `the split-half sigma ${r.splitHalf.ditSplitSigmaLog.toFixed(4)} should dwarf the fit's `
+      + `${r.splitHalf.ditFitSigmaLog.toFixed(4)}`);
+    // And the interval must be the wider one: both halves inside it.
+    const [lo, hi] = r.ditMsCi;
+    assert.ok(r.splitHalf.ditMsFirst >= lo && r.splitHalf.ditMsSecond <= hi,
+      `[${lo.toFixed(1)}, ${hi.toFixed(1)}] does not contain both halves`);
+    assert.ok(r.warnings.some((w) => /further apart than the fit's own error bar/.test(w)),
+      `the widening must be reported: ${r.warnings.join(' | ')}`);
+  },
   // ------------------------------------------- selcall: is it that scheme at all
 
   async function measuresEachTonesOwnFrequency() {
@@ -698,7 +1147,7 @@ export const cases = [
 
     // Without the fit test — which is the behaviour before it existed — this is
     // a clean six-digit ZVEI-1 call.
-    const ungated = detectSelcall(x, SR, { set: 'ZVEI1', maxToneResidual: 1 });
+    const ungated = detectSelcall(x, SR, { set: 'ZVEI1', maxToneResidual: 1, maxToneTolerance: 1 });
     assert.equal(ungated.sequences.join(''), '123456', 'the old behaviour is supposed to accept this');
 
     const r = detectSelcall(x, SR, { set: 'ZVEI1' });
@@ -782,6 +1231,104 @@ export const cases = [
         }
       }
     }
+  },
+
+  async function theToneFitToleranceCannotBeOpenedByADriftingTone() {
+    // The guard that widens the scheme-fit tolerance to four times the
+    // measurement's own repeatability had no test, and it was the guard that
+    // let an impostor through. Its input was half the disagreement between the
+    // first and second halves of each tone, which is the error on the whole
+    // only if the tone is at ONE frequency. A tone that sweeps while it sounds
+    // disagrees with itself for a reason that is not noise, and the widening
+    // then opens the acceptance band by a factor of four and swallows the very
+    // thing the band exists to catch.
+    //
+    // Constructed here: the six-tone impostor set from the case above — each
+    // tone inside ZVEI-1's per-tone tolerance of an entry but off in
+    // alternating directions, which one transmitter reading one table cannot be
+    // — with each tone additionally swept +-0.8% across its own 100 ms. That is
+    // 12 Hz on a 1500 Hz tone, four hundred times the drift of any real
+    // transmitter over a tenth of a second.
+    const t = SELCALL_SETS.ZVEI1.tones;
+    const nominal = [t[1], t[2], t[3], t[4], t[5], t[6]];
+    const impostor = nominal.map((v, i) => v * (i % 2 ? 0.992 : 1.008));
+    const x = renderDrifting(impostor, { driftFraction: 0.008 });
+
+    // With the halves rule and no ceiling — which is what was there — this is a
+    // clean six-digit ZVEI-1 call.
+    const old = detectSelcall(x, SR, { set: 'ZVEI1', maxToneTolerance: 1, maxToneDrift: 99, maxToneResidual: 0.004 });
+    // The old sigma is reconstructed from the same tone measurements, so the
+    // control is the arithmetic that was there rather than a claim about it.
+    const b0 = old.bursts.find((b) => b.tones.length >= 3);
+    assert.ok(b0, 'the impostor must at least form a burst');
+    const oldSigma = b0.tones.map((tone) => Math.abs(tone.driftFraction) / 2).sort((p, q) => p - q)[b0.tones.length >> 1];
+    assert.ok(4 * oldSigma > b0.fit.maxResidual,
+      `the old half-window rule must have opened the band past the residual: 4 x ${(oldSigma * 100).toFixed(3)}% `
+      + `against ${(b0.fit.maxResidual * 100).toFixed(3)}%`);
+
+    // Measured in thirds instead, the drift comes out as drift and the scatter
+    // is what is left. The band stays at its stated floor and refuses.
+    const r = detectSelcall(x, SR, { set: 'ZVEI1' });
+    assert.equal(r.calls.length, 0, `reported ${JSON.stringify(r.sequences)}`);
+    const b = r.bursts.find((q) => q.tones.length >= 3);
+    assert.ok(b.fit.sigmaFraction * 4 < 0.004,
+      `the trend-removed scatter still opens the band: 4 x ${(b.fit.sigmaFraction * 100).toFixed(4)}%`);
+    assert.ok(Math.abs(b.fit.tolerance - 0.004) < 1e-9,
+      `the tolerance should be the stated floor, was ${(b.fit.tolerance * 100).toFixed(3)}%`);
+    assert.equal(b.fitsScheme, false, `residual ${(b.fit.maxResidual * 100).toFixed(3)}% inside the band`);
+
+    // The drift is reported as its own measurement and refuses on its own, so a
+    // set that IS the scheme but is drifting is not silently accepted either.
+    const straight = renderDrifting(nominal, { driftFraction: 0.008 });
+    const drifting = detectSelcall(straight, SR, { set: 'ZVEI1' });
+    const db = drifting.bursts.find((q) => q.tones.length >= 3);
+    assert.ok(db.fitsScheme, 'the frequencies themselves are ZVEI-1 here');
+    assert.equal(db.steady, false, `drift measured ${(db.fit.driftFraction * 100).toFixed(3)}%`);
+    assert.equal(drifting.calls.length, 0, `reported ${JSON.stringify(drifting.sequences)}`);
+    assert.ok(drifting.warnings.some((w) => /drift/.test(w)), drifting.warnings.join(' | '));
+    // With the drift gate off the same span is a call, which is what pins it.
+    assert.equal(detectSelcall(straight, SR, { set: 'ZVEI1', maxToneDrift: 99 }).sequences.join(''), '123456');
+
+    // And the ceiling on the widening, pinned on its own: a chirp across the
+    // whole selcall band disagrees with itself by a percent or more, and
+    // without a ceiling the tolerance it grants itself is measured at 3.8-4.7%,
+    // which is wider than the gaps between the table entries themselves.
+    const swept = chirp(900, 2300, 3);
+    const capped = detectSelcall(swept, SR, { set: 'CCIR1' });
+    for (const q of capped.bursts) {
+      assert.ok(q.fit.tolerance <= 0.012 + 1e-9,
+        `a chirp granted itself a tolerance of ${(q.fit.tolerance * 100).toFixed(2)}%`);
+    }
+    assert.equal(capped.calls.length, 0, `a chirp was read as ${JSON.stringify(capped.sequences)}`);
+  },
+
+  async function theToneGatesCostAGenuineSequenceNothing() {
+    // The other half of every gate above: what it costs. Measured over both
+    // sets x six signal-to-noise ratios from noiseless to +6 dB x three tone
+    // lengths x three seeds — 108 spans — the ceiling and the drift gate change
+    // nothing at all: 82 of 108 read exactly with them on and 82 with them off,
+    // the 26 that do not being CCIR-1 tones sent at half their nominal length
+    // (under the duration gate) and the +6 dB spans. The worst median scatter
+    // any genuine burst reported is 0.044%, so four times it never reaches the
+    // 0.4% floor, and the worst median drift is 0.145% against a limit of 0.4%.
+    let read = 0, spans = 0, worstDrift = 0, worstSigma = 0;
+    for (const set of ['CCIR1', 'ZVEI1']) {
+      for (const snrDb of [null, 20, 12, 9]) {
+        for (const seed of [1, 3]) {
+          const s = renderSelcall('120079', { set, sampleRate: SR, snrDb, seed });
+          const r = detectSelcall(s.samples, SR, { set });
+          spans++;
+          if (r.sequences.join('') === '120079') read++;
+          for (const b of r.calls) {
+            worstSigma = Math.max(worstSigma, b.fit.sigmaFraction);
+            worstDrift = Math.max(worstDrift, b.fit.driftFraction);
+          }
+        }
+      }
+    }
+    assert.equal(read, spans, `only ${read} of ${spans} genuine sequences were read`);
+    assert.ok(4 * worstSigma < 0.004, `a genuine burst widened its own band: 4 x ${(worstSigma * 100).toFixed(4)}%`);
+    assert.ok(worstDrift < 0.004, `a genuine burst drifted ${(worstDrift * 100).toFixed(4)}%`);
   },
 
   // ------------------------------------------------ the two unpinned DTMF gates

@@ -27,8 +27,41 @@ const clock = (s) => {
   return m + ':' + (s - m * 60).toFixed(1).padStart(4, '0');
 };
 
+/** Wrap prose to a width, so a long method string does not run off the panel. */
+export function wrap(text, width) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    if (line && line.length + 1 + w.length > width) { lines.push(line); line = w; }
+    else line = line ? line + ' ' + w : w;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/**
+ * The measured quantities, in the order a signals analyst writes them down.
+ * `bandwidth` nests two of them because the two definitions disagree on
+ * carrier-dominant emissions and the module says which to believe.
+ */
+export function quantities(m) {
+  const rows = [
+    ['floor', m.noiseFloor],
+    ['SNR', m.snr],
+    ['centre', m.centre],
+    ['offset', m.carrierOffset],
+    ['bandwidth', m.bandwidth && m.bandwidth.xdb],
+    ['99% power', m.bandwidth && m.bandwidth.occupied99],
+    ['drift', m.drift],
+    ['symbol rate', m.symbolRate],
+    ['FSK shift', m.fskShift],
+  ];
+  return rows.filter(([, q]) => q && typeof q === 'object');
+}
+
 /** Everything the panel prints, as plain data, so it can be tested without a DOM. */
-export function reportLines(state) {
+export function reportLines(state, { methods = true } = {}) {
   const out = [];
   const { source, region, measured, classified, decodes, tdoa, detections } = state;
   out.push('YELLOWJACKET · SIGNAL / SIGINT');
@@ -45,29 +78,43 @@ export function reportLines(state) {
   }
   if (measured) {
     out.push('measured :');
-    const m = measured;
-    if (m.centre) out.push(`   centre        ${fmt(m.centre.hz, 2)} Hz  ± ${fmt(m.centre.uncertaintyHz, 2)}   (${m.centre.method})`);
-    if (m.snr) out.push(`   SNR           ${fmt(m.snr.db, 1)} dB in ${fmt(m.snr.bandwidthHz, 0)} Hz`);
-    if (m.bandwidth) {
-      out.push(`   bandwidth     ${fmt(m.bandwidth.xdbHz, 1)} Hz at −26 dB` +
-        (m.bandwidth.occupied99Hz != null ? `,  ${fmt(m.bandwidth.occupied99Hz, 1)} Hz by 99% power` : ''));
-      if (m.bandwidth.reason) out.push(`                 ${m.bandwidth.reason}`);
+    // Every quantity this module returns has the same shape — a value with a
+    // unit and an uncertainty and the method that produced it, or a null value
+    // and the reason there is not one. Printing that shape rather than named
+    // fields means a new measurement appears here without this code changing,
+    // and a refusal prints its reason instead of an em dash.
+    for (const [label, q] of quantities(measured)) {
+      if (!q) continue;
+      if (q.value == null) {
+        out.push(`   ${label.padEnd(14)}not established`);
+        if (q.reason) for (const l of wrap(q.reason, 58).slice(0, methods ? 99 : 2)) out.push('                 ' + l);
+        continue;
+      }
+      const unc = Number.isFinite(q.uncertainty) ? ' ± ' + fmt(q.uncertainty, q.uncertainty < 1 ? 3 : 1) : '';
+      out.push(`   ${label.padEnd(14)}${fmt(q.value, Math.abs(q.value) < 10 ? 3 : 2)} ${q.unit || ''}${unc}`);
+      // On screen one line of provenance is orientation; in the copied report
+      // the whole of it is the point, because it is what makes the number checkable.
+      if (q.method) for (const l of wrap(q.method, 58).slice(0, methods ? 99 : 1)) out.push('                 ' + l);
     }
-    if (m.drift) out.push(`   drift         ${fmt(m.drift.hzPerSec, 3)} Hz/s ± ${fmt(m.drift.standardError, 3)}`);
-    out.push(`   symbol rate   ${m.symbolRate && m.symbolRate.baud != null
-      ? fmt(m.symbolRate.baud, 3) + ' Bd ± ' + fmt(m.symbolRate.uncertainty, 3) + '  (' + (m.symbolRate.confidence?.level || '?') + ')'
-      : 'not established — ' + (m.symbolRate?.reason || 'no reason given')}`);
-    out.push(`   FSK shift     ${m.fskShift && m.fskShift.hz != null
-      ? fmt(m.fskShift.hz, 1) + ' Hz ± ' + fmt(m.fskShift.uncertainty, 1)
-      : 'not established — ' + (m.fskShift?.reason || 'no reason given')}`);
+    if (measured.detection && measured.detection.reason) {
+      out.push('   detection    ' + measured.detection.reason);
+    }
+    if (measured.designator && measured.designator.designator) {
+      out.push('   designator  ' + measured.designator.designator);
+      for (const a of measured.designator.assumptions || []) out.push('                 assumes ' + a);
+    }
     out.push('');
   }
   if (classified) {
     out.push('classified:');
     for (const h of (classified.ranked || []).slice(0, 4)) {
       out.push(`   ${(h.label || h.id || '?').padEnd(22)} ${fmt(h.score, 2)}`);
-      for (const e of (h.for || []).slice(0, 3)) out.push(`      for     ${e}`);
-      for (const e of (h.against || []).slice(0, 2)) out.push(`      against ${e}`);
+      // Evidence arrives as { weight, claim }, and the weight is worth showing:
+      // a hypothesis carried by three weight-1 tests is not the same as one
+      // carried by a single weight-3 test.
+      const claim = (e) => (e && typeof e === 'object' ? `[${e.weight}] ${e.claim}` : String(e));
+      for (const e of (h.for || []).slice(0, 3)) out.push('      for     ' + claim(e));
+      for (const e of (h.against || []).slice(0, 2)) out.push('      against ' + claim(e));
     }
     if (classified.verdict) out.push(`   verdict  ${classified.verdict}`);
     out.push('');
@@ -138,7 +185,7 @@ export function initSigintController(ctx) {
   const pre = el('pre', 'yj-sigint-report');
   pre.textContent = '';
 
-  const redraw = () => { pre.textContent = reportLines(state).join('\n'); };
+  const redraw = () => { pre.textContent = reportLines(state, { methods: false }).join('\n'); };
 
   // Most of this panel characterises a transmission, for which two minutes is
   // ample. The two-station measurement counts whole minutes, so it needs the

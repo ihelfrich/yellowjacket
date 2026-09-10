@@ -368,6 +368,11 @@ export function detectSelcall(x, sampleRate, opts = {}) {
     // +3% and down to +12 dB of noise; the value here is set six times clear of
     // that, and a six-tone set that is not this scheme measures 1.56%.
     maxToneResidual: 0.004,
+    // The ceiling on that self-calibration, and the drift a tone may show
+    // across its own duration and still be a table entry. Both are numbers so a
+    // test can turn each off and show what comes back through the gap.
+    maxToneTolerance: 0.012,
+    maxToneDrift: 0.004,
     ...opts,
   };
   const symbols = Object.keys(set.tones);
@@ -418,25 +423,40 @@ export function detectSelcall(x, sampleRate, opts = {}) {
     const a0 = Math.round(startSec * sampleRate);
     const a1 = Math.min(x.length, Math.round(endSec * sampleRate));
     const meas = measureToneHz(x, sampleRate, a0, a1 - a0, marks[i].hz);
-    // What that measurement is worth, measured rather than assumed: the same
-    // frequency taken from the first half of the tone and from the second. Two
-    // independent estimates of one quantity differ by sqrt(2) times each one's
-    // own error, and each half-length estimate is worth sqrt(2) less than the
-    // whole, so half the disagreement estimates the error on the whole. The fit
-    // tolerance below is never allowed under this, so a short or noisy burst
-    // widens its own acceptance instead of being refused for being hard to
-    // measure. Measured on rendered CCIR-1 and ZVEI-1 down to +9 dB, the median
-    // tone gives 0.0013-0.018% and the worst single tone 0.23%.
-    const mid = (a0 + a1) >> 1;
-    const fA = measureToneHz(x, sampleRate, a0, mid - a0, marks[i].hz).hz;
-    const fB = measureToneHz(x, sampleRate, mid, a1 - mid, marks[i].hz).hz;
+    // What that measurement is worth, measured rather than assumed — and, since
+    // this number is what widens the scheme-fit tolerance below, measured in a
+    // way that cannot be fooled by a tone that is not at one frequency at all.
+    //
+    // The first version of this took the frequency from the first half of the
+    // tone and from the second and called half their disagreement the error on
+    // the whole. That is the right arithmetic for random scatter and the wrong
+    // arithmetic for DRIFT, and the difference is not academic: measured on the
+    // six-tone impostor set below with each tone swept +-0.8% inside its own
+    // slot, the halves disagreed by 1.6%, the tolerance opened from the stated
+    // 0.4% to 1.5%, and a set that is not ZVEI-1 came back as the ZVEI-1 call
+    // "123456" with the scheme-fit gate reporting that it fitted.
+    //
+    // So the tone is measured in THIRDS and the two are separated. A straight
+    // line through three points has a slope and a curvature; the slope is the
+    // drift, which is reported and gated on its own, and the curvature is what
+    // is left, which is the scatter. Halving it puts it on the same footing as
+    // the half-window rule it replaces: measured on rendered CCIR-1 and ZVEI-1
+    // sequences down to +9 dB the median tone gives 0.0009-0.021% and the worst
+    // single tone 0.19%, which is what the old rule gave on the same signals,
+    // while the drifting impostor now reports 0.03% of scatter and 1.6% of
+    // drift instead of 0.8% of scatter.
+    const t1 = a0 + Math.round((a1 - a0) / 3), t2 = a0 + Math.round(2 * (a1 - a0) / 3);
+    const f1 = measureToneHz(x, sampleRate, a0, t1 - a0, marks[i].hz).hz;
+    const f2 = measureToneHz(x, sampleRate, t1, t2 - t1, marks[i].hz).hz;
+    const f3 = measureToneHz(x, sampleRate, t2, a1 - t2, marks[i].hz).hz;
     tones.push({
       symbol: marks[i].symbol,
       hz: meas.hz,
       nominalHz: marks[i].hz,
       offsetHz: meas.hz - marks[i].hz,
       offsetFraction: meas.hz / marks[i].hz - 1,
-      sigmaFraction: Math.abs(fA / fB - 1) / 2,
+      sigmaFraction: Math.abs(f2 - 0.5 * (f1 + f3)) / Math.max(meas.hz, 1e-9) / 2,
+      driftFraction: (f3 - f1) / Math.max(meas.hz, 1e-9),
       startSec, endSec,
       dominanceDb: mean('dom'), fraction: mean('fraction'), harmonicDb: mean('harmonicDb'),
       levelDb: mean('levelDb'), frames: run.length,
@@ -493,10 +513,32 @@ export function detectSelcall(x, sampleRate, opts = {}) {
     // band tighter than the measurement's own scatter refuses real signals for
     // being noisy, which is a different lie from the one this gate exists to
     // stop but a lie all the same.
+    //
+    // And a ceiling on top, because the widening is a licence to accept and a
+    // licence with no limit is not a gate. Past `maxToneTolerance` the tones
+    // are not measured well enough to place them in any table, and the honest
+    // answer is that this burst is not identifiable — not that everything fits.
+    // Measured on rendered CCIR-1 and ZVEI-1 down to +9 dB the widening never
+    // reaches even the stated floor, so the ceiling costs those nothing; it is
+    // three times the floor, so a genuinely hard-to-measure burst still gets
+    // most of the room the self-calibration was added to give it.
     b.fit.sigmaFraction = medianOf(b.tones.map((t) => t.sigmaFraction));
-    b.fit.tolerance = Math.max(g.maxToneResidual, 4 * b.fit.sigmaFraction);
+    b.fit.tolerance = Math.min(g.maxToneTolerance, Math.max(g.maxToneResidual, 4 * b.fit.sigmaFraction));
     b.fitsScheme = b.fit.maxResidual <= b.fit.tolerance;
-    b.isSequence = b.contiguous && b.tones.length >= g.minTones && b.fitsScheme;
+    // A selcall tone is one frequency held for its whole duration. A tone that
+    // sweeps while it sounds is some other signal — an MFSK symbol, a heterodyne
+    // walking through the band, a chirp — and however close its average lands
+    // to a table entry it did not come from that table. Measured on rendered
+    // CCIR-1 and ZVEI-1, with and without noise down to +9 dB and at both
+    // nominal and 70 ms tone lengths, a burst's median tone drifts at most
+    // 0.14% across itself; a real transmitter drifting a hertz a second would
+    // show 0.007% on a 100 ms tone. The swept tones and chirps that defeated
+    // the tolerance above drift 1.6-2.5%. It is the median and not the worst
+    // tone because one tone caught by one crash reads 1.3% on a genuine
+    // sequence at +9 dB.
+    b.fit.driftFraction = medianOf(b.tones.map((t) => Math.abs(t.driftFraction)));
+    b.steady = b.fit.driftFraction <= g.maxToneDrift;
+    b.isSequence = b.contiguous && b.tones.length >= g.minTones && b.fitsScheme && b.steady;
   }
   const calls = bursts.filter((b) => b.isSequence);
   const warnings = [];
@@ -507,6 +549,12 @@ export function detectSelcall(x, sampleRate, opts = {}) {
   }
   const short = bursts.filter((b) => b.contiguous && b.tones.length < g.minTones);
   if (short.length) warnings.push(`${short.length} tone group(s) shorter than ${g.minTones} tones, too short to be a call`);
+  const drifting = bursts.filter((b) => b.contiguous && b.tones.length >= g.minTones && b.fitsScheme && !b.steady);
+  for (const b of drifting) {
+    warnings.push(`${b.tones.length} contiguous tones drift ${(b.fit.driftFraction * 100).toFixed(2)}% across their own `
+      + `durations against a limit of ${(g.maxToneDrift * 100).toFixed(2)}% — a ${set.name} tone is one frequency held `
+      + 'for its whole length, so whatever this is, it is not reading that table');
+  }
   const misfit = bursts.filter((b) => b.contiguous && b.tones.length >= g.minTones && !b.fitsScheme);
   for (const b of misfit) {
     warnings.push(`${b.tones.length} contiguous tones are not ${set.name}: after allowing a common `
