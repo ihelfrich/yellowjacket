@@ -16,7 +16,7 @@ import { measure } from '../sigint/measure.js';
 import { designate } from '../sigint/designator.js';
 import { classifySegment } from '../sigint/classify.js';
 import { segment } from '../sigint/segment.js';
-import { decodeCw } from '../sigint/decode/cw.js';
+import { decodeCw, cutNumbers } from '../sigint/decode/cw.js';
 import { decodeRtty } from '../sigint/decode/rtty.js';
 import { identifySelcall } from '../sigint/decode/tones.js';
 import { arrivalDifference, WWV_WWVH } from '../sigint/tdoa.js';
@@ -249,6 +249,18 @@ export function initSigintController(ctx) {
     state.decodes.push({ name: 'MORSE', ok: !!(cw && cw.ok !== false && cw.text), text: cw && cw.text,
       reason: (cw && cw.reason) || 'nothing that keys like Morse',
       note: cw && cw.wpm ? `${cw.wpm.toFixed(1)} wpm` : null });
+    // Figure groups are sent as abbreviated numerals, so a stream of letters
+    // that fits that alphabet is almost certainly digits. Offered only when it
+    // fits, and the characters that do not are shown rather than smoothed away.
+    if (cw && cw.ok !== false && cw.chars) {
+      const cut = cutNumbers(cw.chars);
+      if (cut.ok) {
+        const odd = cut.unmapped.map((u) => `${u.pattern} x${u.count}`).join(', ');
+        state.decodes.push({ name: 'AS ABBREVIATED NUMERALS', ok: true, text: cut.text,
+          note: `${Math.round(cut.fit * 100)}% of the characters are cut numerals`
+            + (odd ? `; these are not: ${odd}` : '') });
+      }
+    }
     const rtty = decodeRtty(x, rate);
     state.decodes.push({ name: 'RTTY', ok: !!(rtty && rtty.ok && rtty.text), text: rtty && rtty.text,
       reason: (rtty && rtty.reason) || 'no teleprinter framing found' });

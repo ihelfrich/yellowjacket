@@ -115,3 +115,59 @@ A recording of the same pair from a known location. Everything above is
 internally consistent and bounded, and nothing in it has been checked against a
 receiver whose position was recorded. The 3,971 km is a measurement whose
 accuracy is unknown, not a measurement known to be accurate.
+
+---
+
+# 2026-09-10, later — what M08 is actually sending, and a guard I removed
+
+The SIGINT panel decoded the shelf's M08 recording (Cuban numbers in Morse,
+11435 kHz) as `DTTAA DTRUA NRIWN`, repeated verbatim five times. Letters, from a
+station that sends figures. This is what that turned out to be.
+
+## The keying is machine-perfect
+
+Every inter-character gap in that recording measures 237 ms and every word gap
+553 ms, against a 79 ms unit — 3.000 and 6.986 units, with standard deviations
+of **0.028 and 0.004 units**. Boundary confidence is 1.000 at every character.
+There is no timing error to fix, because there is no timing error.
+
+174 elements across 80 characters is **2.2 elements per character**, in groups
+of five. A digit in Morse is five elements. So the transmission is not sending
+digits — it is sending something shorter, five symbols to a group.
+
+## Abbreviated numerals
+
+Operators sending figure groups cut them: 0 to a single dah, 1 to A, 9 to N.
+Against that table, 64 of the 80 characters map, and the message reads
+
+```
+80011 80[R]21 9[R][I]39   ×5
+```
+
+`cutNumbers()` now offers that reading when it fits, and refuses when it does
+not — 'THE' contains two cut numerals and must not become a number. The fit
+fraction and the unmapped patterns are always returned, because the two that do
+not map here are the interesting part: `.-.` ten times and `..` six times, in
+fixed positions in a repeating group. Neither is a prefix of any digit's Morse,
+so they are not truncated numerals, and this note does not know what they are.
+
+## A correction, and a guard taken back out
+
+While chasing this I claimed the shelf's 1942 Signal Corps code test was
+decoding to 546 characters of garbage at a fabricated 110.8 wpm. It was not:
+`decodeCw` had already refused it, and the diagnostic script printed `r.text`
+without reading `r.ok`. The decoder was right and the reading was mine.
+
+The recording is worth a line anyway. Its audio is 18–45 Hz transfer rumble with
+no keyed tone in the band at all, and `findTone` still returns a 23 dB "tone" at
+1597 Hz, because its floor is the median across the band and a broad spectral
+hump clears that easily. A tone SNR is not evidence of keying.
+
+On the strength of the misreading I added a speed gate: refuse when the fitted
+unit implies fewer than 4 or more than 70 words per minute. It fires on 17 of
+100 noise spans across five colours — and disabling it changes **not one
+verdict**, because the gates downstream already refuse all 17. By the standard
+this session has been applying to everything else, that is not a guard. It is
+now a warning: it says "the fitted unit implies 110 words per minute", which is
+a better thing for a reader to see than a statement about gap-class scatter, and
+it decides nothing.

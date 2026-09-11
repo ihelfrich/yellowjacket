@@ -11,8 +11,7 @@ import {
   decodeCw, renderCw, morseToChar, charToMorse, CW_ALPHABET, CW_PROSIGNS,
   findTone, cwEnvelope, keyStates, runLengths, clusterTiming, mergeShort,
   squelchIncoherent, timeWeightedMedian, morseShaped, wpmFor, ditSecondsFor,
-  fadeTrack, elementConfidence,
-} from '../js/sigint/decode/cw.js';
+  fadeTrack, elementConfidence, CUT_NUMERALS, cutNumbers } from '../js/sigint/decode/cw.js';
 import {
   detectDtmf, renderDtmf, detectSelcall, renderSelcall, identifySelcall,
   renderVoiceLike, dtmfPair, measureToneHz, schemeFit,
@@ -1362,5 +1361,44 @@ export const cases = [
     assert.equal(loose.rejected.harmonic, 0);
     // And the gate must still cost a real digit nothing.
     assert.equal(detectDtmf(renderDtmf('*', { sampleRate: SR }).samples, SR).sequence, '*');
+  },
+  async function abbreviatedNumeralsAreReadAndTheFitIsReported() {
+    // The set, checked against itself: every value is a digit and every key is
+    // a distinct Morse pattern short enough to be worth cutting to.
+    const patterns = Object.keys(CUT_NUMERALS);
+    assert.equal(new Set(Object.values(CUT_NUMERALS)).size, 10, 'all ten digits, once each');
+    assert.equal(new Set(patterns).size, patterns.length);
+    assert.ok(patterns.every((p) => p.length <= 4), 'a cut numeral is shorter than the five it replaces');
+
+    // A figure group reads as digits.
+    const figures = '-..,-,-,.-,.-'.split(',').map((pattern) => ({ pattern, char: '?' }));
+    const read = cutNumbers(figures);
+    assert.equal(read.ok, true);
+    assert.equal(read.text, '80011');
+    assert.equal(read.fit, 1);
+
+    // Ordinary English does not, and must be refused rather than mangled into
+    // a number. 'THE' is -, ...., . — two of which are cut numerals, so this
+    // is exactly the case a fit threshold has to catch.
+    const english = ['-', '....', '.', '.-.', '.', '..-.', '---', '.-.', '.'].map((pattern) => ({ pattern, char: '?' }));
+    const bad = cutNumbers(english);
+    assert.equal(bad.ok, false);
+    assert.ok(bad.fit < 0.7, `fit ${bad.fit.toFixed(2)}`);
+    assert.match(bad.reason, /abbreviated numerals/);
+
+    // What does not map is always returned, counted, so a reader can see the
+    // shape of the disagreement instead of a smoothed answer.
+    const mixed = cutNumbers([...figures, { pattern: '.-.', char: 'R' }, { pattern: '.-.', char: 'R' }]);
+    assert.deepEqual(mixed.unmapped, [{ pattern: '.-.', count: 2 }]);
+    assert.match(mixed.text, /\[R\]/);
+    assert.equal(cutNumbers([]).ok, false);
+  },
+
+  async function aWordBreakSeparatesGroups() {
+    const chars = [
+      { pattern: '-..', char: 'D' }, { pattern: '-', char: 'T' },
+      { pattern: '.-', char: 'A', wordBreakBefore: true }, { pattern: '-.', char: 'N' },
+    ];
+    assert.equal(cutNumbers(chars).text, '80 19');
   },
 ];

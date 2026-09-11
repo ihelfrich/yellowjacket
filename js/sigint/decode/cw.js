@@ -61,6 +61,60 @@ export const CW_PROSIGNS = Object.freeze({
 const NON_ITU = new Set(['-.-.--', '..--.-', '...-..-']);
 
 /** PARIS: one dit is 1.2 s / wpm, by definition, at any speed. */
+/**
+ * Abbreviated numerals — "cut numbers". Every digit in Morse is five elements,
+ * which is slow, so operators sending figure groups shorten them to a prefix:
+ * 0 becomes a single dah, 1 becomes A, 9 becomes N. Military CW and numbers
+ * stations both do it, and a decoder that only knows letters reads a page of
+ * digits as nonsense.
+ *
+ * These are prefixes of the real thing, which is what makes the table checkable
+ * rather than folklore: `-..` is the first three elements of 8 (`---..`)... no,
+ * it is not, and that is worth saying plainly — the common set is conventional,
+ * not derived, and only some of it is prefix-truncation. It is the set in
+ * general use, and the fit fraction below is what decides whether a given
+ * transmission is using it.
+ */
+export const CUT_NUMERALS = Object.freeze({
+  '-': '0', '.-': '1', '..-': '2', '.--': '3', '...-': '4',
+  '.': '5', '-...': '6', '--.': '7', '-..': '8', '-.': '9',
+});
+
+/**
+ * Read a decoded character stream as abbreviated numerals, and say how well it
+ * fits. A run of ordinary English will fit badly and must not be read this way,
+ * so the reading is offered only above `minFit` and the unmapped patterns are
+ * always returned: on the shelf's M08 recording 64 of 80 characters (80%) are
+ * cut numerals and the other two patterns repeat in fixed positions, which is a
+ * fact about that transmission worth showing rather than smoothing over.
+ */
+export function cutNumbers(chars, { minFit = 0.7 } = {}) {
+  const list = Array.isArray(chars) ? chars.filter((c) => c && c.pattern) : [];
+  if (!list.length) return { ok: false, fit: 0, text: '', unmapped: [], reason: 'no characters to read' };
+  let mapped = 0;
+  const unmapped = new Map();
+  let text = '';
+  for (const c of list) {
+    const digit = CUT_NUMERALS[c.pattern];
+    if (c.wordBreakBefore && text) text += ' ';
+    if (digit) { mapped++; text += digit; }
+    else {
+      unmapped.set(c.pattern, (unmapped.get(c.pattern) || 0) + 1);
+      text += '[' + (c.char || '?') + ']';
+    }
+  }
+  const fit = mapped / list.length;
+  return {
+    ok: fit >= minFit,
+    fit,
+    text,
+    unmapped: [...unmapped.entries()].map(([pattern, count]) => ({ pattern, count }))
+      .sort((a, b) => b.count - a.count),
+    reason: fit >= minFit ? undefined
+      : `only ${(fit * 100).toFixed(0)}% of the characters are abbreviated numerals, so this is not a figure group`,
+  };
+}
+
 export const ditSecondsFor = (wpm) => 1.2 / wpm;
 export const wpmFor = (ditSeconds) => 1.2 / ditSeconds;
 
@@ -916,6 +970,14 @@ export function decodeCw(x, sampleRate, opts = {}) {
     // The contrast below which key-down and key-up are the same noise. See
     // `atTheNoiseSplit` below.
     minKeyingSnrDb = 11.5,
+    // Absolute speed. This is a WARNING and deliberately not a gate: over 100
+    // noise spans across five colours it fires 17 times, and disabling it
+    // changes not one verdict, because the gates below already refuse all 17.
+    // It earns its place by saying WHY — "the fitted unit implies 110 words per
+    // minute" is a better thing for a reader to see than a statement about
+    // gap-class scatter. A guard that changes no outcome is not a guard.
+    minWpm = 4,
+    maxWpm = 70,
     fadeOpts = {},
   } = opts;
   const warnings = [];
@@ -1331,6 +1393,13 @@ export function decodeCw(x, sampleRate, opts = {}) {
   // seeds that survived every other gate it ran 11.4 dB at best. The bar sits
   // between them: it refuses all 27 and costs 4 of the 373, which are 40%-
   // jittered fists at -4 dB and below.
+  const impliedWpm = wpmFor(timing.ditSec);
+  const speedImplausible = timingPlausible && Number.isFinite(impliedWpm)
+    && (impliedWpm < minWpm || impliedWpm > maxWpm);
+  if (speedImplausible) {
+    warnings.push(`the fitted unit implies ${impliedWpm.toFixed(1)} words per minute, which is outside `
+      + `the ${minWpm} to ${maxWpm} anything sends at, so the runs being measured are not elements`);
+  }
   const atTheNoiseSplit = timingPlausible && Number.isFinite(keyingSnrDb) && keyingSnrDb < minKeyingSnrDb;
   if (atTheNoiseSplit) {
     warnings.push(`the runs called key-down hold only ${keyingSnrDb.toFixed(1)} dB more power than the runs called `
