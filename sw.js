@@ -3,7 +3,7 @@
 // Cross-origin requests (CDN transformers.js, HF model shards) are never intercepted;
 // they manage their own caching. Scope-relative URLs keep this working under
 // the /yellowjacket/ GitHub Pages subpath.
-const VERSION = 'yj-v82';
+const VERSION = 'yj-v83';
 
 const PRECACHE = [
   'js/app/persist.js',
@@ -58,6 +58,10 @@ const PRECACHE = [
   'js/app/found-row.js',
   'js/app/score-panel.js',
   'js/app/sigint-controller.js',
+  'js/sigint/runner.js',
+  // The worker is precached like the instrument one: a page that works
+  // offline must not lose its second thread the moment the network goes.
+  'workers/sigint-worker.js',
   'js/dsp/analytic.js',
   'js/sigint/measure.js',
   'js/sigint/designator.js',

@@ -12,14 +12,9 @@
 // behind this panel has a refusal path, and the panel prints refusals as
 // prominently as answers — a bench that reads confident traffic out of hiss is
 // worse than one that reads nothing.
-import { measure } from '../sigint/measure.js';
 import { designate } from '../sigint/designator.js';
-import { classifySegment } from '../sigint/classify.js';
-import { segment } from '../sigint/segment.js';
-import { decodeCw, cutNumbers } from '../sigint/decode/cw.js';
-import { decodeRtty } from '../sigint/decode/rtty.js';
-import { identifySelcall } from '../sigint/decode/tones.js';
-import { arrivalDifference, WWV_WWVH } from '../sigint/tdoa.js';
+import { WWV_WWVH } from '../sigint/tdoa.js';
+import { sigintRunner } from '../sigint/runner.js';
 
 const fmt = (v, digits = 2) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(digits));
 const clock = (s) => {
@@ -204,75 +199,58 @@ export function initSigintController(ctx) {
     state.region = { from, to };
     const a = Math.max(0, Math.floor(from * buf.sampleRate));
     const b = Math.min(ch.length, Math.ceil(to * buf.sampleRate));
-    return { x: ch.subarray(a, b), rate: buf.sampleRate };
+    // A copy, not a subarray: the runner transfers the buffer to the worker,
+    // and a detached view of a live AudioBuffer channel would take the page's
+    // own audio with it.
+    return { x: ch.slice(a, b), rate: buf.sampleRate };
   }
 
-  async function run(name, fn, maxSeconds = 120) {
+  let running = false;
+  async function run(name, task, opts = {}, maxSeconds = 120) {
+    if (running) { line.textContent = 'ALREADY WORKING · ' + line.textContent; return; }
     const src = mono(maxSeconds);
     if (!src) return;
-    line.textContent = name + '…';
+    running = true;
+    for (const b of row.querySelectorAll('button')) b.disabled = true;
+    line.textContent = name + (sigintRunner.available ? ' (off the main thread)…' : '…');
     await new Promise((r) => setTimeout(r, 0));
     const t0 = Date.now();
     try {
-      await fn(src);
+      const result = await sigintRunner.run(task, src.x, src.rate, opts);
+      apply(task, result);
       line.textContent = name + ' · ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s';
     } catch (err) {
       const why = err && err.message ? err.message : String(err);
       line.textContent = name + ' FAULT · ' + why;
       if (statusFault) statusFault('SIGINT · ' + why);
+    } finally {
+      running = false;
+      for (const b of row.querySelectorAll('button')) b.disabled = false;
     }
     redraw();
   }
 
-  btnSurvey.addEventListener('click', () => run('SURVEY', ({ x, rate }) => {
-    const s = segment(x, rate);
-    state.detections = (s.emissions || s.detections || []).slice(0, 40);
-    status(`SIGINT · ${state.detections.length} emissions above the floor`);
-  }));
-
-  btnMeasure.addEventListener('click', () => run('MEASURE', ({ x, rate }) => {
-    state.measured = measure(x, rate);
-    if (state.classified && state.classified.verdict) {
-      try {
-        state.measured.designator = designate(state.classified.verdict, { measurement: state.measured });
-      } catch (_) { /* the designator refuses on its own terms; nothing to add */ }
+  function apply(task, result) {
+    if (task === 'segment') {
+      state.detections = (result.emissions || result.detections || []).slice(0, 40);
+      status(`SIGINT · ${state.detections.length} emissions above the floor`);
+    } else if (task === 'measure') {
+      state.measured = result;
+    } else if (task === 'classify') {
+      state.classified = result;
+    } else if (task === 'decode') {
+      state.decodes = result;
+    } else if (task === 'tdoa') {
+      state.tdoa = result;
+      if (result.ok) status(`SIGINT · ${result.deltaMs.toFixed(1)} ms between the two stations`);
     }
-  }));
+  }
 
-  btnClassify.addEventListener('click', () => run('CLASSIFY', ({ x, rate }) => {
-    state.classified = classifySegment(x, rate, null);
-  }));
-
-  btnDecode.addEventListener('click', () => run('DECODE', ({ x, rate }) => {
-    state.decodes = [];
-    const cw = decodeCw(x, rate);
-    state.decodes.push({ name: 'MORSE', ok: !!(cw && cw.ok !== false && cw.text), text: cw && cw.text,
-      reason: (cw && cw.reason) || 'nothing that keys like Morse',
-      note: cw && cw.wpm ? `${cw.wpm.toFixed(1)} wpm` : null });
-    // Figure groups are sent as abbreviated numerals, so a stream of letters
-    // that fits that alphabet is almost certainly digits. Offered only when it
-    // fits, and the characters that do not are shown rather than smoothed away.
-    if (cw && cw.ok !== false && cw.chars) {
-      const cut = cutNumbers(cw.chars);
-      if (cut.ok) {
-        const odd = cut.unmapped.map((u) => `${u.pattern} x${u.count}`).join(', ');
-        state.decodes.push({ name: 'AS ABBREVIATED NUMERALS', ok: true, text: cut.text,
-          note: `${Math.round(cut.fit * 100)}% of the characters are cut numerals`
-            + (odd ? `; these are not: ${odd}` : '') });
-      }
-    }
-    const rtty = decodeRtty(x, rate);
-    state.decodes.push({ name: 'RTTY', ok: !!(rtty && rtty.ok && rtty.text), text: rtty && rtty.text,
-      reason: (rtty && rtty.reason) || 'no teleprinter framing found' });
-    const sel = identifySelcall(x, rate);
-    state.decodes.push({ name: 'SELCALL', ok: !!(sel && sel.ok), text: sel && (sel.text || (sel.calls || []).join(' ')),
-      reason: (sel && sel.reason) || 'no selective-calling tones' });
-  }));
-
-  btnTwo.addEventListener('click', () => run('TWO STATIONS', ({ x, rate }) => {
-    state.tdoa = arrivalDifference(x, rate, WWV_WWVH);
-    if (state.tdoa.ok) status(`SIGINT · ${state.tdoa.deltaMs.toFixed(1)} ms between the two stations`);
-  }, 3600));
+  btnSurvey.addEventListener('click', () => run('SURVEY', 'segment'));
+  btnMeasure.addEventListener('click', () => run('MEASURE', 'measure'));
+  btnClassify.addEventListener('click', () => run('CLASSIFY', 'classify'));
+  btnDecode.addEventListener('click', () => run('DECODE', 'decode'));
+  btnTwo.addEventListener('click', () => run('TWO STATIONS', 'tdoa', { station: WWV_WWVH }, 3600));
 
   btnCopy.addEventListener('click', async () => {
     try {

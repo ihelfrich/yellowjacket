@@ -688,6 +688,7 @@ import { NAME as sigTdoaName, cases as sigTdoaCases } from './cases-sigint-tdoa.
 import { NAME as noiseColoursName, cases as noiseColoursCases } from './cases-noise-colours.mjs';
 import { NAME as refusalBudgetName, cases as refusalBudgetCases } from './cases-refusal-budget.mjs';
 import { NAME as sigPanelName, cases as sigPanelCases } from './cases-sigint-panel.mjs';
+import { NAME as sigRunnerName, cases as sigRunnerCases } from './cases-sigint-runner.mjs';
 
 function repairFixture() {
   const sr = 48000;
@@ -2739,8 +2740,11 @@ const renderCases = [
       .map((match) => match[1]);
     assert.deepEqual(hrefs(index), hrefs(generated),
       'index modulepreloads exactly match the generated dependency order');
+    // workers/ as well as js/: a module preloaded by the page must be in the
+    // precache wherever it lives, or the page loses it the moment the network
+    // does. The first worker to sit outside js/ found this regex too narrow.
     const precachedModules = new Set(
-      [...serviceWorker.matchAll(/['"](?:\.\/)?(js\/[^'"]+)['"]/g)]
+      [...serviceWorker.matchAll(/['"](?:\.\/)?((?:js|workers)\/[^'"]+)['"]/g)]
         .map((match) => match[1]),
     );
     for (const href of hrefs(generated)) {
@@ -6840,6 +6844,7 @@ const groups = [
   [noiseColoursName, noiseColoursCases],
   [refusalBudgetName, refusalBudgetCases],
   [sigPanelName, sigPanelCases],
+  [sigRunnerName, sigRunnerCases],
 ];
 
 for (const [name, cases] of groups) {

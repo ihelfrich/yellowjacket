@@ -1,0 +1,81 @@
+// SIGINT worker: measurement, segmentation, classification, decoding and the
+// two-station arrival difference, off the main thread. Measured on the shelf's
+// M08 recording at 85 s: MEASURE held the page for about twenty seconds and
+// DECODE for six and a half, with the spectrogram frozen the whole time.
+//
+// Pure modules only, and the same ones the in-place path calls, so the two
+// cannot disagree about an answer — only about which thread produced it.
+//
+// Protocol: { type: <task>, job, x, sampleRate, opts } in, one of
+// { type: 'done', job, result } or { type: 'error', job, message } out. The
+// sample buffer is transferred in and never comes back; a caller that still
+// needs it keeps its own copy.
+import { measure } from '../js/sigint/measure.js';
+import { segment } from '../js/sigint/segment.js';
+import { classifySegment } from '../js/sigint/classify.js';
+import { decodeCw, cutNumbers } from '../js/sigint/decode/cw.js';
+import { decodeRtty } from '../js/sigint/decode/rtty.js';
+import { identifySelcall } from '../js/sigint/decode/tones.js';
+import { arrivalDifference, WWV_WWVH } from '../js/sigint/tdoa.js';
+
+/**
+ * The jobs this worker knows. Each takes the samples, the rate and its options
+ * and returns something structured-cloneable — no functions, no typed arrays
+ * the caller expects to share.
+ */
+export const TASKS = {
+  measure: (x, rate, opts) => measure(x, rate, opts),
+  segment: (x, rate, opts) => segment(x, rate, opts),
+  classify: (x, rate, opts) => classifySegment(x, rate, opts.detection || null, opts),
+  tdoa: (x, rate, opts) => arrivalDifference(x, rate, opts.station || WWV_WWVH, opts),
+  decode: (x, rate, opts) => {
+    const out = [];
+    const cw = decodeCw(x, rate, opts.cw || {});
+    out.push({
+      name: 'MORSE', ok: !!(cw && cw.ok !== false && cw.text), text: cw && cw.text,
+      reason: (cw && cw.reason) || 'nothing that keys like Morse',
+      note: cw && cw.wpm ? `${cw.wpm.toFixed(1)} wpm` : null,
+    });
+    if (cw && cw.ok !== false && cw.chars) {
+      const cut = cutNumbers(cw.chars);
+      if (cut.ok) {
+        const odd = cut.unmapped.map((u) => `${u.pattern} x${u.count}`).join(', ');
+        out.push({
+          name: 'AS ABBREVIATED NUMERALS', ok: true, text: cut.text,
+          note: `${Math.round(cut.fit * 100)}% of the characters are cut numerals`
+            + (odd ? `; these are not: ${odd}` : ''),
+        });
+      }
+    }
+    const rtty = decodeRtty(x, rate, opts.rtty || {});
+    out.push({
+      name: 'RTTY', ok: !!(rtty && rtty.ok && rtty.text), text: rtty && rtty.text,
+      reason: (rtty && rtty.reason) || 'no teleprinter framing found',
+    });
+    const sel = identifySelcall(x, rate, opts.selcall || {});
+    out.push({
+      name: 'SELCALL', ok: !!(sel && sel.ok), text: sel && (sel.text || (sel.calls || []).join(' ')),
+      reason: (sel && sel.reason) || 'no selective-calling tones',
+    });
+    return out;
+  },
+};
+
+/** Run one job. Exported so the in-place fallback and the worker share it exactly. */
+export function runTask(type, x, sampleRate, opts = {}) {
+  const task = TASKS[type];
+  if (!task) throw new Error('unknown job: ' + type);
+  return task(x, sampleRate, opts);
+}
+
+if (typeof self !== 'undefined' && typeof self.onmessage !== 'undefined') {
+  self.onmessage = (e) => {
+    const msg = e.data || {};
+    const { type, job } = msg;
+    try {
+      self.postMessage({ type: 'done', job, result: runTask(type, msg.x, msg.sampleRate, msg.opts || {}) });
+    } catch (error) {
+      self.postMessage({ type: 'error', job, message: (error && error.message) || String(error) });
+    }
+  };
+}
