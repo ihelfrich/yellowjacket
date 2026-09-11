@@ -152,9 +152,6 @@ export function initSigintController(ctx) {
     return n;
   };
 
-  const head = el('div', 'yj-sigint-head');
-  head.append(el('span', 'yj-sigint-title', 'SIGINT'),
-    el('span', 'yj-sigint-sub', 'WHAT IS HERE · WHAT ITS NUMBERS ARE · WHAT IT SAYS'));
   const note = el('p', 'yj-sigint-note',
     'The loaded recording read as a transmission. Every estimator here can refuse, '
     + 'and a refusal is printed as plainly as an answer: a bench that reads confident '
@@ -177,10 +174,48 @@ export function initSigintController(ctx) {
   const line = el('p', 'yj-sigint-line');
   line.setAttribute('role', 'status');
   line.textContent = 'LOAD A RECORDING';
+  // The numbers go in readout wells, the bench's own idiom for a measured value;
+  // the classification, the decodes and the two-station result stay as text.
+  // The copied report carries all of it with full provenance.
+  const readouts = document.createElement('dl');
+  readouts.className = 'yj-readouts yj-sigint-readouts';
+  readouts.hidden = true;
+  const designator = el('p', 'yj-sigint-designator');
+  designator.hidden = true;
   const pre = el('pre', 'yj-sigint-report');
   pre.textContent = '';
 
-  const redraw = () => { pre.textContent = reportLines(state, { methods: false }).join('\n'); };
+  const redraw = () => {
+    readouts.textContent = '';
+    const m = state.measured;
+    if (m) {
+      for (const [label, q] of quantities(m)) {
+        const row = document.createElement('div');
+        const dt = document.createElement('dt');
+        dt.textContent = label;
+        const dd = document.createElement('dd');
+        dd.className = 'yj-well';
+        if (q.value == null) {
+          dd.classList.add('is-off');
+          dd.textContent = 'not established';
+          if (q.reason) { dd.title = q.reason; dt.title = q.reason; }
+        } else {
+          const unc = Number.isFinite(q.uncertainty) ? ' ± ' + fmt(q.uncertainty, q.uncertainty < 1 ? 3 : 1) : '';
+          dd.textContent = fmt(q.value, Math.abs(q.value) < 10 ? 3 : 2) + ' ' + (q.unit || '') + unc;
+          if (q.method) dd.title = q.method;
+        }
+        row.append(dt, dd);
+        readouts.appendChild(row);
+      }
+      const d = m.designator && m.designator.designator;
+      designator.textContent = d ? 'emission designator ' + d
+        : (m.detection && m.detection.reason ? m.detection.reason : '');
+      designator.hidden = !designator.textContent;
+    }
+    readouts.hidden = !m;
+    // everything that is not a number, without repeating the numbers
+    pre.textContent = reportLines({ ...state, measured: null }, { methods: false }).join('\n');
+  };
 
   // Most of this panel characterises a transmission, for which two minutes is
   // ample. The two-station measurement counts whole minutes, so it needs the
@@ -261,6 +296,6 @@ export function initSigintController(ctx) {
     }
   });
 
-  host.append(head, note, row, line, pre);
+  host.append(note, row, line, readouts, designator, pre);
   ctx.api.sigintState = () => state;
 }

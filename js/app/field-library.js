@@ -102,34 +102,34 @@ export const FIELD_RECORDINGS = Object.freeze([
   // by hobbyists and agencies who released them CC0 or as US government
   // work. Nothing here is decrypted — one-time pads cannot be — but the
   // cadence, the tones, and the symbol timing are all material.
-  { id: 'wwv-1991', shelf: 'SIGNAL', kind: 'TIME STATION', title: 'WWV, FORT COLLINS', place: 'NIST · December 8, 1991, 02:18 UTC', dur: '13:10',
+  { id: 'wwv-1991', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'TIME STATION', title: 'WWV, FORT COLLINS', place: 'NIST · December 8, 1991, 02:18 UTC', dur: '13:10',
     license: 'PD', source: IA_ITEM + 'radio-station-wwv-1991-12-08-0218-utc',
     light: light('radio-station-wwv-1991-12-08-0218-utc', 'Radio%20Station%20WWV%20-%201991-12-08%20%280218%20UTC%29.mp3', 10.2),
     hi: hi('radio-station-wwv-1991-12-08-0218-utc', 'Radio%20Station%20WWV%20-%201991-12-08%20%280218%20UTC%29.flac', 79.2, 48000, 24) },
-  { id: 'jjy-2001', shelf: 'SIGNAL', kind: 'TIME STATION', title: 'JJY SIGNS OFF, 8 MHz', place: 'Japan · March 31, 2001, 03:00 UTC', dur: '1:28',
+  { id: 'jjy-2001', shelf: 'SIGNAL', region: 'JAPAN', kind: 'TIME STATION', title: 'JJY SIGNS OFF, 8 MHz', place: 'Japan · March 31, 2001, 03:00 UTC', dur: '1:28',
     license: 'CC0', source: IA_ITEM + 'JapanTimeSignalRadioStationJjy8MhzCloses',
     light: light('JapanTimeSignalRadioStationJjy8MhzCloses', 'jjymono.mp3', 0.7) },
-  { id: 'kossuth-540', shelf: 'SIGNAL', kind: 'MEDIUMWAVE', title: 'KOSSUTH RADIO, 540 kHz', place: 'Hungary · time signal and identification, 2015', dur: '0:32',
+  { id: 'kossuth-540', shelf: 'SIGNAL', region: 'HUNGARY', kind: 'MEDIUMWAVE', title: 'KOSSUTH RADIO, 540 kHz', place: 'Hungary · time signal and identification, 2015', dur: '0:32',
     license: 'CC0', source: IA_ITEM + 'MR1KossuthRadio540KHzHungary',
     light: light('MR1KossuthRadio540KHzHungary', 'MR1%20Kossuth%20Radio%20-%20540%20KHz%20-%20Hungary.mp3', 0.4) },
-  { id: 'uvb76-2010', shelf: 'SIGNAL', kind: 'THE BUZZER', title: 'UVB-76 WITH A VOICE MESSAGE', place: 'Russia, 4625 kHz · December 5, 2010, 12:22 UTC', dur: '2:40',
+  { id: 'uvb76-2010', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'THE BUZZER', title: 'UVB-76 WITH A VOICE MESSAGE', place: 'Russia, 4625 kHz · December 5, 2010, 12:22 UTC', dur: '2:40',
     license: 'CC0', source: IA_ITEM + 'UVB76activity',
     light: light('UVB76activity', 'UVB-76-05-12-2010-1222UTC.mp3', 0.6),
     hi: hi('UVB76activity', 'UVB-76-05-12-2010-1222UTC.flac', 1.6, 8000, 16) },
-  { id: 'hm01-2019', shelf: 'SIGNAL', kind: 'NUMBERS', title: 'HM01 AND A FAX BURST', place: 'Cuba, 9240 kHz · July 24, 2019, 09:03 UTC', dur: '2:54',
+  { id: 'hm01-2019', shelf: 'SIGNAL', region: 'CUBA', kind: 'NUMBERS', title: 'HM01 AND A FAX BURST', place: 'Cuba, 9240 kHz · July 24, 2019, 09:03 UTC', dur: '2:54',
     license: 'PD', source: IA_ITEM + 'cuban-numbers-station-and-sw-fax.-2019-07-24-t-09-03-00-z-9240.0k-hz',
     light: light('cuban-numbers-station-and-sw-fax.-2019-07-24-t-09-03-00-z-9240.0k-hz', 'Cuban%20numbers%20station%20and%20SW%20fax.%202019-07-24T09_03_00Z_9240.0kHz.mp3', 0.6),
     hi: hi('cuban-numbers-station-and-sw-fax.-2019-07-24-t-09-03-00-z-9240.0k-hz', 'Cuban%20numbers%20station%20and%20SW%20fax.%202019-07-24T09_03_00Z_9240.0kHz.flac', 2.3, 8000, 16) },
-  { id: 'm08-2009', shelf: 'SIGNAL', kind: 'NUMBERS · MORSE', title: 'M08, CUBAN NUMBERS IN MORSE', place: 'Cuba, 11435 kHz CW · December 23, 2009, 17:59 UTC', dur: '1:25',
+  { id: 'm08-2009', shelf: 'SIGNAL', region: 'CUBA', kind: 'NUMBERS · MORSE', title: 'M08, CUBAN NUMBERS IN MORSE', place: 'Cuba, 11435 kHz CW · December 23, 2009, 17:59 UTC', dur: '1:25',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Cuba%20DGI%20-%20M08%2011435%20CW%201759z-1800z%2012-23-09.mp3', 1.3) },
-  { id: 'sk01-2009', shelf: 'SIGNAL', kind: 'NUMBERS · DIGITAL', title: 'SK01, DATA BURSTS', place: 'Cuba, 11435 kHz AM · December 23, 2009, 17:44 UTC', dur: '0:45',
+  { id: 'sk01-2009', shelf: 'SIGNAL', region: 'CUBA', kind: 'NUMBERS · DIGITAL', title: 'SK01, DATA BURSTS', place: 'Cuba, 11435 kHz AM · December 23, 2009, 17:44 UTC', dur: '0:45',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Cuba%20DGI%20-%20SK01%2011435%20AM%201744z%2012-23-09.mp3', 0.7) },
-  { id: 'g11-2010', shelf: 'SIGNAL', kind: 'NUMBERS', title: 'G11, A WOMAN COUNTING IN GERMAN', place: 'Austria, 8091 kHz USB · March 29, 2010, 09:35 UTC', dur: '3:17',
+  { id: 'g11-2010', shelf: 'SIGNAL', region: 'AUSTRIA', kind: 'NUMBERS', title: 'G11, A WOMAN COUNTING IN GERMAN', place: 'Austria, 8091 kHz USB · March 29, 2010, 09:35 UTC', dur: '3:17',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Austria%20HNA%20-%20G11%208091%20USB%200935z-0938z%2003-29-10.mp3', 3.0) },
-  { id: 'code-1942', shelf: 'SIGNAL', kind: 'MORSE', title: 'SIGNAL CORPS CODE APTITUDE TEST', place: 'US War Department training record · c. 1942', dur: '4:05',
+  { id: 'code-1942', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'MORSE', title: 'SIGNAL CORPS CODE APTITUDE TEST', place: 'US War Department training record · c. 1942', dur: '4:05',
     license: 'PD', source: IA_ITEM + 'U.S._Armed_Forces_Institute_Basic_Radio_Code_ca1942',
     light: light('U.S._Armed_Forces_Institute_Basic_Radio_Code_ca1942', '01A_Signal_Corps_Code_Aptitude_Test.mp3', 3.7) },
 
@@ -149,35 +149,35 @@ export const FIELD_RECORDINGS = Object.freeze([
   //     PROGRAMMING. Three otherwise-good candidates were dropped on that line.
 
   // Russia
-  { id: 's06-2009', shelf: 'SIGNAL', kind: 'NUMBERS · VOICE', title: 'S06, THE RUSSIAN MAN', place: 'Russia, 6835 kHz USB · December 14, 2009, 21:15 UTC', dur: '3:59',
+  { id: 's06-2009', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'NUMBERS · VOICE', title: 'S06, THE RUSSIAN MAN', place: 'Russia, 6835 kHz USB · December 14, 2009, 21:15 UTC', dur: '3:59',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Russia%20GRU%20-%20S06%206835%20USB%202115z-2119z%2012-14-09.mp3', 3.6) },
-  { id: 'm12-2010', shelf: 'SIGNAL', kind: 'NUMBERS · MORSE', title: 'M12, MACHINE-KEYED NUMBERS', place: 'Russia, 6795 kHz CW · November 29, 2010, 06:00 UTC', dur: '2:13',
+  { id: 'm12-2010', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'NUMBERS · MORSE', title: 'M12, MACHINE-KEYED NUMBERS', place: 'Russia, 6795 kHz CW · November 29, 2010, 06:00 UTC', dur: '2:13',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Russia%20SVR%20-%20M12%206795%20CW%200600z-0602z%2011-29-10.mp3', 2.0) },
-  { id: 'xpa-2009', shelf: 'SIGNAL', kind: 'NUMBERS · POLYTONE', title: 'XPA, A POLYTONE SEND', place: 'Russia, 8147 kHz USB · December 18, 2009, 07:00 UTC', dur: '7:46',
+  { id: 'xpa-2009', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'NUMBERS · POLYTONE', title: 'XPA, A POLYTONE SEND', place: 'Russia, 8147 kHz USB · December 18, 2009, 07:00 UTC', dur: '7:46',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Russia%20SVR%20-%20XPA%208147%20USB%200700z-0707z%2012-18-09.mp3', 7.1) },
   // The only lossless polytone here, and the only SIGNAL entry with content
   // above 8 kHz: 44.1 kHz, 24-bit, read from the FLAC STREAMINFO block.
-  { id: 'xpa2-2023', shelf: 'SIGNAL', kind: 'NUMBERS · POLYTONE', title: 'XPA2, POLYTONE, LOSSLESS', place: 'Russia, 14978 kHz USB · January 13, 2023, 12:00 UTC', dur: '4:04',
+  { id: 'xpa2-2023', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'NUMBERS · POLYTONE', title: 'XPA2, POLYTONE, LOSSLESS', place: 'Russia, 14978 kHz USB · January 13, 2023, 12:00 UTC', dur: '4:04',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'XPA2%2014978%20USB%201200z-1204z%2001-13-23.mp3', 3.4),
     hi: hi('ShortwaveEspionageBroadcasts', 'XPA2%2014978%20USB%201200z-1204z%2001-13-23.flac', 7.2, 44100, 24) },
-  { id: 'x06-2009', shelf: 'SIGNAL', kind: 'SELCALL · TONES', title: 'X06, SIX TONES IN SHIFTING ORDER', place: 'Russia, 6870 kHz · January 10, 2009, 23:31 UTC', dur: '13:32',
+  { id: 'x06-2009', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'SELCALL · TONES', title: 'X06, SIX TONES IN SHIFTING ORDER', place: 'Russia, 6870 kHz · January 10, 2009, 23:31 UTC', dur: '13:32',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Russia%20Diplomatic%20Service%20-%20X06%206870%20AM_USB%202331z-2344z%2001-10-09.mp3', 12.4) },
   // Eight unbroken hours of the channel marker, part two of a 28-hour capture.
   // Load a window from anywhere in it. This is the recording the traffic survey
   // exists for: most of it is nothing, and the question is where the rest is.
-  { id: 'uvb76-28h', shelf: 'SIGNAL', kind: 'THE BUZZER', title: 'UVB-76, EIGHT HOURS UNATTENDED', place: 'Russia, 4625 kHz · August 7, 2026', dur: '486:26',
+  { id: 'uvb76-28h', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'THE BUZZER', title: 'UVB-76, EIGHT HOURS UNATTENDED', place: 'Russia, 4625 kHz · August 7, 2026', dur: '486:26',
     license: 'PD', source: IA_ITEM + '01-uvb-76-russian-military-shortwave-station-shortwave-sdr-4625-k-hz-28-hour-rec',
     light: light('01-uvb-76-russian-military-shortwave-station-shortwave-sdr-4625-k-hz-28-hour-rec', '02-UVB-76%20%28Russian%20Military%20Shortwave%20Station%20Shortwave%20SDR%204625%20kHz%29%2028%20Hour%20%20Recording%20Pt-02%208-07-2026.mp3', 115),
     long: { seconds: 29186, bytes: 120553057 } },
-  { id: 'buzzer-4630-2025', shelf: 'SIGNAL', kind: 'THE BUZZER', title: 'THE BUZZER IN PARALLEL, 4630 kHz', place: 'Russia · February 24, 2025, 20:19 UTC', dur: '39:18',
+  { id: 'buzzer-4630-2025', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'THE BUZZER', title: 'THE BUZZER IN PARALLEL, 4630 kHz', place: 'Russia · February 24, 2025, 20:19 UTC', dur: '39:18',
     license: 'CC0', source: 'https://commons.wikimedia.org/wiki/File:The_Buzzer_transmitting_in_parallel_(%D0%A6%D0%96%D0%90%D0%9F,_TsZhAP)_2025-02-24T20_19_03Z_4630.0kHz.wav',
     light: commons('https://upload.wikimedia.org/wikipedia/commons/3/3c/The_Buzzer_transmitting_in_parallel_%28%D0%A6%D0%96%D0%90%D0%9F%2C_TsZhAP%29_2025-02-24T20_19_03Z_4630.0kHz.wav', 64, 'WAV') },
-  { id: 'rwm-2013', shelf: 'SIGNAL', kind: 'TIME STATION', title: 'RWM, MOSCOW TIME SIGNAL', place: 'Russia, 9996 kHz CW · March 31, 2013, 19:48 UTC', dur: '0:31',
+  { id: 'rwm-2013', shelf: 'SIGNAL', region: 'RUSSIA', kind: 'TIME STATION', title: 'RWM, MOSCOW TIME SIGNAL', place: 'Russia, 9996 kHz CW · March 31, 2013, 19:48 UTC', dur: '0:31',
     license: 'CC0', source: 'https://commons.wikimedia.org/wiki/File:2013-03-31_1948z_RWM_Time_Signal.ogg',
     light: commons('https://upload.wikimedia.org/wikipedia/commons/a/a5/2013-03-31_1948z_RWM_Time_Signal.ogg', 0.2, 'OGG', 12000) },
 
@@ -192,45 +192,45 @@ export const FIELD_RECORDINGS = Object.freeze([
   // recording came from cannot dedicate it, and a mark is not a dedication. It
   // is the closest thing to a Chinese OTH signal this shelf could find, and it
   // is not good enough.
-  { id: 'v13-2023', shelf: 'SIGNAL', kind: 'NUMBERS · VOICE', title: 'V13, NEW STAR BROADCASTING', place: 'Taiwan, 9276 kHz · February 14, 2023, 12:00 UTC', dur: '19:10',
+  { id: 'v13-2023', shelf: 'SIGNAL', region: 'TAIWAN', kind: 'NUMBERS · VOICE', title: 'V13, NEW STAR BROADCASTING', place: 'Taiwan, 9276 kHz · February 14, 2023, 12:00 UTC', dur: '19:10',
     license: 'CC0', source: IA_ITEM + 'ShortwaveEspionageBroadcasts',
     light: light('ShortwaveEspionageBroadcasts', 'Taiwan%20NSB%20-%20V13%209276%20AM_USB%201200z-1219z%2002-14-23.mp3', 43.9) },
 
   // United States
-  { id: 'hfgcs-8992-2023', shelf: 'SIGNAL', kind: 'MILITARY VOICE', title: 'HFGCS, NATO PHONETICS ON 8992 kHz', place: 'USAF · October 15, 2023, 10:44 UTC', dur: '2:19',
+  { id: 'hfgcs-8992-2023', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'MILITARY VOICE', title: 'HFGCS, NATO PHONETICS ON 8992 kHz', place: 'USAF · October 15, 2023, 10:44 UTC', dur: '2:19',
     license: 'PD', source: IA_ITEM + 'usaf-high-frequency-global-comm.-system.-reading-nato-phonetics.-early-sun.-2023',
     light: light('usaf-high-frequency-global-comm.-system.-reading-nato-phonetics.-early-sun.-2023', 'USAF--%20High%20Frequency%20Global%20Comm.%20System.%20Reading%20NATO%20phonetics.%20Early%20Sun.%202023-10-15T10_44_04Z_8992.0kHz.mp3', 0.5),
     hi: hi('usaf-high-frequency-global-comm.-system.-reading-nato-phonetics.-early-sun.-2023', 'USAF--%20High%20Frequency%20Global%20Comm.%20System.%20Reading%20NATO%20phonetics.%20Early%20Sun.%202023-10-15T10_44_04Z_8992.0kHz.flac', 2.7, 8000, 16) },
-  { id: 'hfgcs-4724-2024', shelf: 'SIGNAL', kind: 'MILITARY VOICE', title: 'HFGCS, VOICE OVER A KLAXON', place: 'USAF, 4724 kHz USB · February 28, 2024, 06:11 UTC', dur: '5:32',
+  { id: 'hfgcs-4724-2024', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'MILITARY VOICE', title: 'HFGCS, VOICE OVER A KLAXON', place: 'USAF, 4724 kHz USB · February 28, 2024, 06:11 UTC', dur: '5:32',
     license: 'PD', source: IA_ITEM + 'usaf.-poly-frequency-with-voice.-t.-2024-02-28-t-06-11-59-z-4724.0k-hz',
     light: light('usaf.-poly-frequency-with-voice.-t.-2024-02-28-t-06-11-59-z-4724.0k-hz', 'USAF.%20Poly-frequency%20with%20voice.%20T.%202024-02-28T06_11_59Z_4724.0kHz.mp3', 2.1),
     hi: hi('usaf.-poly-frequency-with-voice.-t.-2024-02-28-t-06-11-59-z-4724.0k-hz', 'USAF.%20Poly-frequency%20with%20voice.%20T.%202024-02-28T06_11_59Z_4724.0kHz.flac', 10.6, 8000, 16) },
-  { id: 'hfgcs-4724-2026', shelf: 'SIGNAL', kind: 'MILITARY VOICE', title: 'HFGCS, LETTERS AND NUMBERS', place: 'USAF, 4724 kHz USB · March 23, 2026, 05:09 UTC', dur: '8:32',
+  { id: 'hfgcs-4724-2026', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'MILITARY VOICE', title: 'HFGCS, LETTERS AND NUMBERS', place: 'USAF, 4724 kHz USB · March 23, 2026, 05:09 UTC', dur: '8:32',
     license: 'PD', source: IA_ITEM + 'usaf.-usb-reading-letters-and-numbers.-sun.-2026-03-23-t-05-09-44-z-4724.0k-hz',
     light: light('usaf.-usb-reading-letters-and-numbers.-sun.-2026-03-23-t-05-09-44-z-4724.0k-hz', 'USAF.%20USB%20reading%20letters%20and%20numbers.%20Sun.%202026-03-23T05_09_44Z_4724.0kHz.mp3', 1.7),
     hi: hi('usaf.-usb-reading-letters-and-numbers.-sun.-2026-03-23-t-05-09-44-z-4724.0k-hz', 'USAF.%20USB%20reading%20letters%20and%20numbers.%20Sun.%202026-03-23T05_09_44Z_4724.0kHz.flac', 8.4, 8000, 16) },
   // Both stations on one channel: Colorado and Kauai, a man and a woman, their
   // ticks a few milliseconds apart because the two paths are different lengths.
   // The hard case for a time-code decoder, and the only one on this shelf.
-  { id: 'wwv-wwvh-2019', shelf: 'SIGNAL', kind: 'TIME STATION', title: 'WWV AND WWVH ON ONE CHANNEL', place: 'NIST, 5 MHz · February 6, 2019, 14:50 UTC', dur: '13:07',
+  { id: 'wwv-wwvh-2019', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'TIME STATION', title: 'WWV AND WWVH ON ONE CHANNEL', place: 'NIST, 5 MHz · February 6, 2019, 14:50 UTC', dur: '13:07',
     license: 'PD', source: 'https://commons.wikimedia.org/wiki/File:WWV_WWVH_2019-02-06T14_50_36Z_5000.00_am-mono.ogg',
     light: commons('https://upload.wikimedia.org/wikipedia/commons/2/29/WWV_WWVH_2019-02-06T14_50_36Z_5000.00_am-mono.ogg', 3.9, 'OGG') },
-  { id: 'wwvh-2015', shelf: 'SIGNAL', kind: 'TIME STATION', title: 'WWVH, KAUAI', place: 'NIST, 10 MHz · March 16, 2015, 04:58 UTC', dur: '4:28',
+  { id: 'wwvh-2015', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'TIME STATION', title: 'WWVH, KAUAI', place: 'NIST, 10 MHz · March 16, 2015, 04:58 UTC', dur: '4:28',
     license: 'PD', source: 'https://commons.wikimedia.org/wiki/File:WWVH_recording_-_20150316.ogg',
     light: commons('https://upload.wikimedia.org/wikipedia/commons/5/55/WWVH_recording_-_20150316.ogg', 1.3, 'OGG') },
-  { id: 'noaa-boulder-2008', shelf: 'SIGNAL', kind: 'WEATHER · VOICE', title: 'NOAA WEATHER RADIO', place: 'Boulder, Colorado · October 6, 2008', dur: '1:30',
+  { id: 'noaa-boulder-2008', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'WEATHER · VOICE', title: 'NOAA WEATHER RADIO', place: 'Boulder, Colorado · October 6, 2008', dur: '1:30',
     license: 'PD', source: 'https://commons.wikimedia.org/wiki/File:NOAA_Weather_Radio,_Boulder_2008.flac',
     light: commons('https://upload.wikimedia.org/wikipedia/commons/e/e3/NOAA_Weather_Radio%2C_Boulder_2008.flac', 4.3, 'FLAC') },
   // The required weekly test carries a SAME header: three bursts of AFSK before
   // the alert tone, then the same three again to close it.
-  { id: 'noaa-same-test', shelf: 'SIGNAL', kind: 'DATA · SAME', title: 'A SAME ALERT TEST', place: 'KEC60 Milwaukee · NOAA required weekly test', dur: '1:45',
+  { id: 'noaa-same-test', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'DATA · SAME', title: 'A SAME ALERT TEST', place: 'KEC60 Milwaukee · NOAA required weekly test', dur: '1:45',
     license: 'PD', source: 'https://commons.wikimedia.org/wiki/File:NOAA_Weather_Radio_MKE-KEC60_Weekly_Test.ogg',
     light: commons('https://upload.wikimedia.org/wikipedia/commons/0/08/NOAA_Weather_Radio_MKE-KEC60_Weekly_Test.ogg', 0.8, 'OGG') },
-  { id: 'ndb-332-2025', shelf: 'SIGNAL', kind: 'BEACON · MORSE', title: 'A 25-WATT BEACON REPEATING ITS LETTERS', place: '332 kHz · November 27, 2025, 10:29 UTC', dur: '6:53',
+  { id: 'ndb-332-2025', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'BEACON · MORSE', title: 'A 25-WATT BEACON REPEATING ITS LETTERS', place: '332 kHz · November 27, 2025, 10:29 UTC', dur: '6:53',
     license: 'PD', source: IA_ITEM + 'longwave-beacon-east-coast.-thanksgiving-morn.-2025-11-27-t-10-29-07-z-332.0k-hz',
     light: light('longwave-beacon-east-coast.-thanksgiving-morn.-2025-11-27-t-10-29-07-z-332.0k-hz', 'Longwave%20beacon%2C%20East%20Coast.%20Thanksgiving%20morn.%202025-11-27T10_29_07Z_332.0kHz.mp3', 1.4),
     hi: hi('longwave-beacon-east-coast.-thanksgiving-morn.-2025-11-27-t-10-29-07-z-332.0k-hz', 'Longwave%20beacon%2C%20East%20Coast.%20Thanksgiving%20morn.%202025-11-27T10_29_07Z_332.0kHz.flac', 6.6, 8000, 16) },
-  { id: 'offshore-13089-2024', shelf: 'SIGNAL', kind: 'WEATHER · VOICE', title: 'A SYNTHESISED VOICE READING THE SEA STATE', place: 'NHC Miami, tropical North Atlantic · 13089 kHz USB · March 1, 2024, 15:58 UTC', dur: '7:44',
+  { id: 'offshore-13089-2024', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'WEATHER · VOICE', title: 'A SYNTHESISED VOICE READING THE SEA STATE', place: 'NHC Miami, tropical North Atlantic · 13089 kHz USB · March 1, 2024, 15:58 UTC', dur: '7:44',
     license: 'PD', source: IA_ITEM + 'robot-east-coast-sea-weather.-f.-2024-03-01-t-15-58-00-z-13089.0k-hz',
     light: light('robot-east-coast-sea-weather.-f.-2024-03-01-t-15-58-00-z-13089.0k-hz', 'Robot%20East%20Coast%20sea%20weather.%20F.%202024-03-01T15_58_00Z_13089.0kHz.mp3', 1.8),
     hi: hi('robot-east-coast-sea-weather.-f.-2024-03-01-t-15-58-00-z-13089.0k-hz', 'Robot%20East%20Coast%20sea%20weather.%20F.%202024-03-01T15_58_00Z_13089.0kHz.flac', 8.9, 8000, 16) },
@@ -238,7 +238,7 @@ export const FIELD_RECORDINGS = Object.freeze([
   // `long` carries the file's total seconds and bytes so the card can offer a
   // window (2 / 5 / 10 minutes from any point). MP3 only: an MPEG stream
   // resyncs at any frame, so a byte range decodes wherever it is cut.
-  { id: 'marine-electric-sos', shelf: 'SIGNAL', kind: 'DISTRESS · MORSE', title: 'SS MARINE ELECTRIC, SOS ON 500 kHz', place: 'USCG COMMSTA Boston · February 12, 1983', dur: '91:38',
+  { id: 'marine-electric-sos', shelf: 'SIGNAL', region: 'UNITED STATES', kind: 'DISTRESS · MORSE', title: 'SS MARINE ELECTRIC, SOS ON 500 kHz', place: 'USCG COMMSTA Boston · February 12, 1983', dur: '91:38',
     license: 'CC0', source: IA_ITEM + 'SsMarineElectricWoohSos',
     light: light('SsMarineElectricWoohSos', 'Marine_Electric_SOS.mp3', 24.5),
     long: { seconds: 5498, bytes: 25704448 } },
@@ -404,11 +404,17 @@ export function initFieldLibrary(ctx) {
 
   function reveal() {
     $('dropZone').classList.remove('is-hidden');
+    // The shelf is folded behind one button on the intake now; a reveal from
+    // anywhere unfolds it and brings it into view.
+    host.hidden = false;
+    host.scrollIntoView({ block: 'start' });
     const first = host.querySelector('.yj-field-btn');
     if (first) first.focus();
   }
-  const opener = $('btnField');
-  if (opener) opener.addEventListener('click', reveal);
+  for (const id of ['btnField', 'btnShelf']) {
+    const opener = $(id);
+    if (opener) opener.addEventListener('click', reveal);
+  }
   ctx.api.revealFieldLibrary = reveal;
 
   // ---- shelf chips ----
@@ -452,10 +458,26 @@ export function initFieldLibrary(ctx) {
 
     grid.textContent = '';
     if (shelf === MINE_SHELF) { renderMine(); return; }
-    for (const rec of FIELD_RECORDINGS) {
-      if (rec.shelf !== shelf) continue;
+    // The SIGNAL drawer is 28 entries. Grouped by where the transmitter is,
+    // largest group first, so a person looking for Russian traffic is not
+    // scanning a flat wall of cards for it.
+    let records = FIELD_RECORDINGS.filter((r) => r.shelf === shelf);
+    if (shelf === 'SIGNAL') {
+      const order = [...new Set(records.map((r) => r.region || 'ELSEWHERE'))]
+        .sort((a, b) => records.filter((r) => (r.region || 'ELSEWHERE') === b).length - records.filter((r) => (r.region || 'ELSEWHERE') === a).length || a.localeCompare(b));
+      records = [...records].sort((a, b) => order.indexOf(a.region || 'ELSEWHERE') - order.indexOf(b.region || 'ELSEWHERE'));
+    }
+    let lastRegion = null;
+    for (const rec of records) {
       const v = variantFor(rec, lossless);
       if (!v) continue;
+      if (shelf === 'SIGNAL' && (rec.region || 'ELSEWHERE') !== lastRegion) {
+        lastRegion = rec.region || 'ELSEWHERE';
+        const head = document.createElement('div');
+        head.className = 'yj-field-region yj-label';
+        head.textContent = lastRegion.toLowerCase();
+        grid.appendChild(head);
+      }
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'yj-field-btn';

@@ -345,7 +345,7 @@
     </div>
     </div>
     <div id="sigstate-sigint" class="yj-sigstate">
-      <div id="sigintHost" class="yj-sigint-host"></div>
+      <div id="sigintHost" class="yj-panel yj-sigint-host" data-label="SIGNAL / SIGINT"></div>
     </div>
   </section>
 
@@ -506,7 +506,7 @@
   <!-- ============ STUDIO ============ -->
   <section id="tab-studio" class="yj-tabpane" role="tabpanel" aria-labelledby="tabBtn-studio" aria-hidden="true">
     <div id="studioHost" class="yj-studio-host"></div>
-    <div id="scoreHost" class="yj-score-host"></div>
+    <div id="scoreHost" class="yj-panel yj-score-host" data-label="STUDIO / SCORE"></div>
   </section>
 
   <!-- ============ LOOM ============ -->
@@ -536,30 +536,45 @@
         <button id="btnDiscard" class="yj-btn" title="Forget the saved session">DISCARD</button>
       </div>
     </div>
-    <p>WAV, MP3, M4A, OGG, FLAC — kept at their own sample rate, up to 192 kHz.<br>
-    A <strong>.MID</strong> file loads into STUDIO's six parts; a <strong>.JSON</strong> card or score
-    opens as an instrument or a piece.<br>
-    It never leaves this machine. There's no server to send it to.</p>
-    <div class="yj-demo">
-      <button id="btnLoadDemo" class="yj-btn yj-btn-primary">LOAD THE DEMO SONG</button>
-      <p class="yj-demo-note"><strong>SPARKS</strong> · ZANE LITTLE · 2:40 · <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a></p>
-    </div>
+    <p class="yj-drop-note">WAV, MP3, M4A, OGG or FLAC, kept at its own sample rate up to 192 kHz. A <strong>.MID</strong> loads
+    STUDIO's six parts; a <strong>.JSON</strong> opens as an instrument card or a score. Nothing leaves this machine.</p>
+
+    <!-- The hero: the only offer here that sounds with nothing loaded. -->
     <div class="yj-found" id="foundRow"></div>
-    <div class="yj-field" id="fieldLibrary">
-      <p class="yj-field-head">OR OPEN SOMETHING FROM THE SHELF</p>
+
+    <!-- Every other way in, one row per kind of material. The shelf's cards are
+         behind THE SHELF rather than inline: with eleven instruments above them
+         the intake had become four screens tall. -->
+    <div class="yj-intake" role="group" aria-label="Ways in">
+      <div class="yj-intake-row">
+        <span class="yj-label yj-intake-key">Yours</span>
+        <button id="btnOpen2" class="yj-btn">PICK A FILE</button>
+        <button id="btnProjectOpen2" class="yj-btn" title="A portable .yjkt project saved from this bench">OPEN A PROJECT</button>
+        <div class="yj-urlrow">
+          <input type="url" id="urlInput" class="yj-urlinput" placeholder="or paste a direct audio link, a podcast enclosure, an archive.org file" spellcheck="false">
+          <button id="btnLoadUrl" class="yj-btn">LOAD URL</button>
+        </div>
+      </div>
+      <div class="yj-intake-row">
+        <span class="yj-label yj-intake-key">Ours</span>
+        <button id="btnLoadDemo" class="yj-btn yj-btn-primary" title="Sparks · Zane Little · 2:40 · CC0">LOAD THE DEMO SONG</button>
+        <button id="btnShelf" class="yj-btn" title="Places, voices, radio signals, scores and records — public domain, streamed from archive.org and Wikimedia Commons">OPEN THE SHELF</button>
+        <p class="yj-demo-note"><strong>SPARKS</strong> · ZANE LITTLE · 2:40 · <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a></p>
+      </div>
+      <div class="yj-intake-row">
+        <span class="yj-label yj-intake-key">From nothing</span>
+        <button id="btnOpenDrums" class="yj-btn yj-btn-primary">START WITH 808S</button>
+        <button id="btnOpenSynth" class="yj-btn">MAKE A SOUND</button>
+      </div>
+    </div>
+
+    <div class="yj-field" id="fieldLibrary" hidden>
+      <p class="yj-field-head">THE SHELF</p>
       <p class="yj-field-note">Places, voices, radio signals, scores, records, and stranger things — all public domain
       (<a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a>,
       <a href="https://creativecommons.org/publicdomain/mark/1.0/" target="_blank" rel="noopener">PD</a>, or
-      old enough to be nobody's), streamed from <a href="https://archive.org" target="_blank" rel="noopener">archive.org</a>.
-      LOSSLESS streams the archive's original; the badge shows what its header actually says.</p>
-    </div>
-    <button id="btnOpen2" class="yj-btn">OR PICK YOUR OWN</button>
-    <button id="btnProjectOpen2" class="yj-btn">OPEN A .YJKT PROJECT</button>
-    <button id="btnOpenDrums" class="yj-btn yj-btn-primary">START WITH 808S</button>
-    <button id="btnOpenSynth" class="yj-btn">MAKE A SOUND WITHOUT AUDIO</button>
-    <div class="yj-urlrow">
-      <input type="url" id="urlInput" class="yj-urlinput" placeholder="or paste a URL · direct audio link, podcast enclosure, archive.org" spellcheck="false">
-      <button id="btnLoadUrl" class="yj-btn">LOAD URL</button>
+      old enough to be nobody's), streamed from <a href="https://archive.org" target="_blank" rel="noopener">archive.org</a>
+      and Wikimedia Commons. LOSSLESS streams the original; the badge shows what its header actually says.</p>
     </div>
     <div class="yj-riphelp" id="ripHelp" hidden>
       <p id="ripHelpMsg">That host won't hand audio to a web page. Rip it on your machine, then drop the file here:</p>

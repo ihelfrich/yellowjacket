@@ -113,9 +113,6 @@ export function initScorePanel(ctx) {
     return node;
   };
 
-  const head = el('div', 'yj-score-head');
-  head.append(el('span', 'yj-score-title', 'SCORE'), el('span', 'yj-score-sub',
-    'PARTS OF NOTES IN HERTZ AND SECONDS · THE FORM THE OFFLINE RENDERER READS'));
 
   const note = el('p', 'yj-score-note');
   note.textContent = 'A score carries pitches the twelve keys cannot spell and a length the four-bar '
@@ -327,7 +324,7 @@ export function initScorePanel(ctx) {
     catch (err) { statusFault('SCORE · ' + (err && err.message ? err.message : err)); }
   });
 
-  host.append(head, note, sourceRow, pieceRow, line, renderRow, bar);
+  host.append(note, sourceRow, pieceRow, line, renderRow, bar);
   ctx.api.scoreSetScore = setScore;
   ctx.api.openJsonFile = openJson;
   ctx.api.scoreReveal = () => { host.scrollIntoView({ block: 'center' }); btnOpen.focus(); };

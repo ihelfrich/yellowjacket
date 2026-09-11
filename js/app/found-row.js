@@ -26,8 +26,8 @@ export function initFoundRow(ctx) {
   let last = null;
 
   const head = document.createElement('p');
-  head.className = 'yj-found-head';
-  head.textContent = 'OR PRESS A REAL OBJECT';
+  head.className = 'yj-label';
+  head.textContent = 'Press a real object';
   const note = document.createElement('p');
   note.className = 'yj-found-note';
   note.innerHTML = 'Instruments measured from real recordings — modes, damping, and how the pitch bends '

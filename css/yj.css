@@ -689,10 +689,10 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-drop-inner {
   border: 2px dashed var(--yj-line-hi);
   border-radius: 2px;
-  padding: 56px 72px;
+  padding: 36px 48px 40px;
   margin: auto;
   text-align: center;
-  display: flex; flex-direction: column; gap: 18px; align-items: center;
+  display: flex; flex-direction: column; gap: 16px; align-items: center;
 }
 .yj-drop-word {
   font-size: 30px; font-weight: 700; letter-spacing: 0.12em; color: var(--yj-yellow);
@@ -741,6 +741,14 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.04em;
   color: var(--yj-amber); min-height: 14px;
 }
+.yj-sigint-readouts {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 20px;
+}
+.yj-sigint-readouts dd { min-width: 150px; font-size: 11.5px; }
+.yj-sigint-readouts dd.is-off { color: var(--yj-ink-dim); font-size: 10px; font-family: var(--f-ui); letter-spacing: 0.06em; }
+.yj-sigint-designator {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.04em; color: var(--yj-ink);
+}
 .yj-sigint-report {
   font-family: var(--f-mono); font-size: 10.5px; line-height: 1.5;
   color: var(--yj-ink); background: var(--yj-well);
@@ -778,16 +786,13 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-score-fill { height: 100%; background: var(--yj-yellow); width: 0; transition: width 120ms linear; }
 @media (prefers-reduced-motion: reduce) { .yj-score-fill { transition: none; } }
 
-/* FOUND: instruments measured into cards. The only thing here that sounds
-   with no file, no download and no network, so it sits above the shelf. */
-.yj-found { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 640px; align-items: center; }
-.yj-drop-inner .yj-found-head {
-  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
-  letter-spacing: 0.14em; color: var(--yj-ink);
-}
+/* FOUND: instruments measured into cards. The one offer on the intake that
+   sounds with nothing loaded, so it is the hero and everything under it is a
+   quiet row. Its heading is the bench's own silkscreen label, not a bespoke one. */
+.yj-found { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 720px; align-items: center; }
 .yj-drop-inner .yj-found-note {
   font-family: var(--f-mono); font-size: 10px; line-height: 1.5;
-  letter-spacing: 0.03em; color: var(--yj-ink-dim);
+  letter-spacing: 0.03em; color: var(--yj-ink-dim); max-width: 64ch;
 }
 .yj-found-row { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
 .yj-found-btn { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; padding: 6px 9px; }
@@ -796,6 +801,25 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   letter-spacing: 0.04em; color: var(--yj-amber); min-height: 13px;
 }
 .yj-drop-skip { align-self: flex-end; font-size: 9.5px; letter-spacing: 0.1em; padding: 5px 8px; }
+
+/* INTAKE: every other way in, one row per kind of material. The key at the
+   left says what the row costs you — your own file, ours, or nothing at all —
+   which is the only ordering that made sense once there were this many. */
+.yj-drop-inner .yj-drop-note { font-size: 12px; line-height: 1.6; max-width: 66ch; }
+.yj-intake { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 720px; }
+.yj-intake-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.yj-intake-key { flex: 0 0 92px; text-align: right; padding-right: 6px; text-transform: none; letter-spacing: 0.04em; font-size: 11px; }
+.yj-intake-row .yj-urlrow { flex: 1 1 260px; max-width: none; }
+.yj-drop-inner .yj-intake-row .yj-demo-note {
+  flex-basis: 100%; margin-left: 98px; margin-top: -2px;
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.04em; line-height: 1.3;
+}
+.yj-intake-row .yj-demo-note strong { color: var(--yj-ink); }
+.yj-intake-row .yj-demo-note a { color: var(--yj-amber); }
+@media (max-width: 720px) {
+  .yj-intake-key { flex-basis: 100%; text-align: left; padding: 0; }
+  .yj-drop-inner .yj-intake-row .yj-demo-note { margin-left: 0; }
+}
 
 /* FIELD: the public-domain field-recording shelf inside the drop zone */
 .yj-field { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 640px; }
@@ -822,6 +846,7 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   font-family: var(--f-mono);
 }
 .yj-field-btn:hover { border-color: var(--yj-yellow); }
+.yj-field-region { grid-column: 1 / -1; margin-top: 6px; padding-bottom: 2px; border-bottom: 1px solid var(--yj-line); text-transform: capitalize; text-align: left; }
 .yj-field-kind { font-size: 8.5px; letter-spacing: 0.16em; color: var(--yj-amber); }
 .yj-field-title { font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; color: var(--yj-ink); }
 .yj-field-meta { font-size: 9.5px; letter-spacing: 0.03em; color: var(--yj-ink-dim); }
