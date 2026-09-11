@@ -109,6 +109,10 @@ export class SpectrogramView extends EventTarget {
 
     this._drag = null;        // { id, x0, y0, t0, f0, mode: 'arm'|'select' }
     this._region = null;      // selection {t0,t1,f0,f1}, data coords, survives zoom/pan
+    // SIGINT's survey: emissions above the floor, drawn as outlines a person
+    // can point at. Same data coords as a selection, same projection.
+    this._detections = [];
+    this._detectionId = null;
     this._repairs = [];       // Repair[] from setRepairs, drawn each composite
     this._hoverId = null;
 
@@ -263,6 +267,65 @@ export class SpectrogramView extends EventTarget {
   get region() {
     const r = this._region;
     return r ? { t0: r.t0, t1: r.t1, f0: r.f0, f1: r.f1 } : null;
+  }
+
+  /**
+   * What SURVEY found: emissions as { id, startSec, endSec, lowHz, highHz },
+   * outlined on the spectrogram. Clicking inside one selects it as the region
+   * every other SIGINT action works on, which is how "point at that" becomes
+   * "measure that" without a coordinate ever being typed.
+   */
+  setDetections(list, selectedId = null) {
+    this._detections = Array.isArray(list) ? list.filter((d) => d && isFinite(d.startSec) && isFinite(d.endSec)) : [];
+    this._detectionId = selectedId;
+    this._composite();
+  }
+
+  get selectedDetectionId() { return this._detectionId; }
+
+  _detectionRect(d) {
+    const fs = this._freqScale();
+    return {
+      t0: d.startSec, t1: d.endSec,
+      f0: isFinite(d.lowHz) ? d.lowHz : (fs ? fs.fMin : 0),
+      f1: isFinite(d.highHz) ? d.highHz : (fs ? fs.fMax : 0),
+    };
+  }
+
+  /** The topmost detection under a client point, or null. Smallest wins on overlap. */
+  _detectionAtClient(clientX, clientY) {
+    if (!this._detections.length) return null;
+    const t = this._timeAtClientX(clientX), f = this._freqAtClientY(clientY);
+    let best = null, bestArea = Infinity;
+    for (const d of this._detections) {
+      const r = this._detectionRect(d);
+      if (t < r.t0 || t > r.t1 || f < r.f0 || f > r.f1) continue;
+      const area = (r.t1 - r.t0) * Math.log((r.f1 || 1) / (r.f0 || 1) + 1e-9);
+      if (area < bestArea) { best = d; bestArea = area; }
+    }
+    return best;
+  }
+
+  _drawDetections(g, w, h, dpr, c) {
+    if (!this._detections.length) return;
+    const fs = this._freqScale();
+    if (!fs || !(this._view.end > this._view.start)) return;
+    const lw = Math.max(1, dpr);
+    for (const d of this._detections) {
+      const r = this._detectionRect(d);
+      const p = this._projectRect(r, w, h, fs);
+      if (!p) continue;
+      const selected = this._detectionId != null && d.id === this._detectionId;
+      // The other take's blue, deliberately: a detection is something the bench
+      // is telling you about, not something you chose. The one you chose is
+      // yellow, like every selection here.
+      g.strokeStyle = selected ? c.playhead : c.slow;
+      g.lineWidth = selected ? lw * 2 : lw;
+      g.setLineDash(selected ? [] : [4 * dpr, 3 * dpr]);
+      g.strokeRect(p.x0 + lw / 2, p.y0 + lw / 2, Math.max(p.rw - lw, 1), Math.max(p.rh - lw, 1));
+      g.setLineDash([]);
+      if (selected) this._drawChip(g, w, h, dpr, c, r, p);
+    }
   }
 
   setRepairs(repairs, hoverId = null) {
@@ -472,6 +535,7 @@ export class SpectrogramView extends EventTarget {
 
     this._drawSlowBand(g, w, h, dpr, c);
     this._drawRepairs(g, w, h, dpr, c);
+    this._drawDetections(g, w, h, dpr, c);
     this._drawRuler(g, w, h, dpr, c);
     this._drawSelection(g, w, h, dpr, c);
 
@@ -821,6 +885,18 @@ export class SpectrogramView extends EventTarget {
     this._drag = null;
     if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     if (d.mode === 'select') return;    // completed drag: selection stands, exactly this seek suppressed
+    // A plain click inside a surveyed emission selects it: the region becomes
+    // that emission's time and band, and nothing seeks. Outside one, a click
+    // still means what it always meant.
+    const hit = this._detectionAtClient(e.clientX, e.clientY);
+    if (hit) {
+      this._detectionId = hit.id;
+      this._region = this._normRegion(this._detectionRect(hit));
+      this._emitRegion(this._region);
+      this.dispatchEvent(new CustomEvent('detectionselect', { detail: { id: hit.id } }));
+      this._composite();
+      return;
+    }
     if (this._region) {                 // plain click clears any selection
       this._region = null;
       this._emitRegion(null);

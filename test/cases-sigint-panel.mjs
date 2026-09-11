@@ -1,8 +1,9 @@
 // What the SIGINT panel prints. reportLines is pure, so the thing a person
 // actually reads can be pinned without a browser.
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
-import { reportLines, quantities, wrap } from '../js/app/sigint-controller.js';
+import { reportLines, quantities, wrap, surveyRows, taskOptions } from '../js/app/sigint-controller.js';
 import { measure } from '../js/sigint/measure.js';
 import { classifySegment } from '../js/sigint/classify.js';
 import { white } from './noise-colours.mjs';
@@ -59,6 +60,84 @@ export const cases = [
     assert.ok(!/\[object Object\]/.test(text), 'and is not stringified objects');
     assert.match(text, /against\s+\[\d\] /, 'the contradicting evidence is shown too');
     assert.match(text, /verdict\s+\S/, 'and a verdict, even when it is that nothing is clear');
+  },
+
+  async function theRegionLineSaysWhereItCameFromAndWhatBand() {
+    const banded = reportLines({ region: { from: 12, to: 20.5, lowHz: 900, highHz: 1100, how: 'emission 3' } }).join('\n');
+    assert.match(banded, /region\s+: 0:12\.0 to 0:20\.5\s+\(8\.5 s\)\s+· 900–1100 Hz\s+· emission 3/);
+    const wide = reportLines({ region: { from: 0, to: 120, how: 'first 120 s' } }).join('\n');
+    assert.match(wide, /full band\s+· first 120 s/);
+  },
+
+  async function theSpectrogramStaysOnScreenInSigintAndCanBePointedAt() {
+    const [html, main, spec] = await Promise.all([
+      readFile(new URL('../index.html', import.meta.url), 'utf8'),
+      readFile(new URL('../js/main.js', import.meta.url), 'utf8'),
+      readFile(new URL('../js/spectrogram.js', import.meta.url), 'utf8'),
+    ]);
+    const a = html.indexOf('id="tab-signal"'), b = html.indexOf('</section>', a);
+    const sec = html.slice(a, b);
+    // The first SIGINT layout hid the spectrogram behind a text pane, which
+    // contradicted its own reason for living on SIGNAL. Now only a rail swaps.
+    assert.equal((sec.match(/data-sigrail="/g) || []).length, 2, 'two rails, one per state');
+    assert.ok(!/class="yj-sigstate[" ]/.test(sec), 'no hidden pane wraps the spectrogram');
+    assert.ok(sec.includes('id="specMain"') && sec.includes('id="sigintHost"'));
+    assert.match(main, /rail\.hidden = rail\.dataset\.sigrail !== b\.dataset\.sigstate/, 'the band toggles rails');
+    assert.match(spec, /setDetections\(list, selectedId = null\)/, 'the spectrogram draws a survey');
+    assert.match(spec, /new CustomEvent\('detectionselect'/, 'and a click on one selects it');
+    assert.match(spec, /_drawDetections\(g, w, h, dpr, c\);\n\s+this\._drawRuler/, 'drawn under the ruler, over the image');
+  },
+
+  async function aSurveyIsReadStrongestFirstWithCodecSetAside() {
+    // The shape segment() actually returned on the shelf's M08 recording: six
+    // full-length encoder ridges at −4 dB starting at 0:00, and the real
+    // 30 dB Morse bursts later. Time order put the ridges first.
+    const ridge = (lo) => ({ startSec: 0, endSec: 84.9, lowHz: lo, highHz: lo + 100, cells: 900, snrDb: -3.9, falseAlarmLog10: -349, confidence: 1, aboveContentEdge: true });
+    // cells and evidence disagree on purpose: the widest burst is not the surest
+    const burst = (t, cells, snr, fa) => ({ startSec: t, endSec: t + 3, lowHz: 150, highHz: 2800, cells, snrDb: snr, falseAlarmLog10: fa, confidence: 0.7, aboveContentEdge: false });
+    const result = {
+      present: true, reason: 'bursts', classifyOn: 'emissions', standingBands: [],
+      emissions: [ridge(3499), ridge(4953), burst(45.7, 320, 29.6, -7.0e6), burst(5.4, 410, 29.9, -6.9e6), burst(55.7, 610, 31.2, -1.1e5), burst(2.1, 300, 29.4, -7.6e6)],
+      components: [{ startSec: 0, endSec: 1, lowHz: 0, highHz: 1, cells: 99999 }],
+    };
+    const read = surveyRows(result);
+    assert.deepEqual(read.rows.map((r) => r.startSec), [2.1, 45.7, 5.4, 55.7],
+      'by evidence, most negative first — the widest burst (most cells) is not the surest, and no ridges');
+    assert.deepEqual(read.rows.map((r) => r.k), [1, 2, 3, 4]);
+    assert.equal(read.setAside.codec, 2, 'the two ridges are counted, not hidden');
+    assert.ok(read.rows.every((r) => !r.aboveContentEdge));
+    // classifyOn is obeyed even when it names the other list
+    const other = surveyRows({ ...result, classifyOn: 'components' });
+    assert.equal(other.rows.length, 1, 'the module said components, so components');
+    // and the limit says what it dropped
+    assert.equal(surveyRows(result, { limit: 2 }).setAside.beyondLimit, 2);
+    assert.equal(surveyRows(null).rows.length, 0);
+  },
+
+  async function aSelfFlooredEmissionIsNotGivenAFakeSnr() {
+    const result = { present: true, classifyOn: 'emissions', emissions: [
+      { startSec: 1, endSec: 2, lowHz: 900, highHz: 1100, cells: 40, snrDb: null, selfFloored: true, aboveContentEdge: false },
+    ] };
+    const text = reportLines({ detections: surveyRows(result).rows, survey: surveyRows(result) }).join('\n');
+    assert.match(text, /#1\s+0:01\.0–0:02\.0\s+900–1100 Hz\s+own floor/);
+    assert.ok(!/SNR —/.test(text));
+  },
+
+  async function aSelectedEmissionIsRebasedToTheSliceTheWorkerSees() {
+    const state = {
+      region: { from: 13.0, to: 30.5, lowHz: 54, highHz: 2907 },
+      selectedId: 'e1',
+      detections: [{ id: 'e1', startSec: 13.0, endSec: 30.5, lowHz: 54, highHz: 2907 }],
+    };
+    const c = taskOptions('classify', {}, state);
+    assert.equal(c.detection.startSec, 0, 'the slice starts at zero');
+    assert.ok(Math.abs(c.detection.endSec - 17.5) < 1e-9, 'and ends where the slice ends');
+    assert.equal(c.detection.lowHz, 54);
+    // the band goes to measure and to the Morse tone search; no selection, no band
+    assert.deepEqual(taskOptions('measure', {}, state), { lowHz: 54, highHz: 2907 });
+    assert.deepEqual(taskOptions('decode', {}, state).cw, { searchLoHz: 54, searchHiHz: 2907 });
+    assert.deepEqual(taskOptions('measure', {}, { region: { from: 0, to: 120 } }), {});
+    assert.deepEqual(taskOptions('tdoa', { station: 'x' }, state), { station: 'x' });
   },
 
   async function theReportSaysWhatItCannotKnow() {

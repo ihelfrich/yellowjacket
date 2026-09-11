@@ -31,14 +31,13 @@ import {
   CONFIDENCE_CAP_FULL_BAND, CONFIDENCE_CAP_FLOOR_FROM_NEIGHBOURS, CONFIDENCE_CAP_NONSTATIONARY,
   FULL_BAND_FRACTION, STANDING_STEP_DB, GROW_CELL_RATE,
   FLASH_SHARE, FLASH_EXCESS, FLASH_BIN_SHARE, SNR_SE_INFLATION, IMPULSIVE_Z,
-  DEFAULT_MIN_DURATION_SEC,
-} from '../js/sigint/segment.js';
+  DEFAULT_MIN_DURATION_SEC, DEAD_BAND_DB, EDGE_STEP_DB } from '../js/sigint/segment.js';
 import {
   extractFeatures, classify, classifySegment, modes, gridFit, gapFraction, periodicity,
   HYPOTHESES, MIN_SCORE, RAYLEIGH_DEPTH, LOCAL_BLOCK_SEC,
 } from '../js/sigint/classify.js';
-import { firBandpass, filter } from '../js/dsp/analytic.js';
-import { COLOURS, describe } from './noise-colours.mjs';
+import { firBandpass, firLowpass, filter } from '../js/dsp/analytic.js';
+import { COLOURS, describe, white, pink } from './noise-colours.mjs';
 
 const SR = 8000;
 
@@ -1460,5 +1459,70 @@ export const cases = [
     assert.ok(perSec < 12, `${perSec.toFixed(2)} ms per window second`);
     assert.equal(r.spec.frames * r.spec.bins < 8e6, true);
     assert.equal(r.spec.decimated, false, 'a 120 s window at 8 kHz should not need decimating');
+  },
+  async function aBandFarUnderTheReceiversOwnFloorIsCodecWhateverTheEdgeFinderSays() {
+    // What an MP3 of a shortwave capture looks like decoded at 44.1 kHz: receiver
+    // noise to ~3 kHz with a sharp edge, then a floor tens of dB lower with a
+    // faint encoder ridge in it. The edge finder is decoder-dependent — the same
+    // M08 file reads 17,000 Hz through Chrome's decoder and 2,885 Hz through
+    // ffmpeg's — but the floor level cannot be talked into it.
+    const rate = 44100, n = rate * 6;
+    const seed = white(n, { sigma: 0.2, seed: 21 });
+    const h = firLowpass(255, 3000 / rate, 80);
+    const x = filter(seed, h);
+    const quiet = white(n, { sigma: 0.2 * Math.pow(10, -55 / 20), seed: 22 });   // the codec's own floor
+    for (let i = 0; i < n; i++) {
+      const t = i / rate;
+      x[i] += quiet[i];
+      if (t > 1.5 && t < 3.5) x[i] += 0.15 * Math.cos(2 * Math.PI * 1000 * i / rate);
+      // a ridge 45 dB under the receiver band, keyed a little so it is not a pure line
+      x[i] += 0.2 * Math.pow(10, -45 / 20) * (1 + 0.5 * Math.sin(2 * Math.PI * 7 * t)) * Math.cos(2 * Math.PI * 16000 * i / rate);
+    }
+    const res = segment(Float32Array.from(x), rate);
+    const em = res.emissions;
+    const real = em.filter((d) => d.lowHz < 2000 && d.highHz < 3500 && d.startSec < 3.5 && d.endSec > 1.5);
+    // Everything the survey found above the receiver's edge, in whatever shape
+    // it came back: on this synthetic the flat codec floor above 3 kHz comes
+    // back as one component from the edge to Nyquist with the ridge inside it.
+    const dead = em.filter((d) => d.lowHz > 3200);
+    assert.ok(real.length >= 1, 'the burst in the receiver band is found: ' + JSON.stringify(em.map((d) => [Math.round(d.lowHz), Math.round(d.highHz)])));
+    assert.ok(real.every((d) => !d.aboveContentEdge), 'and is air');
+    assert.ok(real.every((d) => (d.floorBelowReceiverDb || 0) < 6),
+      'a real emission sits on the receiver floor, not under it: ' + real.map((d) => (d.floorBelowReceiverDb || 0).toFixed(1)).join(', '));
+    assert.ok(dead.length >= 1, 'something above the edge is detected at all (it is real energy, just not air): ' + JSON.stringify(em.map((d) => [Math.round(d.lowHz), Math.round(d.highHz)])));
+    for (const d of dead) {
+      assert.equal(d.aboveContentEdge, true, `${Math.round(d.lowHz)}-${Math.round(d.highHz)} Hz is codec (floor ${(d.floorBelowReceiverDb || 0).toFixed(0)} dB under the receiver)`);
+      assert.ok(d.floorBelowReceiverDb >= DEAD_BAND_DB, `${Math.round(d.lowHz)}-${Math.round(d.highHz)} Hz reads ${d.floorBelowReceiverDb.toFixed(1)} dB under, bar ${DEAD_BAND_DB}`);
+    }
+  },
+  async function theContentEdgeIsTheLargestCliffNotTheFirstStep() {
+    // Chrome's decode of the M08 MP3 has two codec plateaus, about 14 dB apart
+    // at 17 kHz, under a receiver band whose own edge is a 45 dB cliff near
+    // 2.9 kHz. The first-step rule read 17,000 Hz; ffmpeg's decode of the same
+    // file read 2,885. The biggest cliff is the receiver's under both.
+    const rate = 44100, n = rate * 5;
+    const receiver = filter(white(n, { sigma: 0.2, seed: 31 }), firLowpass(255, 2800 / rate, 80));
+    const mid = filter(white(n, { sigma: 0.2 * Math.pow(10, -45 / 20), seed: 32 }), firLowpass(255, 17000 / rate, 80));
+    const deep = white(n, { sigma: 0.2 * Math.pow(10, -59 / 20), seed: 33 });
+    const x = new Float32Array(n);
+    for (let i = 0; i < n; i++) x[i] = receiver[i] + mid[i] + deep[i];
+    const res = segment(x, rate);
+    assert.ok(res.floor.contentEdgeHz > 2200 && res.floor.contentEdgeHz < 3600,
+      `the edge is the receiver's, near 2.8 kHz, not the codec step at 17 kHz: read ${Math.round(res.floor.contentEdgeHz)} Hz`);
+    // and with the first-step rule's own failure reconstructed: the 14 dB step
+    // at 17 kHz must lose to the 45 dB one, which is what EDGE_STEP_DB decides
+    assert.ok(EDGE_STEP_DB > 6 && EDGE_STEP_DB < 45, 'the bar sits between the codec step and the receiver cliff');
+  },
+
+  async function aWidebandTiltIsNotACliffSoTheEdgeStaysAtTheCutoff() {
+    // A field recording at 96 kHz has receiver noise to the top with a gentle
+    // tilt — no cliff to mistake for a passband edge. Pink noise is the
+    // sharpest such tilt, 10 dB per decade, and it must not produce one.
+    const rate = 96000, n = rate * 4;
+    const x = pink(n, { sigma: 0.1, seed: 41 });
+    const res = segment(x, rate);
+    assert.ok(res.floor.contentEdgeHz > 0.6 * res.floor.cutoffHz,
+      `a tilt read as a cliff: edge ${Math.round(res.floor.contentEdgeHz)} Hz against cutoff ${Math.round(res.floor.cutoffHz)}`);
+    assert.equal(res.emissions.filter((d) => d.aboveContentEdge).length, 0, 'nothing in a tilt is codec');
   },
 ];

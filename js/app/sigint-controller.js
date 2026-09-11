@@ -55,20 +55,89 @@ export function quantities(m) {
   return rows.filter(([, q]) => q && typeof q === 'object');
 }
 
+/**
+ * What to show a person from a survey. segment() returns two lists and names
+ * the authoritative one in `classifyOn`; it also flags what is codec rather
+ * than air (`aboveContentEdge`) and what sits in a band whose own floor stands
+ * (`selfFloored`, whose SNR is honestly null). The first version of this panel
+ * took `emissions` in time order and sliced the first forty, which on an MP3 of
+ * a single 45 dB Morse tone put six full-length encoder ridges at −4 dB above
+ * the real 30 dB bursts, because the ridges start at 0:00. The second version
+ * ranked by `cells` and put a 4 kHz-wide ridge first, because cells reward
+ * area. The evidence is `falseAlarmLog10`, the module's own log probability
+ * that a component is noise: on M08 the real bursts read −6.9 M and −7.6 M
+ * against −114 k for the ridge. Most negative first; a self-floored emission
+ * has none and goes last.
+ */
+export function surveyRows(result, { limit = 40 } = {}) {
+  if (!result) return { rows: [], setAside: { codec: 0 }, present: false, reason: 'no survey' };
+  const listName = result.classifyOn && Array.isArray(result[result.classifyOn]) ? result.classifyOn : 'emissions';
+  const all = Array.isArray(result[listName]) ? result[listName] : [];
+  const air = all.filter((d) => !d.aboveContentEdge);
+  const evidence = (d) => (Number.isFinite(d.falseAlarmLog10) ? d.falseAlarmLog10 : Infinity);
+  const ranked = air.slice().sort((a, b) => evidence(a) - evidence(b) || (b.snrDb ?? -1e9) - (a.snrDb ?? -1e9) || (b.cells || 0) - (a.cells || 0));
+  const rows = ranked.slice(0, limit).map((d, i) => ({ ...d, id: d.id ?? ('e' + (i + 1)), k: i + 1 }));
+  return {
+    rows,
+    setAside: { codec: all.length - air.length, beyondLimit: Math.max(0, air.length - limit) },
+    present: !!result.present,
+    reason: result.reason || null,
+    standingBands: Array.isArray(result.standingBands) ? result.standingBands.length : 0,
+  };
+}
+
+/**
+ * What each task is told about the region. A selected band narrows every
+ * estimator to it: measure() and segment() take lowHz/highHz directly, classify
+ * takes the selected emission, the Morse decoder searches for its tone inside
+ * the band.
+ *
+ * The one trap is time. The worker is handed a SLICE that starts at zero, so an
+ * emission's absolute times have to be rebased to it. Passed as-is on M08 they
+ * addressed samples past the end of a 17.5 s slice, the classifier saw nothing,
+ * and the panel printed 'unclear' in 0 ms; rebased, the same emission reads
+ * ook-morse at 0.71.
+ */
+export function taskOptions(task, opts, state) {
+  const r = (state && state.region) || {};
+  const has = Number.isFinite(r.lowHz) && Number.isFinite(r.highHz) && r.highHz > r.lowHz;
+  if (task === 'measure') return has ? { ...opts, lowHz: r.lowHz, highHz: r.highHz } : opts;
+  if (task === 'classify') {
+    const d = ((state && state.detections) || []).find((x) => x.id === state.selectedId);
+    if (d) {
+      const from = Number.isFinite(r.from) ? r.from : 0;
+      const seconds = Number.isFinite(r.to) ? r.to - from : Infinity;
+      return { ...opts, detection: { ...d, startSec: Math.max(0, d.startSec - from), endSec: Math.min(seconds, d.endSec - from) } };
+    }
+    return has ? { ...opts, lowHz: r.lowHz, highHz: r.highHz } : opts;
+  }
+  if (task === 'decode') return has ? { ...opts, cw: { ...(opts.cw || {}), searchLoHz: r.lowHz, searchHiHz: r.highHz } } : opts;
+  return opts;
+}
+
 /** Everything the panel prints, as plain data, so it can be tested without a DOM. */
 export function reportLines(state, { methods = true } = {}) {
   const out = [];
   const { source, region, measured, classified, decodes, tdoa, detections } = state;
   out.push('YELLOWJACKET · SIGNAL / SIGINT');
   if (source) out.push('source   : ' + source);
-  if (region) out.push('region   : ' + clock(region.from) + ' to ' + clock(region.to) + '  (' + fmt(region.to - region.from, 1) + ' s)');
+  if (region) {
+    out.push('region   : ' + clock(region.from) + ' to ' + clock(region.to) + '  (' + fmt(region.to - region.from, 1) + ' s)'
+      + (Number.isFinite(region.lowHz) && Number.isFinite(region.highHz)
+        ? '  · ' + fmt(region.lowHz, 0) + '–' + fmt(region.highHz, 0) + ' Hz' : '  · full band')
+      + (region.how ? '  · ' + region.how : ''));
+  }
   out.push('');
   if (detections) {
-    out.push(`survey   : ${detections.length} emission${detections.length === 1 ? '' : 's'} above the floor`);
+    const aside = state.survey && state.survey.setAside ? state.survey.setAside : { codec: 0 };
+    out.push(`survey   : ${detections.length} emission${detections.length === 1 ? '' : 's'} above the floor, strongest evidence first`
+      + (aside.codec ? `; ${aside.codec} above the recording's content edge set aside as codec, not air` : ''));
     for (const d of detections.slice(0, 12)) {
-      out.push(`   ${clock(d.startSec)}–${clock(d.endSec)}  ${fmt(d.lowHz, 0)}–${fmt(d.highHz, 0)} Hz  `
-        + `peak SNR ${fmt(d.snrDb, 1)} dB`);
+      out.push(`   #${d.k ?? '?'}  ${clock(d.startSec)}–${clock(d.endSec)}  ${fmt(d.lowHz, 0)}–${fmt(d.highHz, 0)} Hz  `
+        + (d.selfFloored ? 'own floor' : `SNR ${fmt(d.snrDb, 1)} dB`)
+        + (Number.isFinite(d.cells) ? `  ${d.cells} cells` : ''));
     }
+    if (!detections.length && state.survey && state.survey.reason) out.push('   ' + state.survey.reason);
     out.push('');
   }
   if (measured) {
@@ -143,7 +212,8 @@ export function initSigintController(ctx) {
   const host = $('sigintHost');
   if (!host) return;
 
-  const state = { source: null, region: null, measured: null, classified: null, decodes: [], tdoa: null, detections: null };
+  const state = { source: null, region: null, measured: null, classified: null, decodes: [], tdoa: null, detections: null, selectedId: null };
+  const spec = ctx.views && ctx.views.spec;
 
   const el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -177,6 +247,11 @@ export function initSigintController(ctx) {
   // The numbers go in readout wells, the bench's own idiom for a measured value;
   // the classification, the decodes and the two-station result stay as text.
   // The copied report carries all of it with full provenance.
+  // The survey, as a list a person can click; the same emissions are outlined
+  // on the spectrogram, and clicking either selects the region for everything
+  // else on this rail.
+  const list = el('div', 'yj-sigint-list');
+  list.hidden = true;
   const readouts = document.createElement('dl');
   readouts.className = 'yj-readouts yj-sigint-readouts';
   readouts.hidden = true;
@@ -185,7 +260,37 @@ export function initSigintController(ctx) {
   const pre = el('pre', 'yj-sigint-report');
   pre.textContent = '';
 
+  const detRect = (d) => ({ t0: d.startSec, t1: d.endSec, f0: d.lowHz, f1: d.highHz });
+  const selectDetection = (id, { fromSpectrogram = false } = {}) => {
+    state.selectedId = id;
+    const d = (state.detections || []).find((x) => x.id === id) || null;
+    if (d && spec && !fromSpectrogram && spec.setRegion) spec.setRegion(detRect(d));
+    if (spec && spec.setDetections) spec.setDetections(state.detections || [], id);
+    if (d) {
+      state.region = { from: d.startSec, to: d.endSec, lowHz: d.lowHz, highHz: d.highHz, how: 'emission ' + (d.k ?? id) };
+      line.textContent = 'SELECTED ' + clock(d.startSec) + '–' + clock(d.endSec) + ' · '
+        + fmt(d.lowHz, 0) + '–' + fmt(d.highHz, 0) + ' Hz · MEASURE, CLASSIFY OR DECODE IT';
+    }
+    redraw();
+  };
   const redraw = () => {
+    list.textContent = '';
+    const dets = state.detections || [];
+    for (const d of dets) {
+      const b = el('button', 'yj-sigint-det' + (d.id === state.selectedId ? ' is-selected' : ''));
+      b.type = 'button';
+      const k = el('span', 'k', '#' + (d.k ?? d.id));
+      const where = el('span', '', clock(d.startSec) + '–' + clock(d.endSec) + ' · ' + fmt(d.lowHz, 0) + '–' + fmt(d.highHz, 0) + ' Hz');
+      // A self-floored emission has no honest SNR: its band's own floor is the
+      // signal. Saying so beats printing a dash a reader will fill in.
+      const snr = el('span', 'snr', d.selfFloored ? 'own floor' : (Number.isFinite(d.snrDb) ? fmt(d.snrDb, 1) + ' dB' : ''));
+      if (d.selfFloored) b.title = 'This band\'s own floor stands above its surroundings: an SNR against itself would be meaningless';
+      b.append(k, where, snr);
+      if (!b.title) b.title = 'Select this emission as the region';
+      b.addEventListener('click', () => selectDetection(d.id));
+      list.appendChild(b);
+    }
+    list.hidden = !dets.length;
     readouts.textContent = '';
     const m = state.measured;
     if (m) {
@@ -228,10 +333,21 @@ export function initSigintController(ctx) {
     // A whole hour is neither needed nor affordable; the bench's own selection
     // wins when there is one, and otherwise the first two minutes are plenty to
     // characterise a transmission.
+    // The region, in order of how deliberately it was chosen: a rectangle drawn
+    // or clicked on the spectrogram (time and band), then the bench's own time
+    // selection, then the first two minutes.
+    const r = spec && spec.region;
     const sel = ctx.api.getLiftRange && ctx.api.getLiftRange();
-    const from = sel && sel.end > sel.start ? sel.start : 0;
-    const to = sel && sel.end > sel.start ? sel.end : Math.min(buf.duration, maxSeconds);
-    state.region = { from, to };
+    let from, to, lowHz = null, highHz = null, how;
+    if (r && r.t1 > r.t0) {
+      from = r.t0; to = Math.min(r.t1, r.t0 + maxSeconds); lowHz = r.f0; highHz = r.f1;
+      how = state.selectedId != null && state.region && state.region.how ? state.region.how : 'spectrogram selection';
+    } else if (sel && sel.end > sel.start) {
+      from = sel.start; to = Math.min(sel.end, sel.start + maxSeconds); how = 'bench selection';
+    } else {
+      from = 0; to = Math.min(buf.duration, maxSeconds); how = 'first ' + Math.round(to) + ' s';
+    }
+    state.region = { from, to, lowHz, highHz, how };
     const a = Math.max(0, Math.floor(from * buf.sampleRate));
     const b = Math.min(ch.length, Math.ceil(to * buf.sampleRate));
     // A copy, not a subarray: the runner transfers the buffer to the worker,
@@ -251,7 +367,8 @@ export function initSigintController(ctx) {
     await new Promise((r) => setTimeout(r, 0));
     const t0 = Date.now();
     try {
-      const result = await sigintRunner.run(task, src.x, src.rate, opts);
+      const band = bandOpts(task, opts);
+      const result = await sigintRunner.run(task, src.x, src.rate, band);
       apply(task, result);
       line.textContent = name + ' · ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s';
     } catch (err) {
@@ -265,10 +382,19 @@ export function initSigintController(ctx) {
     redraw();
   }
 
+  const bandOpts = (task, opts) => taskOptions(task, opts, state);
+
   function apply(task, result) {
     if (task === 'segment') {
-      state.detections = (result.emissions || result.detections || []).slice(0, 40);
-      status(`SIGINT · ${state.detections.length} emissions above the floor`);
+      const read = surveyRows(result);
+      state.detections = read.rows;
+      state.survey = read;
+      state.selectedId = null;
+      if (spec && spec.setDetections) spec.setDetections(state.detections, null);
+      const aside = read.setAside.codec ? ` · ${read.setAside.codec} codec ridge${read.setAside.codec === 1 ? '' : 's'} set aside` : '';
+      status(read.rows.length
+        ? `SIGINT · ${read.rows.length} emissions above the floor${aside} · click one on the spectrogram or below`
+        : `SIGINT · nothing above the floor${aside}${read.reason ? ' · ' + read.reason : ''}`);
     } else if (task === 'measure') {
       state.measured = result;
     } else if (task === 'classify') {
@@ -296,6 +422,23 @@ export function initSigintController(ctx) {
     }
   });
 
-  host.append(note, row, line, readouts, designator, pre);
+  if (spec && spec.addEventListener) {
+    spec.addEventListener('detectionselect', (e) => selectDetection(e.detail.id, { fromSpectrogram: true }));
+    spec.addEventListener('regionselect', (e) => {
+      const r = e.detail;
+      if (!r) { state.selectedId = null; if (spec.setDetections) spec.setDetections(state.detections || [], null); redraw(); return; }
+      // A drawn rectangle is a region without being an emission.
+      if (state.selectedId != null) { state.selectedId = null; if (spec.setDetections) spec.setDetections(state.detections || [], null); }
+      line.textContent = 'REGION ' + clock(r.t0) + '–' + clock(r.t1) + ' · ' + fmt(r.f0, 0) + '–' + fmt(r.f1, 0) + ' Hz · MEASURE, CLASSIFY OR DECODE IT';
+      redraw();
+    });
+  }
+  // The survey outlines belong to SIGINT; SCOPE gets its spectrogram back clean.
+  ctx.api.sigintStateShown = (on) => {
+    if (!spec || !spec.setDetections) return;
+    spec.setDetections(on ? (state.detections || []) : [], on ? state.selectedId : null);
+  };
+
+  host.append(note, row, line, list, readouts, designator, pre);
   ctx.api.sigintState = () => state;
 }

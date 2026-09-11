@@ -281,6 +281,11 @@ export const FLASH_EXCESS = 1.5;
 // own: the reported confidence is the smallest of the false-alarm confidence
 // and whichever of these apply, and each one that binds is named in
 // `confidenceNotes` so the reader can disagree with it.
+/** A band whose 90th-percentile floor sits this far under the receiver's median floor is dead air to it. Measured on M08 at 44.1 kHz: codec ridges 44-67 dB under, real bursts 0.4-15.6 dB — the bar sits with about 14 dB of margin on either side. */
+export const DEAD_BAND_DB = 30;
+/** The receiver's passband edge is the biggest cliff in the floor: at least this many dB across a window of ±EDGE_STEP_FRACTION of the frequency. Measured: 45 dB on M08; pink noise, the steepest wideband tilt, reads about 2 dB. */
+export const EDGE_STEP_DB = 15;
+export const EDGE_STEP_FRACTION = 0.25;
 export const CONFIDENCE_CAP_FULL_BAND = 0.3;
 export const CONFIDENCE_CAP_FLOOR_FROM_NEIGHBOURS = 0.7;
 export const CONFIDENCE_CAP_NONSTATIONARY = 0.8;
@@ -594,9 +599,37 @@ export function noiseFloor(spec, opts = {}) {
   while (cutoffBin > 1 && smooth[cutoffBin] < 1e-3 * mid) cutoffBin -= 1;
   const plateauFrom = Math.max(1, cutoffBin - Math.floor(cutoffBin / 4));
   const plateau = medianOf(smooth, plateauFrom, cutoffBin + 1);
+  // The receiver's passband edge is the LARGEST cliff in the floor below the
+  // codec cutoff, not the first bin down from the top to clear 6 dB. The first
+  // version took the first: through Chrome's decoder the same M08 file has two
+  // codec plateaus, at about -124 and -110 dB, and the 14 dB step between them
+  // at 17 kHz cleared 6 dB before the scan ever reached the receiver's 45 dB
+  // shoulder at 2.9 kHz — so the content edge read 17,000 Hz in the page and
+  // 2,885 Hz under ffmpeg. Biggest step, and both decoders agree. A recording
+  // with no cliff of at least EDGE_STEP_DB (a wideband field recording has a
+  // tilt, not a cliff) keeps the old rule.
   let contentBin = cutoffBin;
-  while (contentBin > 1 && !(smooth[contentBin] > 4 * plateau)) contentBin -= 1;
-  if (contentBin <= 1) contentBin = cutoffBin;             // one plateau, no shoulder
+  {
+    // The window is a fraction of the frequency, not a fixed span. A fixed
+    // 300 Hz window put the "largest cliff" of 96 kHz pink noise at 316 Hz:
+    // a 10 dB-per-decade tilt is a whole decade across that window near DC
+    // and nothing at 20 kHz. Proportional, the same tilt reads the same ~2 dB
+    // across an octave-and-a-bit everywhere, and a shoulder still reads 45.
+    let bestBin = -1, bestDb = 0;
+    for (let b = Math.floor(cutoffBin * 0.9); b > 8; b--) {
+      const w = Math.max(4, Math.round(EDGE_STEP_FRACTION * b));
+      if (b - w < 1 || b + w > cutoffBin) continue;
+      const below = smooth[b - w], above = smooth[b + w];
+      if (!(below > 0) || !(above > 0)) continue;
+      const db = 10 * Math.log10(below / above);
+      if (db > bestDb) { bestDb = db; bestBin = b; }
+    }
+    if (bestBin > 0 && bestDb >= EDGE_STEP_DB) contentBin = bestBin;
+    else {
+      while (contentBin > 1 && !(smooth[contentBin] > 4 * plateau)) contentBin -= 1;
+      if (contentBin <= 1) contentBin = cutoffBin;         // one plateau, no shoulder
+    }
+  }
 
   const band = analysisBand(spec, { cutoffBin }, opts);
   // The standing-band scan runs over every bin up to Nyquist unless the caller
@@ -1377,6 +1410,24 @@ export function segment(mono, sampleRate, opts = {}) {
   const reportCut = Math.log10(presence.alpha);
   const bandSpanHz = (binHi - binLo + 1) * spec.binHz;
 
+  // The receiver's own floor: the median per-bin floor below the content edge.
+  // A component whose band floor sits far under it is in a band the receiver
+  // never produced. Linear power in, decibels out.
+  //
+  // The component's side of the comparison is a HIGH percentile of its band's
+  // floor, not the median. The question is whether any part of the band sits
+  // on receiver noise, and a median over a band that straddles the receiver's
+  // roll-off answers a different question: on the M08 capture two real bursts
+  // whose bands reach 2950 Hz against a 2885 Hz edge read 23 and 25 dB "under"
+  // by the median, a hair from the 30 dB bar, and 1.8 and 0.4 dB by this.
+  const receiverFloor = medianOf(fl.floor, binLo, Math.max(binLo + 1, Math.min(fl.contentBin, binHi) + 1));
+  const deadBandDb = (a) => {
+    if (!(receiverFloor > 0)) return 0;
+    const own = Array.from(fl.floor.subarray(a.b0, a.b1 + 1)).sort((p, q) => p - q);
+    const high = own[Math.min(own.length - 1, Math.floor(own.length * 0.9))];
+    return high > 0 ? Math.max(0, 10 * Math.log10(receiverFloor / high)) : 0;
+  };
+
   const components = [];
   for (let id = 0; id < acc.length; id++) {
     const a = acc[id];
@@ -1480,8 +1531,17 @@ export function segment(mono, sampleRate, opts = {}) {
       floorFromNeighbours: !!a.elevated,
       fullBand, selfFloored,
       // Above the receiver's own noise band there is no receiver noise to
-      // stand out from, so whatever is here is the codec, not the air.
-      aboveContentEdge: a.b0 > fl.contentBin,
+      // stand out from, so whatever is here is the codec, not the air. Two
+      // tests, because the content-edge finder can be fooled: an MP3 decoded
+      // at its native 44.1 kHz has two shoulders, the receiver's near 3 kHz and
+      // the encoder's low-pass near 17 kHz, and on the shelf's M08 capture it
+      // took the second. The floor does not lie about it: the band 16.6-20.7 kHz
+      // there sits 59 dB under the receiver's own noise and the 3.5-10 kHz
+      // ridges 44 dB under. No receiver's audio output carries a signal 30 dB
+      // below its own floor, so a band that far down is dead air to the receiver
+      // and whatever stands in it is the codec.
+      aboveContentEdge: a.b0 > fl.contentBin || deadBandDb(a) >= DEAD_BAND_DB,
+      floorBelowReceiverDb: deadBandDb(a),
       bins: [a.b0, a.b1], frames: [a.t0, a.t1],
     });
   }
@@ -1530,6 +1590,7 @@ export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.
         evidence: d.evidence, floorFromNeighbours: d.floorFromNeighbours,
         fullBand: d.fullBand, selfFloored: d.selfFloored,
         aboveContentEdge: d.aboveContentEdge,
+        floorBelowReceiverDb: d.floorBelowReceiverDb,
         subBands: [[d.lowHz, d.highHz]],
       });
       continue;
@@ -1558,6 +1619,7 @@ export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.
     hit.fullBand = hit.fullBand || d.fullBand;
     hit.selfFloored = hit.selfFloored || d.selfFloored;
     hit.aboveContentEdge = hit.aboveContentEdge && d.aboveContentEdge;
+    hit.floorBelowReceiverDb = Math.max(hit.floorBelowReceiverDb || 0, d.floorBelowReceiverDb || 0);
     if (hit.evidence !== d.evidence) hit.evidence = 'cells+line';
     hit.subBands.push([d.lowHz, d.highHz]);
   }

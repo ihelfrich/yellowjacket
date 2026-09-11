@@ -723,8 +723,21 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 }
 .yj-sigstate-btn:hover { border-color: var(--yj-line-hi); color: var(--yj-ink); }
 .yj-sigstate-btn.is-active { color: var(--yj-bg); background: var(--yj-yellow); border-color: var(--yj-yellow); }
-.yj-sigstate { display: none; }
-.yj-sigstate.is-active { display: block; }
+/* The SIGINT rail is wider than the meters' rail: it holds a report. */
+.yj-rail-sigint { width: 372px; }
+.yj-sigint-list { display: flex; flex-direction: column; gap: 3px; }
+.yj-sigint-det {
+  display: grid; grid-template-columns: 1.6em 1fr auto; gap: 8px; align-items: baseline;
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.03em;
+  color: var(--yj-ink-dim); background: var(--yj-well);
+  border: 1px solid var(--yj-line); border-radius: 2px; padding: 4px 7px;
+  cursor: pointer; text-align: left;
+}
+.yj-sigint-det:hover { border-color: var(--yj-line-hi); color: var(--yj-ink); }
+.yj-sigint-det.is-selected { border-color: var(--yj-yellow); color: var(--yj-yellow); }
+.yj-sigint-det .k { color: var(--yj-blue); }
+.yj-sigint-det.is-selected .k { color: var(--yj-yellow); }
+.yj-sigint-det .snr { color: var(--yj-amber); }
 .yj-sigint-host { display: flex; flex-direction: column; gap: 9px; padding: 12px 2px; }
 .yj-sigint-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .yj-sigint-title {

@@ -561,10 +561,13 @@ document.addEventListener('click', (e) => {
     other.classList.toggle('is-active', on);
     other.setAttribute('aria-selected', on ? 'true' : 'false');
   }
-  for (const pane of document.querySelectorAll('.yj-sigstate')) {
-    pane.classList.toggle('is-active', pane.id === 'sigstate-' + b.dataset.sigstate);
+  // Only the rail changes. The waveform and spectrogram are the same surface in
+  // both states — SIGINT draws its survey on the spectrogram and reads its
+  // region from a click there — so nothing on the left is hidden or resized.
+  for (const rail of document.querySelectorAll('[data-sigrail]')) {
+    rail.hidden = rail.dataset.sigrail !== b.dataset.sigstate;
   }
-  if (b.dataset.sigstate === 'scope' && ctx.api.sizeCanvases) ctx.api.sizeCanvases();
+  if (ctx.api.sigintStateShown) ctx.api.sigintStateShown(b.dataset.sigstate === 'sigint');
 });
 
 // Substate chips (SLICE / PATTERN / SONG …) are the second half of "where am

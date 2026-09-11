@@ -266,7 +266,6 @@
       <button class="yj-sigstate-btn" data-sigstate="sigint" role="tab" aria-selected="false"
         title="The same audio read as a transmission: what is present, what its numbers are, what it says">SIGINT</button>
     </div>
-    <div id="sigstate-scope" class="yj-sigstate is-active">
     <div class="yj-cols">
       <div class="yj-grow">
         <div class="yj-panel" data-label="SIGNAL / TIME DOMAIN">
@@ -280,7 +279,7 @@
           <div class="yj-canvas-note" id="specNote">Spectrogram computes when audio loads.</div>
         </div>
       </div>
-      <aside class="yj-rail">
+      <aside class="yj-rail" data-sigrail="scope">
         <div class="yj-panel" data-label="LEVELS">
           <canvas id="meterLive" class="yj-meter"></canvas>
           <button id="btnClip" class="yj-clip-led" title="Clip indicator. Latches until clicked.">CLIP</button>
@@ -342,11 +341,13 @@
           </div>
         </div>
       </aside>
+      <!-- SIGINT swaps only this rail. The waveform and the spectrogram stay: the
+           survey draws on the spectrogram and a click there selects the region. -->
+      <aside class="yj-rail yj-rail-sigint" data-sigrail="sigint" hidden>
+        <div id="sigintHost" class="yj-panel yj-sigint-host" data-label="SIGNAL / SIGINT"></div>
+      </aside>
     </div>
-    </div>
-    <div id="sigstate-sigint" class="yj-sigstate">
-      <div id="sigintHost" class="yj-panel yj-sigint-host" data-label="SIGNAL / SIGINT"></div>
-    </div>
+
   </section>
 
   <!-- ============ RACK ============ -->
