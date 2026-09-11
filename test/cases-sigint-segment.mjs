@@ -1525,4 +1525,46 @@ export const cases = [
       `a tilt read as a cliff: edge ${Math.round(res.floor.contentEdgeHz)} Hz against cutoff ${Math.round(res.floor.cutoffHz)}`);
     assert.equal(res.emissions.filter((d) => d.aboveContentEdge).length, 0, 'nothing in a tilt is codec');
   },
+  async function mergingIsAnchoredToTheSeedAndNeverChains() {
+    // The shape of M12 before the fix: 3 s Morse groups at 958-1044 Hz, a 16 s
+    // splatter component at 215-1314 Hz over the first groups, and a
+    // full-length hum at 54-118 Hz. Measured against the grown box, every
+    // group folded into the splatter, the hum bridged the rest, and one 92-part
+    // blob spanned 54-3079 Hz for two minutes and classified as speech.
+    const c = (startSec, endSec, lowHz, highHz, fa, extra = {}) => ({
+      startSec, endSec, lowHz, highHz, cells: 10, falseAlarmLog10: fa, snrDb: 15, confidence: 0.7,
+      aboveContentEdge: false, floorBelowReceiverDb: 0, subBands: [[lowHz, highHz]], ...extra,
+    });
+    const groups = [5, 20, 35, 50].map((t) => c(t, t + 3, 958, 1044, -3000));
+    const splatter = c(1.3, 16.6, 215, 1314, -25000);
+    const hum = c(0, 120, 54, 118, -800);
+    const out = mergeEmissions([hum, ...groups, splatter]);
+    // the seed is the strongest, the splatter; a group inside it overlaps only
+    // 20% of the seed's own extent and stays separate; the hum overlaps 100% of
+    // the seed but the seed is 13% of the hum, so it stays separate too
+    assert.equal(out.length, 6, 'nothing chains: ' + out.map((e) => `${Math.round(e.lowHz)}-${Math.round(e.highHz)}Hz ${e.startSec}-${e.endSec}s x${e.parts}`).join(' | '));
+    assert.ok(out.every((e) => e.parts === 1));
+    assert.ok(out.every((e) => Array.isArray(e.seedBand) && Array.isArray(e.seedTime)), 'each emission says what anchored it');
+    // and the output is in time order, as before
+    assert.deepEqual(out.map((e) => e.startSec), [0, 1.3, 5, 20, 35, 50]);
+  },
+
+  async function codecAndAirNeverMergeAndDepthIsTheShallowestPart() {
+    const c = (lowHz, highHz, codec, under) => ({
+      startSec: 0, endSec: 60, lowHz, highHz, cells: 10, falseAlarmLog10: -5000, snrDb: 12, confidence: 0.7,
+      aboveContentEdge: codec, floorBelowReceiverDb: under, subBands: [[lowHz, highHz]],
+    });
+    // same time, 100 Hz apart: air with air merges, codec with codec merges, never across
+    const out = mergeEmissions([c(900, 1000, false, 0), c(1100, 1200, false, 4), c(3500, 3600, true, 44), c(3700, 3800, true, 50)]);
+    assert.equal(out.length, 2, out.map((e) => `${e.lowHz}-${e.highHz} codec=${e.aboveContentEdge}`).join(' | '));
+    const air = out.find((e) => !e.aboveContentEdge), codec = out.find((e) => e.aboveContentEdge);
+    assert.ok(air && codec);
+    assert.equal(air.parts, 2);
+    assert.equal(codec.parts, 2);
+    // an emission is air if any part of it is, so its depth is the depth of
+    // the part least under the receiver — the old max would have called the
+    // air pair 4 dB under, and on M12 it called a real emission 57 dB under
+    assert.equal(air.floorBelowReceiverDb, 0);
+    assert.equal(codec.floorBelowReceiverDb, 44);
+  },
 ];

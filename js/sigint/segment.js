@@ -1572,13 +1572,41 @@ export function segment(mono, sampleRate, opts = {}) {
  * list a classifier should be given.
  */
 export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.5 } = {}) {
+  // Two rules learned from the shelf. (1) The frequency gap is measured against
+  // the emission's SEED band — its strongest component — not against the box
+  // the merge has grown so far. Measured against the box, M12's Morse groups at
+  // 958-1044 Hz chained through a 215-1314 Hz splatter component, then hum at
+  // 86-205, then 54-118, into one 92-part blob from 54 to 3079 Hz across the
+  // whole two minutes, which classified as speech. (2) A codec component never
+  // merges with an air one: they are different physics, and gluing seven codec
+  // ridges onto that blob had also put its floor 57 dB "under the receiver"
+  // while calling it air. Seeds are taken in evidence order so the strongest
+  // component anchors, and the output is returned in time order as before.
+  const order = detections.slice().sort((a, b) =>
+    (Number.isFinite(a.falseAlarmLog10) ? a.falseAlarmLog10 : Infinity) - (Number.isFinite(b.falseAlarmLog10) ? b.falseAlarmLog10 : Infinity)
+    || a.startSec - b.startSec);
   const out = [];
-  for (const d of detections) {
+  for (const d of order) {
     const hit = out.find((e) => {
-      const lo = Math.max(e.startSec, d.startSec), hi = Math.min(e.endSec, d.endSec);
-      const share = (hi - lo) / Math.max(1e-9, Math.min(e.endSec - e.startSec, d.endSec - d.startSec));
-      if (!(share >= mergeOverlap)) return false;
-      return d.lowHz - e.highHz <= mergeGapHz && e.lowHz - d.highHz <= mergeGapHz;
+      if (!!e.aboveContentEdge !== !!d.aboveContentEdge) return false;
+      // Both the candidate and the SEED must substantially overlap each other
+      // in time. Measured against the shorter of the two, a 3 s Morse group
+      // inside a 16 s splatter component "overlapped 100%", and every group in
+      // M12 folded into the splatter; and a full-length hum overlapped 100% of
+      // any seed, then bridged everything that overlapped the hum. Against the
+      // seed's own extent, not the grown box, nothing can chain.
+      const lo = Math.max(e.seedTime[0], d.startSec), hi = Math.min(e.seedTime[1], d.endSec);
+      const overlap = hi - lo;
+      if (!(overlap > 0)) return false;
+      const seedDur = Math.max(1e-9, e.seedTime[1] - e.seedTime[0]);
+      const dDur = Math.max(1e-9, d.endSec - d.startSec);
+      if (!(overlap / seedDur >= mergeOverlap && overlap / dDur >= mergeOverlap)) return false;
+      // The frequency gap stays absolute. A draft scaled it to the seed's own
+      // bandwidth so an 86 Hz Morse tone would not own hum 500 Hz away — and
+      // split the two tones of a keyed FSK pair, which sit a shift apart (170
+      // to 850 Hz) and are one emission. The chaining was never a gap problem;
+      // the overlap rule above is what stopped it.
+      return d.lowHz - e.seedBand[1] <= mergeGapHz && e.seedBand[0] - d.highHz <= mergeGapHz;
     });
     if (!hit) {
       out.push({
@@ -1592,6 +1620,8 @@ export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.
         aboveContentEdge: d.aboveContentEdge,
         floorBelowReceiverDb: d.floorBelowReceiverDb,
         subBands: [[d.lowHz, d.highHz]],
+        seedBand: [d.lowHz, d.highHz],
+        seedTime: [d.startSec, d.endSec],
       });
       continue;
     }
@@ -1619,7 +1649,9 @@ export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.
     hit.fullBand = hit.fullBand || d.fullBand;
     hit.selfFloored = hit.selfFloored || d.selfFloored;
     hit.aboveContentEdge = hit.aboveContentEdge && d.aboveContentEdge;
-    hit.floorBelowReceiverDb = Math.max(hit.floorBelowReceiverDb || 0, d.floorBelowReceiverDb || 0);
+    // the shallowest part: an emission is air if any part of it is, so its
+    // depth under the receiver is the depth of the part that is least under
+    hit.floorBelowReceiverDb = Math.min(hit.floorBelowReceiverDb ?? Infinity, d.floorBelowReceiverDb ?? 0);
     if (hit.evidence !== d.evidence) hit.evidence = 'cells+line';
     hit.subBands.push([d.lowHz, d.highHz]);
   }
@@ -1630,7 +1662,7 @@ export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.
     e.dutyCycle = e.boxCells > 0 ? e.cells / e.boxCells : 1;
     e.subBands.sort((a, b) => a[0] - b[0]);
   }
-  return out;
+  return out.sort((a, b) => a.startSec - b.startSec || a.lowHz - b.lowHz);
 }
 
 // null means "withheld", and it propagates: an emission whose level could not
