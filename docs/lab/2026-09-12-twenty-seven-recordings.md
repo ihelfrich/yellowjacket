@@ -169,3 +169,79 @@ the SAME weather test tone.
   wrong emission first on both M12 and the distress call. And where there is
   readable keying under a slow envelope, the gaps are shortened by the same
   amount the marks are lengthened, which is measurable and removable.
+
+---
+
+# 2026-09-12, later — the edge-bias correction, and what it refused to fix
+
+The correction described above is implemented. It is not what fixed the Marine
+Electric, and the way it declined is the useful part of this entry.
+
+## The estimator, and the test it has to pass
+
+The bias comes out of two classes that are both supposed to be one unit: the
+dit measures `u + d`, the intra-character gap measures `u - d`, so the bias is
+half their difference and the unit is their mean. Every falling edge then moves
+back by `d`; rising edges are untouched, which is the physical claim a release
+makes.
+
+Two classes produced that number, so every other class can refute it. A dah
+must measure `3u + d`, a character gap `3u - d`, a word gap `7u - d`, and none
+of those went into the estimate. On injected biases the model holds and the
+correction returns the truth:
+
+| injected release | uncorrected | corrected |
+|---|---|---|
+| 10 ms | 107 ms unit, 2.87 dah/dit | 100 ms, 3.00 |
+| 20 ms | 116 ms unit, 2.72 dah/dit | 100 ms, 3.00 |
+| 30 ms | — | 100 ms, 3.00, then refused on key-up power |
+| none | 101 ms, 2.98 | not corrected at all |
+
+The last row matters as much as the others. A correction that is always on is
+not a measurement, and the decoder reports the bias it removed so a reader
+knows the run lengths were touched.
+
+## What it refused
+
+On the Marine Electric's 64–100 s windows — the ones whose gaps are shorter
+than their dits — the model is refuted outright by the class it did not use:
+
+| window | fitted unit | bias | dah observed | dah predicted |
+|---|---|---|---|---|
+| 64–76 s | 47 ms | 4 ms | 402 ms | 145 ms |
+| 80–92 s | 68 ms | 14 ms | 391 ms | 219 ms |
+| 88–100 s | 52 ms | 12 ms | 328 ms | 167 ms |
+
+The dashes are five to eight times the dits, not three. So the earlier entry
+above was half right and should be read with this correction: those windows do
+have gaps shorter than their dits, and that part matches a release, but the
+whole distribution does not. Something else is going on in that recording, and
+a two-class fit that happened to look like a known fault would have printed a
+message out of it. The correction declined on all three windows, and the
+decoder still refuses.
+
+That is the outcome to want. The estimator was built from a synthetic fault
+that reproduces cleanly, tested against the recording that motivated it, and
+told the recording did not have that fault.
+
+## Two other things this shook out
+
+A guard added earlier the same day — reject a merge floor larger than 0.6 of
+the unit it fitted, on the grounds that it must be merging elements — was
+applying to the speed-free floor as well as the imposed ones. It is a quarter
+of the span's own median run, so a large ratio there is a fact about the signal
+rather than a choice made against it. Gating it threw away the right answer on
+M12: three bandwidths fitting a 79–81 ms unit were rejected in favour of a
+168 ms fit at 83% boundary doubt. The guard now applies only to imposed floors,
+and M12 fits 79.0 ms at 15.2 wpm — the same unit the fallback ladder finds
+independently. It still refuses, on missing elements.
+
+And the correction was at first allowed to improve the number that selects
+among candidates. Removing a bias mechanically tightens the classes, so a
+corrected candidate outranked an uncorrected one for having been repaired
+rather than for fitting better: it flipped the fade tracker on a 40%-jitter
+fist that reads perfectly without it, and the fade-doubt gate then refused a
+correct decode. Selection now uses the scatter measured before the correction.
+The correction changes the verdict, never the ranking.
+
+79 groups, 748 cases, zero failures.

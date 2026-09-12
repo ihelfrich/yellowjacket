@@ -939,6 +939,75 @@ export function morseShaped(timing) {
   return { ok: bad.length === 0, bad };
 }
 
+/**
+ * Undo a one-sided edge bias in a run-length list.
+ *
+ * A slow release on the key-down envelope — a receiver's AGC, a transmitter's
+ * own decay, a detector whose threshold sits low on a signal that falls slowly
+ * — puts every falling edge late by the same amount. Each mark is then longer
+ * by that amount and each gap shorter by it, so a dit and an intra-character
+ * gap, which are both one unit, stop agreeing: measured on a clean 12 wpm
+ * render with a 20 ms one-pole release, the dit reads 116 ms, the gap 84 ms,
+ * and the dah/dit ratio falls from 2.99 to 2.72.
+ *
+ * That makes the repair algebra rather than a fit. If the two classes are both
+ * one unit, then dit = u + d and gap = u - d, so the bias is half their
+ * difference and the unit is their mean. Nothing here is tuned: `d` comes out
+ * of the two classes the fit already produced, and every falling edge moves
+ * back by it. The rising edges are untouched, which is the physical claim
+ * being made — a release is one-sided.
+ *
+ * Returns null when the correction does not apply or would not be a
+ * correction: a non-positive bias, one below the envelope's own resolution,
+ * one large enough to be a different signal rather than a skewed one, or one
+ * that would drive a run to zero length.
+ */
+export function deskewEdges(runs, timing, { envRate = 2000, maxShare = 0.45 } = {}) {
+  if (!timing || !timing.ok || !timing.marks.length || !timing.spaces.length) return null;
+  const dit = timing.marks[0].centre;
+  const gap = timing.spaces[0].centre;
+  const delta = (dit - gap) / 2;
+  const unit = (dit + gap) / 2;
+  // Below one and a half envelope samples the difference is where the edges
+  // happened to land on the sample grid, not a bias.
+  if (!(delta > 1.5 / envRate)) return null;
+  if (!(delta < maxShare * unit)) return null;
+  // The two classes above produced the bias; every other class now has to
+  // agree with it, and this is the whole difference between a correction and
+  // an excuse. A one-sided bias is one number: it adds `d` to every mark
+  // whatever its length and takes `d` off every gap, so a dah must measure
+  // 3u + d, a character gap 3u - d and a word gap 7u - d. None of those went
+  // into the estimate, so each is a falsification test.
+  //
+  // This is what stops the correction manufacturing Morse out of a fist that
+  // simply runs its characters together. A deliberately 2:1 fist — dahs only
+  // twice a dit — has short gaps too, and without this check the correction
+  // read it as "EAT EAT EAT EAT" instead of refusing it. Its dah class sits
+  // near 2u and the model predicts 3u + d, which is nowhere near.
+  const agrees = (observed, predicted) => Number.isFinite(observed) && predicted > 0
+    && Math.abs(Math.log(observed / predicted)) < 0.12;
+  const units = [null, 3];
+  for (let i = 1; i < timing.marks.length; i++) {
+    const k = units[i];
+    if (!k) break;
+    if (!agrees(timing.marks[i].centre, k * unit + delta)) return null;
+  }
+  const spaceUnits = [1, 3, 7];
+  for (let i = 1; i < timing.spaces.length && i < spaceUnits.length; i++) {
+    if (!agrees(timing.spaces[i].centre, spaceUnits[i] * unit - delta)) return null;
+  }
+  const out = [];
+  for (let i = 0; i < runs.length; i++) {
+    const r = { ...runs[i] };
+    if (r.on) r.end -= delta;
+    if (i > 0 && runs[i - 1].on) r.start -= delta;
+    r.sec = r.end - r.start;
+    if (!(r.sec > 0)) return null;
+    out.push(r);
+  }
+  return { runs: out, deltaSec: delta, unitSec: unit };
+}
+
 // ------------------------------------------------------------------- the decode
 
 /**
@@ -1071,7 +1140,7 @@ export function decodeCw(x, sampleRate, opts = {}) {
       const answers = [];
       for (const floor of [0.010, 0.020, 0.030, 0.045]) {
         if (Math.abs(floor - defaultFloor) < 1e-6) continue;
-        const cand = sliceAt(floor);
+        const cand = sliceAt(floor, true);
         if (!cand.degenerate && Number.isFinite(cand.timing.ditSec)) answers.push(cand);
       }
       let out = base;
@@ -1085,13 +1154,13 @@ export function decodeCw(x, sampleRate, opts = {}) {
       return out;
 
       // One merge floor on this set of run lengths, through to a fitted model.
-      function sliceAt(floor) {
+      function sliceAt(floor, imposed = false) {
       const m = mergeShort(raw, floor);
-      const timing = clusterTiming(m.runs);
+      let timing = clusterTiming(m.runs);
       const out = {
         bandwidthHz, env, fade, sliced: values, key, runs: m.runs, timing, merged: m.merged,
         floorSec: floor, mutedFraction: sq.muted, scatter: Infinity, rawScatter: Infinity,
-        degenerate: false, why: '',
+        degenerate: false, edgeBiasSec: 0, why: '',
       };
       if (!timing.ok) {
         out.why = `no keying at ${bandwidthHz.toFixed(0)} Hz (${timing.reason})`;
@@ -1108,7 +1177,14 @@ export function decodeCw(x, sampleRate, opts = {}) {
       // A floor that is most of a unit is not merging glitches, it is merging
       // dits, and whatever it fits afterwards is a fit to its own damage. The
       // fitted unit has to stand well clear of the floor that produced it.
-      if (floor > 0.6 * timing.ditSec) {
+      //
+      // This applies to the imposed floors only. The speed-free floor is a
+      // quarter of the span's own median run, so a large ratio there is a fact
+      // about the signal rather than a choice made against it — and gating it
+      // the same way threw away the right answer: on M12 it rejected three
+      // bandwidths that fitted a 79-81 ms unit, which is the unit the ladder
+      // independently finds, in favour of a 168 ms fit at 83% boundary doubt.
+      if (imposed && floor > 0.6 * timing.ditSec) {
         out.why = `a ${(floor * 1000).toFixed(0)} ms merge floor against a ${(timing.ditSec * 1000).toFixed(0)} ms unit would be merging elements`;
         return out;
       }
@@ -1134,7 +1210,34 @@ export function decodeCw(x, sampleRate, opts = {}) {
       // could pick a filter so narrow that it smeared the intra-character gaps
       // into the dits: measured at -6 dB, that returned a correct decode with a
       // fitted 1 : 2.0 : 5.4 spacing, which any honest reader would distrust.
-      const shape = morseShaped(timing);
+      let shape = morseShaped(timing);
+      // A fit whose marks are Morse but whose gaps are too short for its own
+      // dits has not measured a strange fist: it has measured a one-sided edge
+      // bias, and the bias is recoverable from the two classes that disagree.
+      // Correcting it is allowed to rescue the fit and never to damage one —
+      // the corrected timing has to come back Morse-shaped or it is discarded,
+      // and a fit that was already shaped is never touched.
+      if (!shape.ok && timing.spaceRatios.length && timing.spaceRatios[0] < 0.9) {
+        const de = deskewEdges(m.runs, timing, { envRate: env.envRate });
+        if (de) {
+          const fixed = clusterTiming(de.runs);
+          const fixedShape = morseShaped(fixed);
+          if (fixed.ok && fixedShape.ok) {
+            out.runs = de.runs;
+            out.timing = timing = fixed;
+            out.edgeBiasSec = de.deltaSec;
+            shape = fixedShape;
+            // The scatter that selects among candidates stays the one measured
+            // before the correction. Removing a bias mechanically tightens the
+            // classes, so a corrected candidate scored on its corrected scatter
+            // would outrank an uncorrected one for having been repaired rather
+            // than for fitting better — and it did: it flipped the fade
+            // tracker on a 40%-jitter fist that reads perfectly without it, and
+            // the fade-doubt gate then refused a correct decode. The
+            // correction's job is to change the verdict, not the ranking.
+          }
+        }
+      }
       out.shape = shape;
       out.scatter = shape.ok ? out.rawScatter : Infinity;
       return out;
@@ -1519,6 +1622,9 @@ export function decodeCw(x, sampleRate, opts = {}) {
     filterSweep: sweep,
     runScatter: +fit.scatter.toFixed(4),
     mergeFloorMs: +(fit.floorSec * 1000).toFixed(1),
+    // Non-zero when a one-sided edge bias was found and removed before the
+    // timing was fitted. A reader should know the run lengths were corrected.
+    edgeBiasMs: +((fit.edgeBiasSec || 0) * 1000).toFixed(1),
     envRate: narrow.envRate,
     keyingSnrDb,
     keyingSeparationDb: key.medianSeparationDb,

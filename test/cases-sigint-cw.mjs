@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 
 import {
-  decodeCw, renderCw, morseToChar, charToMorse, CW_ALPHABET, CW_PROSIGNS,
+  decodeCw, renderCw, deskewEdges, morseToChar, charToMorse, CW_ALPHABET, CW_PROSIGNS,
   findTone, cwEnvelope, keyStates, runLengths, clusterTiming, mergeShort,
   squelchIncoherent, timeWeightedMedian, morseShaped, wpmFor, ditSecondsFor,
   fadeTrack, elementConfidence, CUT_NUMERALS, cutNumbers } from '../js/sigint/decode/cw.js';
@@ -253,6 +253,95 @@ export const cases = [
     const narrowErr = narrow.ok ? Math.abs(narrow.ditSec - truth) / truth : Infinity;
     assert.ok(narrowErr > 0.12,
       `50 Hz should mis-measure the unit by more than 12%; it was off by ${(narrowErr * 100).toFixed(1)}%`);
+  },
+
+  async function aOneSidedEdgeBiasIsMeasuredAndRemoved() {
+    // A slow release on the key-down envelope — a receiver's AGC, a
+    // transmitter's own decay — puts every falling edge late by the same
+    // amount, so each mark runs long and each gap short by that amount. It is
+    // the fault the shelf's Marine Electric distress recording has, and it is
+    // one number, which makes it removable rather than merely detectable.
+    //
+    // Injected here as a one-pole release on the rendered envelope, at four
+    // time constants. What is pinned is that the unit and the dah/dit ratio
+    // come back to what was sent, not merely that the text reads.
+    const msg = 'PARIS ABC DE VVV';
+    const release = (x, tauSec, hz) => {
+      const a = Math.exp(-1 / (tauSec * SR));
+      const out = new Float32Array(x.length);
+      let env = 0;
+      for (let i = 0; i < x.length; i++) {
+        const mag = Math.abs(x[i]);
+        env = mag > env ? mag : a * env;
+        out[i] = env * Math.cos(2 * Math.PI * hz * i / SR);
+      }
+      return out;
+    };
+    for (const tau of [0.010, 0.020]) {
+      const sent = renderCw(msg, { wpm: 12, sampleRate: SR, toneHz: 700, snrDb: 20, seed: 2 });
+      const d = decodeCw(release(sent.samples, tau, 700), SR);
+      assert.ok(d.ok, `a ${tau * 1000} ms release should not stop the read: ${d.reason}`);
+      assert.equal(d.text, msg);
+      assert.ok(d.edgeBiasMs > 3, `the bias should be found, not absorbed: ${d.edgeBiasMs} ms`);
+      // 12 wpm is a 100 ms unit. Without the correction these read 107 ms at a
+      // 2.87 ratio and 116 ms at 2.72.
+      assert.ok(Math.abs(d.ditMs - 100) < 4, `unit ${d.ditMs.toFixed(1)} ms against 100`);
+      assert.ok(Math.abs(d.dahDitRatio - 3) < 0.15, `dah/dit ${d.dahDitRatio.toFixed(2)} against 3`);
+    }
+    // And it does not fire on a signal that does not have the fault. A
+    // correction that is always on is not a measurement.
+    const clean = decodeCw(renderCw(msg, { wpm: 12, sampleRate: SR, toneHz: 700, snrDb: 20, seed: 2 }).samples, SR);
+    assert.ok(clean.ok && clean.text === msg);
+    assert.equal(clean.edgeBiasMs, 0, `nothing to correct, yet it corrected ${clean.edgeBiasMs} ms`);
+  },
+
+  async function theEdgeBiasHasToAgreeWithTheClassesItDidNotUse() {
+    // The estimator uses the dit and the intra-character gap. Every other
+    // class then has to agree with the one number it produced — a dah at
+    // 3u + d, a character gap at 3u - d, a word gap at 7u - d. None of those
+    // went into the estimate, so each can refute it, and that is what stops
+    // the correction manufacturing Morse out of a fist that simply runs its
+    // characters together.
+    const klass = (centre, count = 20) => ({ centre, count, logSd: 0.02 });
+    // A genuine 16 ms bias on a 100 ms unit: dit 116, gap 84, dah 316,
+    // character gap 284, word gap 684.
+    const biased = {
+      ok: true,
+      marks: [klass(0.116), klass(0.316)],
+      spaces: [klass(0.084), klass(0.284), klass(0.684)],
+      spaceRatios: [0.72, 2.45, 5.90],
+      dahDitRatio: 2.72,
+      ditSec: 0.116,
+    };
+    const runs = [];
+    for (let i = 0; i < 8; i++) {
+      runs.push({ on: true, start: i * 0.2, end: i * 0.2 + 0.116, sec: 0.116 });
+      runs.push({ on: false, start: i * 0.2 + 0.116, end: i * 0.2 + 0.2, sec: 0.084 });
+    }
+    const fixed = deskewEdges(runs, biased, { envRate: 2000 });
+    assert.ok(fixed, 'a consistent bias should be found');
+    assert.ok(Math.abs(fixed.deltaSec - 0.016) < 0.001, `bias ${fixed.deltaSec}`);
+    assert.ok(Math.abs(fixed.unitSec - 0.100) < 0.001, `unit ${fixed.unitSec}`);
+    assert.ok(fixed.runs.every((r) => r.sec > 0));
+    assert.ok(Math.abs(fixed.runs[0].sec - 0.100) < 0.001, `corrected mark ${fixed.runs[0].sec}`);
+    assert.ok(Math.abs(fixed.runs[1].sec - 0.100) < 0.001, `corrected gap ${fixed.runs[1].sec}`);
+
+    // Same dit and gap, but a dah that is twice the dit rather than three
+    // times it plus the bias. That is a 2:1 fist, not a skewed signal, and the
+    // correction must decline rather than turn it into Morse.
+    const fist = { ...biased, marks: [klass(0.116), klass(0.232)], dahDitRatio: 2.0 };
+    assert.equal(deskewEdges(runs, fist, { envRate: 2000 }), null,
+      'a dah at 2u refutes the bias and the correction must decline');
+
+    // A difference smaller than the envelope can resolve is where the edges
+    // landed on the sample grid, not a bias.
+    const tiny = {
+      ...biased,
+      marks: [klass(0.1005), klass(0.3005)],
+      spaces: [klass(0.0995), klass(0.2995), klass(0.6995)],
+    };
+    assert.equal(deskewEdges(runs, tiny, { envRate: 2000 }), null,
+      'half a millisecond on a 2 kHz envelope is quantisation, not skew');
   },
 
   async function chatterIsMergedByAFloorTheSpeedFreeRuleCannotReach() {
