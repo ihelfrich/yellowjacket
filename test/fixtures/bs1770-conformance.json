@@ -1,0 +1,147 @@
+{
+  "$comment": [
+    "BS.1770 conformance cases, shared between implementations.",
+    "",
+    "The point of this file is that it is NOT a golden. Every expected value is",
+    "derivable from the signal by hand, so a case can fail for the only reason",
+    "worth failing for: the implementation is wrong. A golden generated from one",
+    "implementation cannot catch a mistake both implementations share, and that",
+    "is exactly what happened here — Yellowjacket's true peak read below the",
+    "sample peak for months behind a test whose fixture could not see it.",
+    "",
+    "Two implementations of this standard exist on this machine: this one in",
+    "JavaScript and Nyquist's in Swift (~/Developer/nyquist, LoudnessMeter.swift",
+    "and TruePeak.swift). Either can read this file. The signal spec below is",
+    "written to be reproducible in any language: exact formulas, no library",
+    "calls, no windowing beyond what is stated.",
+    "",
+    "Adding a case: state what the signal is, what the answer is, and WHY the",
+    "answer is known without running any code. If you cannot write the why, the",
+    "case belongs in a golden file, not in this one.",
+    "",
+    "This file is canonical here and is not copied anywhere. A second reader",
+    "should load it from this path rather than vendor it, so there is never a",
+    "question of which copy is current."
+  ],
+  "version": 1,
+  "signalSpec": {
+    "$comment": [
+      "sine: x[i] = amplitude * sin(2*pi*frequencyHz*i/sampleRate + phaseRad),",
+      "  for i in 0 ..< round(sampleRate*seconds), one channel per entry in",
+      "  `channels`. Channels are identical unless `channelAmplitudes` is given.",
+      "silence: x[i] = 0.",
+      "fadeSeconds, when present, multiplies the first and last",
+      "  round(sampleRate*fadeSeconds) samples by a linear ramp from 0. It exists",
+      "  because a tone that starts abruptly from silence has a real Gibbs",
+      "  overshoot on reconstruction, which is a property of the signal and not",
+      "  an error in the meter.",
+      "Samples are float32. Sums may be double."
+    ]
+  },
+  "cases": [
+    {
+      "id": "kweighting-48k",
+      "what": "K-weighting biquad coefficients at 48 kHz",
+      "why": "BS.1770-4 Table 1 publishes these for 48 kHz. An implementation that hardcodes them passes; one that derives them from the analog parameters by bilinear transform must land on them too.",
+      "kind": "coefficients",
+      "sampleRate": 48000,
+      "tolerance": 1e-9,
+      "expect": {
+        "shelf": { "b0": 1.53512485958697, "b1": -2.69169618940638, "b2": 1.19839281085285, "a1": -1.69065929318241, "a2": 0.73248077421585 },
+        "highPass": { "b0": 1.0, "b1": -2.0, "b2": 1.0, "a1": -1.99004745483398, "a2": 0.99007225036621 }
+      }
+    },
+    {
+      "id": "kweighting-44k1",
+      "what": "K-weighting redesigned at 44.1 kHz",
+      "why": "The standard publishes only the 48 kHz table, so an implementation that hardcodes it is wrong at every other rate. These come from the same bilinear transform of the same analog parameters at 44100. The test that matters is that they DIFFER from the 48 kHz set; the digits pin the derivation.",
+      "kind": "coefficients",
+      "sampleRate": 44100,
+      "tolerance": 1e-9,
+      "expect": {
+        "shelf": { "b0": 1.53084123005035, "b1": -2.65097999515473, "b2": 1.16907907992159, "a1": -1.66365511325602, "a2": 0.71259542807323 },
+        "highPass": { "b0": 1.0, "b1": -2.0, "b2": 1.0, "a1": -1.98916967362980, "a2": 0.98919903578704 }
+      }
+    },
+    {
+      "id": "calibration-997-mono",
+      "what": "997 Hz sine at full scale, one channel",
+      "why": "BS.1770's calibration: a single channel carrying a full-scale sine measures -3.01 LUFS, because the K-weighted mean square of a unit sine is 1/2 and the standard's -0.691 offset is defined to put it there. 997 Hz rather than 1000 avoids landing on a submultiple of the rate.",
+      "kind": "loudness",
+      "signal": { "type": "sine", "sampleRate": 48000, "seconds": 4, "frequencyHz": 997, "amplitude": 1.0, "phaseRad": 0, "channels": 1 },
+      "expect": { "integratedLufs": -3.01, "samplePeakDb": 0.0 },
+      "tolerance": { "integratedLufs": 0.02, "samplePeakDb": 0.02 }
+    },
+    {
+      "id": "calibration-997-stereo",
+      "what": "The same sine in both channels",
+      "why": "Loudness sums channel energy with the standard's weights, both 1.0 for L and R, so two identical channels are twice the energy: exactly 3.01 dB above the mono case, which puts it at 0 LUFS.",
+      "kind": "loudness",
+      "signal": { "type": "sine", "sampleRate": 48000, "seconds": 4, "frequencyHz": 997, "amplitude": 1.0, "phaseRad": 0, "channels": 2 },
+      "expect": { "integratedLufs": 0.0 },
+      "tolerance": { "integratedLufs": 0.02 }
+    },
+    {
+      "id": "calibration-997-44k1",
+      "what": "The 997 Hz calibration at 44.1 kHz",
+      "why": "Loudness is a property of the sound, not of the sampling. The same tone at a different rate must give the same number, which it only does if the K-weighting was redesigned for that rate. An implementation using the 48 kHz coefficients at 44.1 fails here and nowhere else.",
+      "kind": "loudness",
+      "signal": { "type": "sine", "sampleRate": 44100, "seconds": 4, "frequencyHz": 997, "amplitude": 1.0, "phaseRad": 0, "channels": 1 },
+      "expect": { "integratedLufs": -3.01 },
+      "tolerance": { "integratedLufs": 0.02 }
+    },
+    {
+      "id": "calibration-997-96k",
+      "what": "The 997 Hz calibration at 96 kHz",
+      "why": "Same argument at the rate Nyquist actually runs at.",
+      "kind": "loudness",
+      "signal": { "type": "sine", "sampleRate": 96000, "seconds": 4, "frequencyHz": 997, "amplitude": 1.0, "phaseRad": 0, "channels": 1 },
+      "expect": { "integratedLufs": -3.01 },
+      "tolerance": { "integratedLufs": 0.02 }
+    },
+    {
+      "id": "gate-silence",
+      "what": "Four seconds of digital silence",
+      "why": "The absolute gate is -70 LUFS, so silence contributes no block and there is no integrated value to report. A meter that returns a number here is reporting its own floor as a measurement.",
+      "kind": "loudness",
+      "signal": { "type": "silence", "sampleRate": 48000, "seconds": 4, "channels": 1 },
+      "expect": { "integratedLufs": null },
+      "tolerance": {}
+    },
+    {
+      "id": "truepeak-sample-on-crest",
+      "what": "Sines whose crest lands exactly on a sample",
+      "why": "Each frequency divides the rate exactly and starts at phase pi/2, so sample 0 sits on the crest and the analytic peak IS the amplitude. The samples are points on the reconstructed waveform, so the true peak can never be below the sample peak. A maximum taken over the interpolated phases alone reads up to 0.59 dB under; that was a real defect in this repository.",
+      "kind": "truePeakFloor",
+      "amplitude": 0.5,
+      "phaseRad": 1.5707963267948966,
+      "seconds": 0.25,
+      "sampleRates": [44100, 48000, 96000, 192000],
+      "rateDivisors": [20, 10, 5, 4, 3.3333333333333335, 2.5, 2.2222222222222223],
+      "expect": { "atLeastDb": -6.020599913279624 },
+      "tolerance": { "atLeastDb": 1e-4 }
+    },
+    {
+      "id": "truepeak-intersample-quarter-rate",
+      "what": "A quarter-rate sine at phase pi/4, amplitude 0.8",
+      "why": "The samples land at plus and minus 0.707 of the crest, 3.01 dB below it, and never on it. The analytic peak is the amplitude, 20*log10(0.8) = -1.9382 dBTP, and a meter that reports the sample peak reads -4.9485. This is the classic intersample case and the one a sample-peak meter fails.",
+      "kind": "truePeak",
+      "signal": { "type": "sine", "sampleRate": 48000, "seconds": 0.5, "frequencyHz": 12000, "amplitude": 0.8, "phaseRad": 0.7853981633974483, "channels": 1 },
+      "expect": { "truePeakDb": -1.9382, "samplePeakDb": -4.9485 },
+      "tolerance": { "truePeakDb": 0.1, "samplePeakDb": 0.01 }
+    },
+    {
+      "id": "truepeak-4x-under-read-budget",
+      "what": "Worst-case intersample under-read of a 4x detector",
+      "why": "Not a conformance value — a measured bound, stated so a change that makes it worse fails here. Over these rational frequency ratios and 64 starting phases each, the worst under-read against the analytic peak was 0.199 dB at 0.40 of the rate. It is the interpolator's roll-off near Nyquist: a higher Kaiser beta measured worse (0.241 dB at beta 8) and 8x oversampling alone did not help (0.197 dB). An implementation using 2x above 88.2 kHz, as BS.1770-4 Annex 2 allows, should widen this budget and say so rather than silently failing.",
+      "kind": "truePeakBudget",
+      "sampleRate": 48000,
+      "amplitude": 0.8,
+      "seconds": 0.05,
+      "ratios": [[1, 20], [1, 10], [3, 20], [1, 5], [1, 4], [3, 10], [7, 20], [2, 5], [9, 20]],
+      "phaseCount": 64,
+      "expect": { "worstUnderReadDb": 0.25 },
+      "tolerance": {}
+    }
+  ]
+}
