@@ -255,6 +255,56 @@ export const cases = [
       `50 Hz should mis-measure the unit by more than 12%; it was off by ${(narrowErr * 100).toFixed(1)}%`);
   },
 
+  async function chatterIsMergedByAFloorTheSpeedFreeRuleCannotReach() {
+    // The merge floor's fallback ladder, and what it is for.
+    //
+    // The speed-free floor is a quarter of the median run, because in Morse the
+    // median run is one unit. Chop the carrier fast enough and that stops being
+    // true: the median run becomes the chopping period, the floor goes to a few
+    // milliseconds, nothing is merged, and the fitted "unit" is the chopper.
+    // Here a clean 18 wpm signal is gated on and off at 300 Hz to 20% depth —
+    // an interfering carrier keyed far faster than the message under it, which
+    // is what the shelf's M12 capture has. The speed-free rule fits an 8.6 ms
+    // unit and the decoder refuses; the ladder's 20 ms floor reads the message.
+    const msg = 'PARIS ABC DE VVV';
+    const rendered = renderCw(msg, { wpm: 18, sampleRate: SR, toneHz: 700, snrDb: 12, seed: 5 });
+    const x = Float32Array.from(rendered.samples);
+    let state = 7 >>> 0;
+    const next = () => ((state = (state * 1664525 + 1013904223) >>> 0) / 4294967296);
+    const step = Math.round(SR / 300);
+    let level = 1;
+    for (let i = 0; i < x.length; i++) {
+      if (i % step === 0) level = next() < 0.5 ? 0.2 : 1;
+      x[i] *= level;
+    }
+    const d = decodeCw(x, SR);
+    assert.ok(d.ok, `the chopped carrier should still read: ${d.reason}`);
+    assert.equal(d.text, msg);
+    // And it is the ladder that did it, not a happier median: these are the
+    // only floors the fallback offers, and the speed-free rule cannot land on
+    // one to three decimal places by chance.
+    assert.ok([10, 20, 30, 45].includes(d.mergeFloorMs),
+      `the fallback floor should have been used, not the speed-free rule: ${d.mergeFloorMs} ms`);
+    assert.ok(Math.abs(d.ditMs - 1200 / 18) / (1200 / 18) < 0.1,
+      `and it should recover the unit it was sent: ${d.ditMs.toFixed(1)} ms against 66.7`);
+  },
+
+  async function aFallbackFloorMayOnlyAnswerWhenTwoFloorsAgree() {
+    // The ladder's own risk, and the rule that contains it. Any single floor
+    // can cut a noise envelope into run lengths that fit — measured on these
+    // bursty seeds, a 10 ms floor alone produced "RO KE" with 13 dB of real
+    // key-down contrast, which no downstream gate can see, because the contrast
+    // is not the lie. What noise cannot do is answer the same way twice. So a
+    // fallback fit is only allowed to stand when a second floor lands within
+    // 15% of its unit in log units, and these spans are where that is load-
+    // bearing: all five are refused, and none of them is refused for being
+    // quiet.
+    for (const [name, seed, secs] of [['bursty', 1008, 3], ['bursty', 1053, 3], ['faded', 1010, 6]]) {
+      const out = decodeCw(COLOURS[name](secs * SR, { seed }), SR);
+      assert.equal(out.ok, false, `${name} ${secs}s seed ${seed} decoded as "${out.text}"`);
+    }
+  },
+
   async function theChosenBandwidthNarrowsWhenTheNoiseRises() {
     // Same message, same speed, two noise levels. The filter is chosen by
     // measuring the fit at each candidate, so a clean signal should keep a wide
@@ -886,9 +936,18 @@ export const cases = [
     // envelope shows about 10 dB between its upper and lower deciles whether
     // there is keying under it or not, so a key-down / key-up power ratio near
     // that has measured the noise and not a transmission.
-    // Five of the 27 spans that answered when this gate alone was disabled —
-    // 25 of them gated noise, 2 Rayleigh-faded, none white, pink or impulsive.
-    const seeds = [['bursty', 1008, 3], ['bursty', 1021, 3], ['bursty', 1053, 3], ['bursty', 1042, 6], ['faded', 1010, 6]];
+    // The spans below are the ones this gate alone still catches, re-measured
+    // over 60 spans — five colours, two durations, six seeds each — after the
+    // merge floor gained a fallback ladder. Three answer with the gate off and
+    // all three are refused by it; nothing in the sixty answers with it on.
+    //
+    // The list used to be five, drawn from a 27-span corpus. Three of those
+    // five are now refused earlier, by the rule that a fallback merge floor may
+    // only answer when two floors agree on the unit — which is the same finding
+    // from the other side: a single floor can cut noise into something that
+    // fits, and the reason it is not a decode is that it does not reproduce.
+    // The gate is pinned by what is left, not by the original count.
+    const seeds = [['faded', 1061, 6], ['bursty', 1000, 3], ['bursty', 1035, 3]];
     const answered = [];
     for (const [name, seed, secs] of seeds) {
       const x = COLOURS[name](secs * SR, { seed });
@@ -896,11 +955,17 @@ export const cases = [
       if (off.ok) answered.push(`${name} ${secs}s ${seed}: "${off.text}" at ${off.keyingSnrDb.toFixed(1)} dB, scatter ${off.runScatter.toFixed(3)}`);
       const on = decodeCw(x, SR);
       assert.equal(on.ok, false, `${name} ${secs}s seed ${seed} decoded as "${on.text}"`);
+      assert.ok(/threshold split of a noise envelope/.test(on.reason),
+        `${name} ${secs}s seed ${seed} must be refused by the contrast gate, not by something upstream: ${on.reason}`);
     }
     assert.equal(answered.length, seeds.length,
       `with the gate off every one of these seeds must come back as text, or the gate pins nothing: ${answered.join(' | ')}`);
-    const said = decodeCw(COLOURS.bursty(3 * SR, { seed: 1008 }), SR).reason;
-    assert.ok(/threshold split of a noise envelope/.test(said), said);
+    // And the spans the earlier measurement used stay refused, whichever rule
+    // now refuses them.
+    for (const [name, seed, secs] of [['bursty', 1008, 3], ['bursty', 1021, 3], ['bursty', 1053, 3], ['bursty', 1042, 6], ['faded', 1010, 6]]) {
+      const on = decodeCw(COLOURS[name](secs * SR, { seed }), SR);
+      assert.equal(on.ok, false, `${name} ${secs}s seed ${seed} decoded as "${on.text}"`);
+    }
 
     // And what it costs, stated rather than hoped for. Over 373 spans that
     // decoded exactly across three messages, three speeds, +20 dB down to -8 dB

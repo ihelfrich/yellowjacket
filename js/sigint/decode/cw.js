@@ -1019,19 +1019,97 @@ export function decodeCw(x, sampleRate, opts = {}) {
       });
       const sq = squelchIncoherent(key.state, env.envRate, { windowSec: ditHint ? Math.max(1, 30 * ditHint) : 2 });
       const raw = runLengths(sq.state, env.envRate);
+      // The floor below which a run is a glitch to be merged, not an element.
+      //
       // The median run in Morse is one unit long — intra-character gaps and
       // dits together outnumber everything else — so a quarter of the median is
-      // a speed-free floor before there is any unit estimate to use.
-      const floor = ditHint ? ditHint / 3 : 0.25 * medianSec(raw);
+      // a speed-free floor before there is any unit estimate to use. That is
+      // still the rule, and on every span where it fits Morse-shaped timing it
+      // is the answer: nothing below runs at all.
+      //
+      // Where it collapses is chatter. A span whose noise crosses the slicer
+      // thousands of times has a median run of a few milliseconds, so the floor
+      // goes to one, nothing is merged, and the "unit" that comes out is the
+      // chatter itself. Measured on the shelf's M12 capture in a 100 Hz filter:
+      // 5,262 runs, median 3.6 ms, fitted unit 4.8 ms. A fixed 30 ms floor on
+      // the same envelope fits 74 ms with a 3.5 dah/dit and 1 : 2.8 : 8.9
+      // spacing, which is Morse.
+      //
+      // No distributional rule tried was right everywhere. A floor from the
+      // time-weighted median of the marks rescues M12 and destroys the marine
+      // SOS distress call, whose few long dashes lift that median above its own
+      // dits and leave three keyed runs. So the fallback is a short ladder of
+      // absolute floors — escalation, not competition, and reached only when
+      // the speed-free rule produced no fit at all or one too fast to be
+      // keying, which is the chatter signature and the only failure a larger
+      // floor can honestly repair.
+      //
+      // Both halves of that restriction were bought. Letting every floor
+      // compete on scatter cost more than it bought: a floor large enough to
+      // swallow elements fits what is left more tightly than the truth, and
+      // across the constructed cases here it turned VVV into VVK, read a
+      // deliberately 2:1 fist as Morse, and widened the unit interval to a
+      // factor of nine. Escalating on any shape failure, rather than only on a
+      // degenerate one, was milder and still wrong: a wobbly fist and a noise
+      // span both fit a plausible unit with the wrong shape, and a bigger floor
+      // is not what either of them needs.
+      const defaultFloor = ditHint ? ditHint / 3 : 0.25 * medianSec(raw);
+      const base = sliceAt(defaultFloor);
+      if (!base.degenerate) return base;
+      // A repair has to be reproducible. Any single floor can cut a noise
+      // envelope into something that fits — measured on the bursty seeds this
+      // suite already pins, a 10 ms floor alone turned three seconds of hiss
+      // into "RO KE" with 13 dB of key-down contrast, which no downstream gate
+      // catches because the contrast is real. What noise cannot do is give the
+      // same answer twice: the fit that rescued it exists at one floor and
+      // nowhere near it. A keyed signal buried in chatter does the opposite —
+      // M12 fits a 74 ms unit at a 30 ms floor and 79 ms at 45 ms, and M08 and
+      // the NDB beacon fit the same unit at every floor in the ladder. So the
+      // fallback is only allowed to answer when two of its floors agree on the
+      // unit to within 15% in log units, and the tightest of the agreeing fits
+      // is the one returned.
+      const answers = [];
+      for (const floor of [0.010, 0.020, 0.030, 0.045]) {
+        if (Math.abs(floor - defaultFloor) < 1e-6) continue;
+        const cand = sliceAt(floor);
+        if (!cand.degenerate && Number.isFinite(cand.timing.ditSec)) answers.push(cand);
+      }
+      let out = base;
+      for (const cand of answers) {
+        const agrees = answers.some((other) => other !== cand
+          && Math.abs(Math.log(other.timing.ditSec / cand.timing.ditSec)) < 0.15);
+        if (!agrees) continue;
+        if (out === base || cand.scatter < out.scatter
+          || (!Number.isFinite(out.scatter) && cand.rawScatter < out.rawScatter)) out = cand;
+      }
+      return out;
+
+      // One merge floor on this set of run lengths, through to a fitted model.
+      function sliceAt(floor) {
       const m = mergeShort(raw, floor);
       const timing = clusterTiming(m.runs);
       const out = {
         bandwidthHz, env, fade, sliced: values, key, runs: m.runs, timing, merged: m.merged,
-        mutedFraction: sq.muted, scatter: Infinity, why: '',
+        floorSec: floor, mutedFraction: sq.muted, scatter: Infinity, rawScatter: Infinity,
+        degenerate: false, why: '',
       };
-      if (!timing.ok) { out.why = `no keying at ${bandwidthHz.toFixed(0)} Hz (${timing.reason})`; return out; }
+      if (!timing.ok) {
+        out.why = `no keying at ${bandwidthHz.toFixed(0)} Hz (${timing.reason})`;
+        return out;
+      }
       if (!(timing.ditSec > 0.008 && timing.ditSec < 0.5)) {
         out.why = `run lengths at ${bandwidthHz.toFixed(0)} Hz imply a ${(timing.ditSec * 1000).toFixed(1)} ms unit, outside 2.4-150 wpm`;
+        // Too fast to be keying is the chatter signature, and the only failure
+        // a larger merge floor can honestly repair. Too slow is a real slow
+        // fist or a fade, and merging more of it would only invent a faster one.
+        out.degenerate = timing.ditSec <= 0.008;
+        return out;
+      }
+      // A floor that is most of a unit is not merging glitches, it is merging
+      // dits, and whatever it fits afterwards is a fit to its own damage. The
+      // fitted unit has to stand well clear of the floor that produced it.
+      if (floor > 0.6 * timing.ditSec) {
+        out.why = `a ${(floor * 1000).toFixed(0)} ms merge floor against a ${(timing.ditSec * 1000).toFixed(0)} ms unit would be merging elements`;
         return out;
       }
       // Noise sliced at a threshold produces run lengths with no structure: two
@@ -1060,6 +1138,7 @@ export function decodeCw(x, sampleRate, opts = {}) {
       out.shape = shape;
       out.scatter = shape.ok ? out.rawScatter : Infinity;
       return out;
+      }
     };
 
     const fade = agc ? fadeTrack(env.env, env.envRate, {
@@ -1140,6 +1219,7 @@ export function decodeCw(x, sampleRate, opts = {}) {
         // depends on a choice the decoder made, which is a systematic error the
         // fit's own standard error cannot see and the interval below uses.
         ditMs: m.timing && m.timing.ok ? +(m.timing.ditSec * 1000).toFixed(3) : null,
+        floorMs: Number.isFinite(m.floorSec) ? +(m.floorSec * 1000).toFixed(1) : null,
         why: m.why || (m.shape && !m.shape.ok ? m.shape.bad.join(', ') : undefined),
       });
       if (m.scatter < pick.scatter) pick = m;
@@ -1438,6 +1518,7 @@ export function decodeCw(x, sampleRate, opts = {}) {
     filterReason: `${(narrow.bandwidthHz * timing.ditSec).toFixed(1)} / (unit ${(timing.ditSec * 1000).toFixed(0)} ms), the tightest-fitting of ${sweep.length} bandwidths tried`,
     filterSweep: sweep,
     runScatter: +fit.scatter.toFixed(4),
+    mergeFloorMs: +(fit.floorSec * 1000).toFixed(1),
     envRate: narrow.envRate,
     keyingSnrDb,
     keyingSeparationDb: key.medianSeparationDb,
