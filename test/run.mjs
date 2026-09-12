@@ -277,6 +277,55 @@ const loudnessCases = [
     close(result.samplePeakDb, -4.948500, 0.01, 'intersample sample peak');
     close(result.truePeakDb, -1.9382, 0.1, 'BS.1770-5 Annex 2 intersample true peak');
   },
+  function truePeakIsNeverBelowTheSamplePeak() {
+    // The case the fixture above cannot reach. Its sine is a quarter-rate tone
+    // at phase pi/4, where the samples straddle the crest 3 dB down, so a
+    // maximum taken over the interpolated phases alone is right by accident.
+    // Put a sample ON the crest and the two diverge: the oversampled phases are
+    // points BETWEEN the samples and none of them reproduces one, so the
+    // phases-only maximum read up to 0.590 dB BELOW the sample peak, which a
+    // true peak can never be. Found by comparing this module against Nyquist's
+    // independent Swift implementation of the same annex.
+    //
+    // Every ratio here divides the rate exactly and starts at phase pi/2, so a
+    // sample lands on the crest and the analytic peak IS the amplitude.
+    for (const rate of [44100, 48000, 96000, 192000]) {
+      for (const den of [20, 10, 5, 4, 10 / 3, 2.5, 20 / 9]) {
+        const hz = rate / den;
+        const pcm = tone(rate, 0.25, hz, 0.5, Math.PI / 2);
+        const tp = truePeakDb([pcm]);
+        assert.ok(tp >= -6.0206 - 1e-4,
+          `${rate} Hz, ${hz.toFixed(0)} Hz tone: true peak ${tp.toFixed(4)} dB is under the `
+          + 'sample peak of -6.0206 dB, which is not a peak the waveform ever reaches');
+      }
+    }
+  },
+  function theIntersampleUnderReadHasAMeasuredBudget() {
+    // What 4x oversampling costs, measured rather than claimed. The module's
+    // comment used to promise it "errs high, never low"; it does not, and no
+    // 4x detector does. This is the bound, and it is a budget: a change that
+    // makes it worse fails here instead of being discovered by someone who
+    // trusted a ceiling.
+    //
+    // Over rational frequency ratios from 0.05 to 0.45 of the rate, 64 phases
+    // each, the worst under-read measured 0.199 dB at 0.40 of the rate. Raising
+    // the Kaiser beta does not help (beta 8 measures 0.241); the limit is the
+    // filter's roll-off near Nyquist.
+    const RATE = 48000, AMP = 0.8, truth = 20 * Math.log10(AMP);
+    let worst = 0, where = '';
+    for (const [num, den] of [[1, 20], [1, 10], [3, 20], [1, 5], [1, 4], [3, 10], [7, 20], [2, 5], [9, 20]]) {
+      const hz = RATE * num / den;
+      for (let k = 0; k < 64; k++) {
+        const err = truePeakDb([tone(RATE, 0.05, hz, AMP, 2 * Math.PI * k / 64)]) - truth;
+        if (err < worst) { worst = err; where = `${(num / den).toFixed(2)} of the rate, phase ${k}/64`; }
+      }
+    }
+    assert.ok(worst >= -0.25,
+      `worst intersample under-read ${worst.toFixed(3)} dB at ${where}, over a budget of 0.25 dB`);
+    // And it must not silently become a detector that over-reads either: a peak
+    // that is not there would have a ceiling throwing away real headroom.
+    assert.ok(worst <= 0, 'this is an under-read budget; a positive worst case means the sweep is wrong');
+  },
 ];
 
 function clickPcm(seconds, times, accents = null) {
