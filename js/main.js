@@ -42,6 +42,7 @@ import { initFieldLibrary } from './app/field-library.js';
 import { initMachineController } from './machine/controller.js';
 import { RepairPanel } from './app/repair-panel.js';
 import { initRepairController } from './app/repair-controller.js';
+import { initAbxController } from './app/abx-controller.js';
 import { initWireController } from './app/wire-controller.js';
 import { initPersistController } from './app/persist-controller.js';
 import { StudioView } from './studio/view.js';
@@ -250,6 +251,8 @@ const CONTROLLERS = [
   ['instrument', initInstrumentController],
   ['machine', initMachineController],
   ['repair', initRepairController],
+  // blind A/B reads the bench's two takes out of the store; it needs bench above it
+  ['abx', initAbxController],
   ['wire', initWireController],
   ['source', initSourceController],
   // field renders into the drop zone and calls api.loadFromUrl, registered by source above.

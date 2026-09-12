@@ -718,6 +718,9 @@ export function initBenchController(ctx) {
       if ($('abKey')) $('abKey').hidden = false;
       status(COPY.renderOk + ' · ' + secs + 's');
       setAb('b');
+      // BLIND A/B waits on this: the rendered take is what it compares against,
+      // and nothing else on the store changes when a render lands.
+      if (ctx.api.abxRefresh) ctx.api.abxRefresh();
     } catch (e) {
       setRenderState('RENDER FAULT', 'fault');
       statusFault('Render fault — ' + (e.message || e));
@@ -949,6 +952,10 @@ export function initBenchController(ctx) {
   ctx.api.benchReset = resetForSource;
   ctx.api.benchClear = () => resetForSource(false);
   ctx.api.getLiftRange = () => liftRange;
+  // Whether the rendered take still matches the rack as it stands. A blind
+  // comparison against a stale render is a comparison with a rack nobody is
+  // looking at.
+  ctx.api.renderIsFresh = () => renderFresh;
   ctx.api.rebuildRack = buildRack;
   // Restore path: words came back from a saved session, light the same surfaces
   // a fresh transcription would.

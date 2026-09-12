@@ -196,3 +196,67 @@ function logChoose(n, k) {
   for (let i = 1; i <= k; i++) s += Math.log((n - k + i) / i);
   return s;
 }
+
+/**
+ * One session, as a state machine with no audio in it.
+ *
+ * The panel asks it what X is for the current trial, plays that, and hands back
+ * an answer. Keeping this pure is the point: the part that decides what the
+ * listener hears, and the part that decides what the result means, are both
+ * testable without a speaker.
+ *
+ * The sequence is generated up front and never consulted beyond the current
+ * trial, so a panel bug cannot leak the next answer into the DOM.
+ */
+export class Session {
+  constructor({ trials = 12, seed = 1, alpha = 0.05, match = null } = {}) {
+    this.truth = sequence(trials, seed);
+    this.answers = [];
+    this.alpha = alpha;
+    this.seed = seed;
+    this.match = match;          // the levelMatch result these renders were made with
+    this.finished = false;
+  }
+
+  get planned() { return this.truth.length; }
+  get index() { return this.answers.length; }
+  get done() { return this.finished || this.answers.length >= this.truth.length; }
+
+  /** What X is for the trial now in front of the listener, or null when done. */
+  xIs() { return this.done ? null : this.truth[this.answers.length]; }
+
+  /**
+   * Record an answer. Returns whether it was right, which a listener is
+   * allowed to know: an ABX where you never learn how you are doing is a
+   * memory test rather than a hearing test.
+   */
+  answer(choice) {
+    if (this.done) throw new Error('this session is over');
+    if (choice !== 'A' && choice !== 'B') throw new RangeError('an answer is A or B');
+    const was = this.truth[this.answers.length];
+    this.answers.push(choice);
+    return was === choice;
+  }
+
+  /** Stop early. The result is scored on the trials actually run. */
+  finish() { this.finished = true; return this.result(); }
+
+  result() { return score(this.answers, this.truth, { alpha: this.alpha }); }
+
+  /**
+   * What to put in front of a listener before they start: how many trials this
+   * session can prove something with, and how many are planned.
+   */
+  plan() {
+    const needed = trialsNeeded(this.alpha);
+    return {
+      planned: this.planned,
+      needed,
+      alpha: this.alpha,
+      canProve: this.planned >= needed,
+      note: this.planned >= needed
+        ? `${this.planned} trials; ${needed} correct in a row would already clear p <= ${this.alpha}`
+        : `${this.planned} trials cannot reach p <= ${this.alpha} even if every one is right — ${needed} are needed`,
+    };
+  }
+}
