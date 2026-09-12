@@ -686,6 +686,7 @@ import { NAME as sigCwName, cases as sigCwCases } from './cases-sigint-cw.mjs';
 import { NAME as sigFskName, cases as sigFskCases } from './cases-sigint-fsk.mjs';
 import { NAME as sigTdoaName, cases as sigTdoaCases } from './cases-sigint-tdoa.mjs';
 import { NAME as bs1770ConfName, cases as bs1770ConfCases } from './cases-bs1770-conformance.mjs';
+import { NAME as abxName, cases as abxCases } from './cases-abx.mjs';
 import { NAME as noiseColoursName, cases as noiseColoursCases } from './cases-noise-colours.mjs';
 import { NAME as refusalBudgetName, cases as refusalBudgetCases } from './cases-refusal-budget.mjs';
 import { NAME as sigPanelName, cases as sigPanelCases } from './cases-sigint-panel.mjs';
@@ -6800,6 +6801,7 @@ const groups = [
   ['midi file import', smfCases],
   ['BS.1770', loudnessCases],
   [bs1770ConfName, bs1770ConfCases],
+  [abxName, abxCases],
   ['beat tracking', beatCases],
   ['pattern compiler', patternCases],
   ['TRUTH 1 DSP', truthCases],
