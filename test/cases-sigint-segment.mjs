@@ -31,7 +31,7 @@ import {
   CONFIDENCE_CAP_FULL_BAND, CONFIDENCE_CAP_FLOOR_FROM_NEIGHBOURS, CONFIDENCE_CAP_NONSTATIONARY,
   FULL_BAND_FRACTION, STANDING_STEP_DB, GROW_CELL_RATE,
   FLASH_SHARE, FLASH_EXCESS, FLASH_BIN_SHARE, SNR_SE_INFLATION, IMPULSIVE_Z,
-  DEFAULT_MIN_DURATION_SEC, DEAD_BAND_DB, EDGE_STEP_DB } from '../js/sigint/segment.js';
+  DEFAULT_MIN_DURATION_SEC, DEAD_BAND_DB, EDGE_STEP_DB , keyingOf, KEYED_MIN_CONTRAST_DB, KEYED_MIN_TRANSITIONS } from '../js/sigint/segment.js';
 import {
   extractFeatures, classify, classifySegment, modes, gridFit, gapFraction, periodicity,
   HYPOTHESES, MIN_SCORE, RAYLEIGH_DEPTH, LOCAL_BLOCK_SEC,
@@ -275,6 +275,58 @@ function strongest(result) {
 export const NAME = 'sigint segmentation and classification';
 
 export const cases = [
+  function aKeyedComponentIsToldFromAContinuousOne() {
+    // A fake power matrix: 40 frames, 8 bins, floor 1, gain 1. Component A
+    // switches between 30x floor and 1.1x floor every two frames — keyed.
+    // Component B sits at 30x floor throughout — continuous. Component C is a
+    // sixteen-second splatter that flickers a few dB — what outranked M12's
+    // Morse before this measurement existed.
+    const bins = 8, frames = 40;
+    const power = new Float32Array(frames * bins).fill(1.1);
+    for (let t = 0; t < frames; t++) {
+      for (let b = 0; b < 4; b++) power[t * bins + b] = (Math.floor(t / 2) % 2 === 0) ? 30 : 1.1;   // A: bins 0-3
+      for (let b = 4; b < 8; b++) power[t * bins + b] = 30;                                        // B: bins 4-7
+    }
+    const fl = { floor: new Float64Array(bins).fill(1), gain: new Float64Array(frames).fill(1) };
+    const A = keyingOf(power, bins, fl, { t0: 0, t1: frames - 1, b0: 0, b1: 3 });
+    const B = keyingOf(power, bins, fl, { t0: 0, t1: frames - 1, b0: 4, b1: 7 });
+    assert.equal(A.keyed, true, JSON.stringify(A));
+    assert.ok(A.contrastDb > KEYED_MIN_CONTRAST_DB && A.transitions >= KEYED_MIN_TRANSITIONS, JSON.stringify(A));
+    assert.ok(Math.abs(A.onFraction - 0.5) < 0.06, 'half on');
+    assert.equal(B.keyed, false, JSON.stringify(B));
+    assert.ok(B.contrastDb < 3, 'a steady component has no two states to contrast');
+    // C: a few dB of flicker is not keying however often it flickers.
+    for (let t = 0; t < frames; t++) for (let b = 4; b < 8; b++) power[t * bins + b] = t % 2 ? 30 : 20;
+    const C = keyingOf(power, bins, fl, { t0: 0, t1: frames - 1, b0: 4, b1: 7 });
+    assert.equal(C.keyed, false, JSON.stringify(C));
+    assert.ok(C.transitions > 30 && C.contrastDb < KEYED_MIN_CONTRAST_DB, 'many transitions, too little contrast');
+    // Too short to say.
+    const S = keyingOf(power, bins, fl, { t0: 0, t1: 5, b0: 0, b1: 3 });
+    assert.equal(S.keyed, false);
+    assert.equal(S.contrastDb, null);
+  },
+
+  function aRealKeyedToneIsMarkedKeyedBySegment() {
+    // Eight seconds of a 1 kHz tone keyed at 0.2 s on / 0.2 s off, in white
+    // noise; the survey's top air emission must carry keyed: true. A steady
+    // tone of the same level must not.
+    const rate = 8000, n = rate * 8;
+    const keyed = white(n, { sigma: 0.01, seed: 21 });
+    const steady = white(n, { sigma: 0.01, seed: 22 });
+    for (let i = 0; i < n; i++) {
+      const on = Math.floor(i / (rate * 0.2)) % 2 === 0;
+      const c = Math.cos(2 * Math.PI * 1000 * i / rate);
+      keyed[i] += (on ? 0.3 : 0) * c;
+      steady[i] += 0.3 * c;
+    }
+    const top = (x) => segment(x, rate).emissions.filter((d) => !d.aboveContentEdge)
+      .sort((a, b) => (a.falseAlarmLog10 ?? Infinity) - (b.falseAlarmLog10 ?? Infinity))[0];
+    const k = top(keyed), s = top(steady);
+    assert.ok(k && k.keying && k.keying.keyed === true, 'keyed tone: ' + JSON.stringify(k && k.keying));
+    assert.ok(k.keying.transitions >= 20, 'twenty switches in eight seconds at 2.5 Hz: ' + k.keying.transitions);
+    assert.ok(s && s.keying && s.keying.keyed === false, 'steady tone: ' + JSON.stringify(s && s.keying));
+  },
+
   async function noiseAloneProducesNoDetections() {
     // The whole module is here for this. A window between two transmissions is
     // noise, and a detector that splits it is worse than no detector.

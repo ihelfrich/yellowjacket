@@ -16,6 +16,8 @@ import { classifySegment } from '../js/sigint/classify.js';
 import { decodeCw, cutNumbers } from '../js/sigint/decode/cw.js';
 import { decodeRtty } from '../js/sigint/decode/rtty.js';
 import { identifySelcall } from '../js/sigint/decode/tones.js';
+import { decodeSame } from '../js/sigint/decode/same.js';
+import { decodeTimeCode } from '../js/sigint/decode/timecode.js';
 import { arrivalDifference, WWV_WWVH } from '../js/sigint/tdoa.js';
 
 /**
@@ -56,6 +58,31 @@ export const TASKS = {
     out.push({
       name: 'SELCALL', ok: !!(sel && sel.ok), text: sel && (sel.text || (sel.calls || []).join(' ')),
       reason: (sel && sel.reason) || 'no selective-calling tones',
+    });
+    // The Emergency Alert System header: who sent it, what for, which counties,
+    // when. Three copies voted; the note says how many agreed.
+    const same = decodeSame(x, rate, opts.same || {});
+    out.push({
+      name: 'SAME / EAS', ok: !!(same && same.ok), text: same && same.ok ? same.summary.join(' · ') : same && same.text,
+      reason: (same && same.reason) || 'no SAME header',
+      note: same && same.ok
+        ? `${same.text} — ${same.copies} cop${same.copies === 1 ? 'y' : 'ies'}, ${same.agreed} exact, `
+          + `${same.disputed.length} character${same.disputed.length === 1 ? '' : 's'} settled by vote`
+          + (same.repaired.length ? `, ${same.repaired.length} by the code tables` : '')
+          + (same.endOfMessage ? `; end-of-message ×${same.endOfMessage}` : '')
+        : null,
+    });
+    // WWV / WWVH: the date and time the recording was made, from its 100 Hz
+    // subcarrier. Needs a full minute; on less it says so.
+    const tc = decodeTimeCode(x, rate, opts.timecode || {});
+    out.push({
+      name: 'TIME CODE (WWV/WWVH)', ok: !!(tc && tc.ok), text: tc && tc.text,
+      reason: (tc && tc.reason) || 'no time code',
+      note: tc && tc.ok
+        ? `DUT1 ${tc.dut1 === null ? '?' : (tc.dut1 >= 0 ? '+' : '') + tc.dut1.toFixed(1)} s · DST ${tc.dst.atStart ? 'on' : 'off'}`
+          + (tc.leapSecondWarning ? ' · leap second warning' : '')
+          + (tc.outliers.length ? ` · minutes with bit errors: ${tc.outliers.map((o) => `#${o.index + 1} read ${o.read}`).join(', ')}` : '')
+        : null,
     });
     return out;
   },

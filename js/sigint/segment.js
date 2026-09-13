@@ -1505,7 +1505,19 @@ export function segment(mono, sampleRate, opts = {}) {
       notes.push('sits inside a band whose own floor stands above the surrounding background; neither its level nor its false-alarm rate is measurable against the receiver noise');
     }
 
+    // Is this component KEYED — switched on and off inside its own span — or
+    // continuous? The survey ranks by evidence that something is there, and
+    // evidence rewards area: on M12 a sixteen-second splatter component
+    // outranked the Morse channel beside it, and on the Marine Electric
+    // recording four second-long bursts outranked the keying. A decoder wants
+    // the keyed one. Measured on the component's own frames: the band energy
+    // per frame against the floor, split at the geometric mean of its quiet and
+    // loud quantiles, and three numbers come out — how far apart the two
+    // states sit, how often it switches, and how much of the time it is on.
+    const keying = keyingOf(power, bins, fl, a);
+
     components.push({
+      keying,
       startSec: spec.timeOf(a.t0), endSec: spec.timeOf(a.t1),
       durationSec: spec.timeOf(a.t1) - spec.timeOf(a.t0) + 1 / spec.frameRate,
       lowHz: spec.freqOf(a.b0), highHz: spec.freqOf(a.b1) + spec.binHz,
@@ -1571,6 +1583,46 @@ export function segment(mono, sampleRate, opts = {}) {
  * within `mergeGapHz` of one another are the same emission, and this is the
  * list a classifier should be given.
  */
+/**
+ * Keying statistics for a component: per-frame band energy over the floor,
+ * thresholded at the geometric mean of the 20th and 90th percentiles.
+ * `contrastDb` is the mean on-frame level over the mean off-frame level,
+ * `transitions` how many times it switched, `onFraction` the duty. `keyed`
+ * is the reading a decoder cares about: two well-separated states, switching
+ * more than a handful of times, neither state a sliver.
+ */
+export const KEYED_MIN_CONTRAST_DB = 8;
+export const KEYED_MIN_TRANSITIONS = 6;
+export function keyingOf(power, bins, fl, a) {
+  const frames = a.t1 - a.t0 + 1;
+  if (frames < 12 || !power) return { contrastDb: null, transitions: 0, onFraction: null, frames, keyed: false };
+  const e = new Float64Array(frames);
+  for (let t = a.t0; t <= a.t1; t++) {
+    const row = t * bins, g = fl.gain[t] || 1;
+    let acc = 0, n = 0;
+    for (let b = a.b0; b <= a.b1; b++) { const f = (fl.floor[b] || 1e-12) * g; acc += power[row + b] / f; n++; }
+    e[t - a.t0] = n ? acc / n : 0;
+  }
+  const sorted = Float64Array.from(e).sort();
+  const q = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+  const lo = Math.max(q(0.2), 1e-9), hi = Math.max(q(0.9), 1e-9);
+  const thr = Math.sqrt(lo * hi);
+  let on = 0, offSum = 0, onSum = 0, transitions = 0, prev = null;
+  for (let i = 0; i < frames; i++) {
+    const s = e[i] > thr;
+    if (s) { on++; onSum += e[i]; } else offSum += e[i];
+    if (prev !== null && s !== prev) transitions++;
+    prev = s;
+  }
+  const off = frames - on;
+  const contrastDb = on && off ? 10 * Math.log10((onSum / on) / Math.max(offSum / off, 1e-12)) : 0;
+  const onFraction = on / frames;
+  return {
+    contrastDb: +contrastDb.toFixed(1), transitions, onFraction: +onFraction.toFixed(2), frames,
+    keyed: contrastDb >= KEYED_MIN_CONTRAST_DB && transitions >= KEYED_MIN_TRANSITIONS && onFraction >= 0.1 && onFraction <= 0.9,
+  };
+}
+
 export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.5 } = {}) {
   // Two rules learned from the shelf. (1) The frequency gap is measured against
   // the emission's SEED band — its strongest component — not against the box
@@ -1611,7 +1663,7 @@ export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.
     if (!hit) {
       out.push({
         startSec: d.startSec, endSec: d.endSec, lowHz: d.lowHz, highHz: d.highHz,
-        parts: 1, cells: d.cells, boxCells: d.boxCells, peakSnrDb: d.peakSnrDb, snrDb: d.snrDb,
+        parts: 1, cells: d.cells, boxCells: d.boxCells, peakSnrDb: d.peakSnrDb, snrDb: d.snrDb, keying: d.keying,
         snrDbSe: d.snrDbSe, snrBlocks: d.snrBlocks, snrOverStandingFloorDb: d.snrOverStandingFloorDb,
         falseAlarmLog10: d.falseAlarmLog10, confidence: d.confidence,
         confidenceNotes: (d.confidenceNotes || []).slice(),
@@ -1631,6 +1683,7 @@ export function mergeEmissions(detections, { mergeGapHz = 500, mergeOverlap = 0.
     hit.highHz = Math.max(hit.highHz, d.highHz);
     hit.parts += 1;
     hit.cells += d.cells;
+    if (d.keying && d.keying.keyed && !(hit.keying && hit.keying.keyed && hit.keying.contrastDb >= d.keying.contrastDb)) hit.keying = d.keying;
     hit.boxCells = finite(hit.boxCells) + finite(d.boxCells);
     // null is not a number and Math.max would silently treat it as zero, which
     // is exactly how a withheld level becomes a reported one. Every merge of a

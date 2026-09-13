@@ -84,9 +84,21 @@ rate, FSK shift, SNR — and assembles an ITU emission designator from them
 (`249HF1B` for 45.45 baud RTTY at a 170 Hz shift, by SM.1138's own arithmetic). It
 ranks what the emission might be with the evidence for and against each hypothesis,
 and tries the decoders that ranking makes plausible: Morse, RTTY, DTMF and selective
-calling. Every number carries an uncertainty and every estimator can refuse — a
-bench that reads confident traffic out of hiss is worse than one that reads nothing,
-so refusals print as prominently as answers.
+calling, the SAME header on a weather-radio alert, and the WWV/WWVH time code. Every
+number carries an uncertainty and every estimator can refuse — a bench that reads
+confident traffic out of hiss is worse than one that reads nothing, so refusals print
+as prominently as answers.
+
+Two of those decoders read something you can check. The shelf's NOAA weather-radio
+test carries an Emergency Alert System header, three copies at 520.83 baud, and the
+bench votes them character by character and prints who sent it, what for and where:
+a Required Weekly Test from the Weather Service office at Milwaukee for eleven
+Wisconsin counties, issued at 18:00 UTC on day 328. And a time station's 100 Hz
+subcarrier carries the date and time, one bit a second. The shelf's WWV recording
+from 1991 reads 02:18 UTC on day 341 of 1991 in eleven clean minutes out of thirteen
+— which is 7 December, one day earlier than the archive's own label. The survey ranks
+keyed emissions first, because a channel that switches on and off is the one a
+decoder can read, and evidence alone rewards area.
 
 It also does one thing that is not characterisation. A recording of 5 MHz carries
 both NIST time stations, WWV in Colorado and WWVH on Kauai, marking each minute on

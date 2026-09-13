@@ -24,6 +24,30 @@ function keyedTone(seconds = 3, { hz = 1000, ditSec = 0.08, amp = 0.5, noise = 0
 export const NAME = 'sigint panel';
 
 export const cases = [
+  function theSurveyRanksKeyedEmissionsFirst() {
+    // Evidence rewards area. On M12 a sixteen-second splatter component with a
+    // false-alarm exponent of -25189 outranked the 958-1034 Hz Morse channel
+    // at -3271; on the Marine Electric recording four second-long bursts
+    // outranked the keying. A keyed emission goes first whatever its exponent;
+    // among keyed ones, and among continuous ones, evidence still orders.
+    const result = {
+      present: true,
+      emissions: [
+        { id: 'splatter', startSec: 1.3, endSec: 16.6, lowHz: 215, highHz: 1314, falseAlarmLog10: -25189, snrDb: 12, cells: 9000, keying: { keyed: false, contrastDb: 3.8, transitions: 87, onFraction: 0.38 } },
+        { id: 'morse', startSec: 56.9, endSec: 59.4, lowHz: 958, highHz: 1034, falseAlarmLog10: -3271, snrDb: 14, cells: 300, keying: { keyed: true, contrastDb: 10.4, transitions: 20, onFraction: 0.69 } },
+        { id: 'morse2', startSec: 20, endSec: 24, lowHz: 958, highHz: 1034, falseAlarmLog10: -8000, snrDb: 15, cells: 400, keying: { keyed: true, contrastDb: 11, transitions: 30, onFraction: 0.6 } },
+        { id: 'hum', startSec: 0, endSec: 120, lowHz: 54, highHz: 118, falseAlarmLog10: -900, snrDb: 9, cells: 5000, keying: { keyed: false, contrastDb: 1, transitions: 2, onFraction: 0.9 } },
+        { id: 'codec', startSec: 0, endSec: 120, lowHz: 4000, highHz: 6000, falseAlarmLog10: -99999, aboveContentEdge: true, keying: { keyed: true, contrastDb: 20, transitions: 50, onFraction: 0.5 } },
+      ],
+    };
+    const { rows, setAside } = surveyRows(result);
+    assert.deepEqual(rows.map((r) => r.id), ['morse2', 'morse', 'splatter', 'hum'], rows.map((r) => r.id).join(','));
+    assert.equal(setAside.codec, 1, 'a codec ridge stays set aside however keyed it is');
+    // Without keying fields the old order holds exactly.
+    const bare = { present: true, emissions: result.emissions.slice(0, 4).map(({ keying, ...d }) => d) };
+    assert.deepEqual(surveyRows(bare).rows.map((r) => r.id), ['splatter', 'morse2', 'morse', 'hum']);
+  },
+
   async function everyMeasurementPrintsItsUnitAndItsUncertainty() {
     const m = measure(keyedTone(), RATE);
     const lines = reportLines({ measured: m }, { methods: false });

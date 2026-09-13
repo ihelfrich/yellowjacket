@@ -75,7 +75,12 @@ export function surveyRows(result, { limit = 40 } = {}) {
   const all = Array.isArray(result[listName]) ? result[listName] : [];
   const air = all.filter((d) => !d.aboveContentEdge);
   const evidence = (d) => (Number.isFinite(d.falseAlarmLog10) ? d.falseAlarmLog10 : Infinity);
-  const ranked = air.slice().sort((a, b) => evidence(a) - evidence(b) || (b.snrDb ?? -1e9) - (a.snrDb ?? -1e9) || (b.cells || 0) - (a.cells || 0));
+  // Keyed emissions first: a channel that switches on and off inside its own
+  // span is the one a decoder can read, and evidence alone rewards area —
+  // measured on M12 and the Marine Electric recording, a splatter component
+  // and four long bursts each outranked the Morse beside them.
+  const keyed = (d) => (d.keying && d.keying.keyed ? 1 : 0);
+  const ranked = air.slice().sort((a, b) => keyed(b) - keyed(a) || evidence(a) - evidence(b) || (b.snrDb ?? -1e9) - (a.snrDb ?? -1e9) || (b.cells || 0) - (a.cells || 0));
   const rows = ranked.slice(0, limit).map((d, i) => ({ ...d, id: d.id ?? ('e' + (i + 1)), k: i + 1 }));
   return {
     rows,
