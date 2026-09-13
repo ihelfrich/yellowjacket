@@ -100,6 +100,29 @@ from 1991 reads 02:18 UTC on day 341 of 1991 in eleven clean minutes out of thir
 keyed emissions first, because a channel that switches on and off is the one a
 decoder can read, and evidence alone rewards area.
 
+Two more decoders do things a text readout cannot. **SSTV** reads slow-scan
+television — a picture sent as a swept tone, 1500 Hz black to 2300 Hz white,
+one line at a time — and paints it into the panel. It reads the VIS header to
+learn the mode, re-syncs on every line so a recording whose clock is off comes
+out straight rather than slanted, and names the mode when the header says one
+it cannot read, because "Robot 36" is a better answer than a wrong picture. And
+**POCSAG** reads paging traffic at 512, 1200 or 2400 baud. Every codeword goes
+through its BCH check and is either correct, repaired by one or two bit flips,
+or discarded, and the panel says how many of each — a pager decoder without
+that prints plausible sentences out of noise. Reading pager traffic addressed
+to someone else is unlawful in most places; this decodes a recording, and what
+anyone does with a receiver is their own jurisdiction's business.
+
+MEASUREMENT reads harmony as well as level. Fold the spectrum onto the twelve
+pitch classes by picking peaks and crediting each to the notes it could be a
+harmonic of, correlate against the Krumhansl-Kessler profiles, and out comes
+the key with its Camelot code, the runner-up, and the gap between them — a
+correlation of 0.82 against 0.81 is not a key estimate, it is two, and the
+readout says so. It also measures what the recording is actually tuned to,
+because a tape running thirty cents sharp puts every note between two classes,
+and it reads the chord sequence with a cost for changing chord, whose only
+prior is that a chord lasts longer than one analysis window.
+
 It also does one thing that is not characterisation. A recording of 5 MHz carries
 both NIST time stations, WWV in Colorado and WWVH on Kauai, marking each minute on
 different tones. They share a clock, so the difference in when their marks arrive is

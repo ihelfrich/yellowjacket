@@ -42,8 +42,8 @@ export const cases = [
     const m = await r.run('measure', x, RATE);
     assert.ok(m.centre && Math.abs(m.centre.value - 1000) < 2, `centre ${m.centre && m.centre.value}`);
     const d = await r.run('decode', x, RATE);
-    assert.ok(Array.isArray(d) && d.length >= 5, 'decode returns one entry per decoder');
-    assert.deepEqual(d.map((e) => e.name), ['MORSE', 'RTTY', 'SELCALL', 'SAME / EAS', 'TIME CODE (WWV/WWVH)']);
+    assert.ok(Array.isArray(d) && d.length >= 7, 'decode returns one entry per decoder');
+    assert.deepEqual(d.map((e) => e.name), ['MORSE', 'RTTY', 'SELCALL', 'SAME / EAS', 'TIME CODE (WWV/WWVH)', 'SSTV', 'POCSAG']);
     for (const e of d) assert.ok(e.ok === true || typeof e.reason === 'string', e.name + ' neither decoded nor said why');
   },
 

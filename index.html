@@ -69,6 +69,7 @@
 <link rel="modulepreload" href="js/analysis/soundscape.js">
 <link rel="modulepreload" href="js/dsp/preview.js">
 <link rel="modulepreload" href="js/app/transport.js">
+<link rel="modulepreload" href="js/analysis/harmony.js">
 <link rel="modulepreload" href="js/app/bench-controller.js">
 <link rel="modulepreload" href="js/analysis/cyclic.js">
 <link rel="modulepreload" href="js/export/opz-project.js">
@@ -111,6 +112,8 @@
 <link rel="modulepreload" href="js/sigint/decode/tones.js">
 <link rel="modulepreload" href="js/sigint/decode/same.js">
 <link rel="modulepreload" href="js/sigint/decode/timecode.js">
+<link rel="modulepreload" href="js/sigint/decode/sstv.js">
+<link rel="modulepreload" href="js/sigint/decode/pager.js">
 <link rel="modulepreload" href="workers/sigint-worker.js">
 <link rel="modulepreload" href="js/sigint/runner.js">
 <link rel="modulepreload" href="js/app/sigint-controller.js">
@@ -300,6 +303,9 @@
             <div><dt>CREST</dt><dd class="yj-well" id="mCrest">—</dd></div>
             <div><dt>DC OFFSET</dt><dd class="yj-well" id="mDc">—</dd></div>
             <div><dt>CLIPPED</dt><dd class="yj-well" id="mClip">—</dd></div>
+            <div><dt>KEY</dt><dd class="yj-well" id="mKey" title="Krumhansl-Kessler key from the folded chroma, with its Camelot code. Says so when two keys score too close to separate.">—</dd></div>
+            <div><dt>TUNING</dt><dd class="yj-well" id="mTuning" title="What the recording is actually tuned to, in cents from A440, measured from where its spectral peaks sit against the semitone grid.">—</dd></div>
+            <div><dt>CHORDS</dt><dd class="yj-well yj-well-wide" id="mChords" title="Chord spans, smoothed with a cost for changing: the only prior is that a chord lasts longer than one window.">—</dd></div>
           </dl>
           <div class="yj-soundscape" id="soundscape" hidden>
             <p class="yj-soundscape-head">SOUNDSCAPE SPLIT · NDSI</p>

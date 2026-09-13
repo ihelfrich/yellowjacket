@@ -193,6 +193,7 @@ export function reportLines(state, { methods = true } = {}) {
     if (!d.ok) { out.push('   refused — ' + d.reason); out.push(''); continue; }
     for (const line of String(d.text || '').split('\n')) out.push('   ' + line);
     if (d.note) out.push('   (' + d.note + ')');
+    if (d.image) out.push(`   (the picture is drawn above: ${d.image.width}x${d.image.height}, ${d.image.lines} lines read)`);
     out.push('');
   }
   if (tdoa) {
@@ -262,6 +263,27 @@ export function initSigintController(ctx) {
   readouts.hidden = true;
   const designator = el('p', 'yj-sigint-designator');
   designator.hidden = true;
+  // Where a decoded picture goes. Hidden until something returns one.
+  const picture = el('figure', 'yj-sigint-picture');
+  picture.hidden = true;
+  const canvas = document.createElement('canvas');
+  const caption = document.createElement('figcaption');
+  picture.append(canvas, caption);
+
+  /** Paint the first decoder result that carried an image, or hide the frame. */
+  function showPicture(decodes) {
+    const withImage = (decodes || []).find((d) => d && d.ok && d.image && d.image.rgba);
+    if (!withImage) { picture.hidden = true; return; }
+    const im = withImage.image;
+    canvas.width = im.width; canvas.height = im.height;
+    const ctx2d = canvas.getContext('2d');
+    if (!ctx2d) { picture.hidden = true; return; }
+    const data = new ImageData(new Uint8ClampedArray(im.rgba), im.width, im.height);
+    ctx2d.putImageData(data, 0, 0);
+    caption.textContent = `${withImage.name} · ${withImage.text}`;
+    picture.hidden = false;
+  }
+
   const pre = el('pre', 'yj-sigint-report');
   pre.textContent = '';
 
@@ -406,6 +428,7 @@ export function initSigintController(ctx) {
       state.classified = result;
     } else if (task === 'decode') {
       state.decodes = result;
+      showPicture(result);
     } else if (task === 'tdoa') {
       state.tdoa = result;
       if (result.ok) status(`SIGINT · ${result.deltaMs.toFixed(1)} ms between the two stations`);
@@ -444,6 +467,6 @@ export function initSigintController(ctx) {
     spec.setDetections(on ? (state.detections || []) : [], on ? state.selectedId : null);
   };
 
-  host.append(note, row, line, list, readouts, designator, pre);
+  host.append(note, row, line, list, readouts, designator, picture, pre);
   ctx.api.sigintState = () => state;
 }

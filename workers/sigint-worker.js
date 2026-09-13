@@ -18,6 +18,8 @@ import { decodeRtty } from '../js/sigint/decode/rtty.js';
 import { identifySelcall } from '../js/sigint/decode/tones.js';
 import { decodeSame } from '../js/sigint/decode/same.js';
 import { decodeTimeCode } from '../js/sigint/decode/timecode.js';
+import { decodeSstv } from '../js/sigint/decode/sstv.js';
+import { decodePocsag } from '../js/sigint/decode/pager.js';
 import { arrivalDifference, WWV_WWVH } from '../js/sigint/tdoa.js';
 
 /**
@@ -83,6 +85,29 @@ export const TASKS = {
           + (tc.leapSecondWarning ? ' · leap second warning' : '')
           + (tc.outliers.length ? ` · minutes with bit errors: ${tc.outliers.map((o) => `#${o.index + 1} read ${o.read}`).join(', ')}` : '')
         : null,
+    });
+    // Slow-scan television: a picture, not a line of text. The bytes travel
+    // back with the result and the panel paints them; everything else here is
+    // what a reader needs to trust the picture.
+    const pic = decodeSstv(x, rate, opts.sstv || {});
+    out.push({
+      name: 'SSTV', ok: !!(pic && pic.ok), text: pic && pic.text,
+      reason: (pic && pic.reason) || 'no SSTV picture',
+      note: pic && pic.ok
+        ? `VIS ${pic.vis.code}${pic.vis.parityOk === false ? ' (parity failed)' : ''} · `
+          + `${pic.linesRead} lines · sync found on ${(pic.syncLock * 100).toFixed(0)}% of them`
+          + (pic.notes.length ? ` · ${pic.notes.join('; ')}` : '')
+        : null,
+      image: pic && pic.ok ? { width: pic.width, height: pic.height, lines: pic.linesRead, rgba: pic.rgba } : null,
+    });
+    // POCSAG paging. Unencrypted by design and still carrying real traffic,
+    // which is why the reader is told how much of it the BCH code had to
+    // repair before believing any of it.
+    const pg = decodePocsag(x, rate, opts.pocsag || {});
+    out.push({
+      name: 'POCSAG', ok: !!(pg && pg.ok), text: pg && pg.text,
+      reason: (pg && pg.reason) || 'no paging traffic',
+      note: pg && pg.ok ? `${pg.baud} baud${pg.inverted ? ', inverted' : ''} · ${pg.note}` : null,
     });
     return out;
   },

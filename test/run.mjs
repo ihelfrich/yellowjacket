@@ -689,6 +689,9 @@ import { NAME as bs1770ConfName, cases as bs1770ConfCases } from './cases-bs1770
 import { NAME as abxName, cases as abxCases } from './cases-abx.mjs';
 import { NAME as sameName, cases as sameCases } from './cases-sigint-same.mjs';
 import { NAME as timecodeName, cases as timecodeCases } from './cases-sigint-timecode.mjs';
+import { NAME as sstvName, cases as sstvCases } from './cases-sigint-sstv.mjs';
+import { NAME as pagerName, cases as pagerCases } from './cases-sigint-pager.mjs';
+import { NAME as harmonyName, cases as harmonyCases } from './cases-harmony.mjs';
 import { NAME as noiseColoursName, cases as noiseColoursCases } from './cases-noise-colours.mjs';
 import { NAME as refusalBudgetName, cases as refusalBudgetCases } from './cases-refusal-budget.mjs';
 import { NAME as sigPanelName, cases as sigPanelCases } from './cases-sigint-panel.mjs';
@@ -6849,6 +6852,9 @@ const groups = [
   [sigTdoaName, sigTdoaCases],
   [sameName, sameCases],
   [timecodeName, timecodeCases],
+  [sstvName, sstvCases],
+  [pagerName, pagerCases],
+  [harmonyName, harmonyCases],
   [noiseColoursName, noiseColoursCases],
   [refusalBudgetName, refusalBudgetCases],
   [sigPanelName, sigPanelCases],

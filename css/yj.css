@@ -1042,3 +1042,29 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
 .yj-cyclic-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .yj-card-summary { font-family: var(--f-mono); font-size: 10px; color: var(--yj-yellow); margin: 6px 0 0; line-height: 1.5; }
 .yj-card-actions .yj-select { font-size: 10px; max-width: 46%; }
+
+
+/* A decoded picture — SSTV — inside the SIGINT rail. Pixel-exact rather than
+   smoothed: this is a measurement, and a bilinear filter would invent detail
+   the transmission does not contain. */
+.yj-sigint-picture {
+  margin: 10px 0 0;
+  padding: 0;
+  border: 1px solid var(--yj-line);
+  background: var(--yj-panel-deep, #0c0c0a);
+}
+.yj-sigint-picture canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+.yj-sigint-picture figcaption {
+  font-family: var(--f-ui);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--yj-ink-dim);
+  padding: 6px 8px;
+  border-top: 1px solid var(--yj-line);
+}

@@ -12,6 +12,7 @@ import { ndsi, bandLevelDb } from '../analysis/soundscape.js';
 import { speedFactorsFor, slowedBuffer, speedLabel, slowBand } from '../dsp/varispeed.js';
 import { previewWindow, previewChain, previewView, sliceAudioBuffer, describePreview } from '../dsp/preview.js';
 import { soundingSources, transportLabel, transportTitle, SHORT } from './transport.js';
+import { readHarmony } from '../analysis/harmony.js';
 
 export function initBenchController(ctx) {
   const { store, engine, meter, transcriber, sequencer, views, $, COPY, status, statusFault, fmtTime, fmtDb, setLed } = ctx;
@@ -424,6 +425,26 @@ export function initBenchController(ctx) {
     $('mLufsS').textContent = fmtDb(m.shortTermMax, ' LUFS');
     $('mPeak').textContent = fmtDb(m.samplePeakDb, ' dBFS');
     $('mTruePeak').textContent = fmtDb(m.truePeakDb, ' dBTP');
+    // What key it is in, what it is tuned to, and what chords go past. Cheap
+    // next to the loudness pass — a three-minute recording reads in well under
+    // a second — and it refuses out loud rather than naming a key for hiss.
+    try {
+      const h = readHarmony(R.mono || mixdownMono(R.buffer), R.buffer.sampleRate);
+      if (!h.ok) {
+        $('mKey').textContent = 'NOT TONAL';
+        $('mTuning').textContent = '—';
+        $('mChords').textContent = '—';
+      } else {
+        $('mKey').textContent = `${h.key} · ${h.camelot}` + (h.confident ? '' : ' ?');
+        $('mKey').title = h.confident
+          ? `correlates ${h.correlation} against Krumhansl-Kessler; next best ${h.runnerUp.key} at ${h.runnerUp.correlation}`
+          : h.caution;
+        $('mTuning').textContent = `${h.tuning.cents > 0 ? '+' : ''}${h.tuning.cents} cents · ${h.tuning.refHz} Hz`;
+        $('mChords').textContent = h.chords.length ? h.chords.slice(0, 10).map((c) => c.name).join(' ') + (h.chords.length > 10 ? ' …' : '') : '—';
+      }
+    } catch (e) {
+      $('mKey').textContent = 'FAILED';
+    }
     $('mRms').textContent = fmtDb(m.rmsDb, ' dB');
     $('mCrest').textContent = fmtDb(m.crestDb, ' dB');
     $('mDc').textContent = (m.dcOffset >= 0 ? '+' : '') + m.dcOffset.toFixed(5);
