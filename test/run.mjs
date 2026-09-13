@@ -693,6 +693,7 @@ import { NAME as sstvName, cases as sstvCases } from './cases-sigint-sstv.mjs';
 import { NAME as pagerName, cases as pagerCases } from './cases-sigint-pager.mjs';
 import { NAME as aleName, cases as aleCases } from './cases-sigint-ale.mjs';
 import { NAME as markerName, cases as markerCases } from './cases-sigint-marker.mjs';
+import { NAME as scanName, cases as scanCases } from './cases-sigint-scan.mjs';
 import { NAME as cryptoName, cases as cryptoCases } from './cases-crypto.mjs';
 import { NAME as harmonyName, cases as harmonyCases } from './cases-harmony.mjs';
 import { NAME as noiseColoursName, cases as noiseColoursCases } from './cases-noise-colours.mjs';
@@ -6859,6 +6860,7 @@ const groups = [
   [pagerName, pagerCases],
   [aleName, aleCases],
   [markerName, markerCases],
+  [scanName, scanCases],
   [cryptoName, cryptoCases],
   [harmonyName, harmonyCases],
   [noiseColoursName, noiseColoursCases],

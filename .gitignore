@@ -12,3 +12,7 @@ test_*.aif
 /*.m4a
 /*.aif
 /*.aiff
+
+# Live scan output: recordings and state from tools/scan.mjs and tools/watch.mjs
+scans/
+*.f32

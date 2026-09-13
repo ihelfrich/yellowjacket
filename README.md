@@ -233,6 +233,114 @@ offered, and only when the resulting clock stays at or above 8 kHz, which is the
 floor WAV and the browser both enforce. Speed resets to 1× whenever a new source
 loads.
 
+## Live monitoring, and the second ear
+
+Everything above reads a recording. This reads the air.
+
+Around 865 public receivers are online at any hour, run by volunteers on six
+continents, with roughly 4,300 listening slots free between them. `tools/` can
+take one slot, tune it, record it, hand the samples to the same decoders the
+bench runs in the browser, and give the slot back. Nothing is duplicated: the
+scanner imports `workers/sigint-worker.js` directly, so a decode from the air
+and a decode from the shelf run identical code and cannot drift apart.
+
+What that buys is not speed. It is a **second ear**, and that changes what can
+be known.
+
+A single receiver cannot tell a transmitter from its own noise. On 13 September
+2026 a live grab of 4724 kHz — a real US Air Force channel — decoded as clean
+ALE traffic reading `FROM 6DN / THIS WAS @JP`. Both halves of the Golay code
+checked, every character was in the ALE alphabet, and two words sat at exactly
+the right spacing. It was nothing at all: the eight tones stood 0.1 dB above
+the gaps between them. Three statistical gates now catch it. A receiver in
+another country would have caught it in one step and without any statistics,
+because the signal was never on the air.
+
+So corroboration is the core of it, and the asymmetry is the whole design:
+
+- Two receivers hearing it is strong evidence it was transmitted.
+- A **distant** receiver not hearing it is almost no evidence at all.
+
+Shortwave reaches some places and not others. Silence 5,000 km away is
+explained by the ionosphere long before it is explained by a silent
+transmitter. So only a receiver close enough to share the path, *and* sensitive
+enough to have heard it, gets to vote against; everything else abstains, and
+abstention is reported as abstention rather than quietly counted as agreement.
+A receiver that heard nothing anywhere has no antenna on it and is not a
+witness. Agreement inside a crowded band is discounted by how cheap it is: if
+80% of both receivers' spectrum is busy, two of them showing energy on one
+channel is what you would expect from two unrelated stations. And agreement is
+never claimed finer than the instrument — a whole-band waterfall has 29.3 kHz
+bins, so two transmitters 20 kHz apart fall in one bin, and reporting that as
+"centres agree to 0 Hz" would overstate the measurement by a factor of five
+hundred.
+
+Verdicts are `on-air`, `local`, or `inconclusive`, always with the evidence
+named. `inconclusive` is a real answer and the commonest one.
+
+Three things it does:
+
+**Scan a watchlist.** 76 catalogued channels across time standards, markers,
+numbers stations, military and government nets, weather and utility traffic,
+amateur bands and oddities. Each entry carries its confidence — `fixed` for a
+transmitter that has been there for decades, `reported` for a schedule the
+monitoring community maintains by listening, `historic` for one believed gone.
+A hit on a `historic` entry is the most interesting thing this can find, which
+is exactly why they are listed.
+
+**Find what is not on the watchlist.** A watchlist only ever contains what
+somebody already wrote down. One grab of a receiver's whole 0–30 MHz spectrum,
+every emission found by topographic prominence, and then the catalogue is asked
+to explain each one; whatever it cannot explain is the output. General
+allocations are explained away en masse, because "there is a signal in the
+40-metre band" is not a finding.
+
+**Watch for change.** Re-scan and print only what moved. The buzzer on 4625 kHz
+has been buzzing since the 1970s and the interesting fact about that channel is
+never that it is buzzing — it is the nine minutes in 2010 when it stopped and
+somebody read names into it. The one thing the watch will not do is cry wolf: a
+receiver that lost its slot produces exactly the same silence as a transmitter
+going off the air, so a pass that listened on fewer ears than the last one
+reports thinner evidence, never a silence.
+
+```bash
+node tools/kiwi-net.mjs                                   who is online
+node tools/scan.mjs --hz 10000000 --mode am --ears 3      one channel, three ears
+node tools/scan.mjs --kinds marker,numbers --ears 2       a watchlist
+node tools/scan.mjs --discover --ears 3                   what nothing explains
+node tools/watch.mjs --kinds marker --every 1800          and again, half-hourly
+```
+
+Measured against the air on 13 September 2026.
+
+WWV on 10 MHz corroborated at three receivers 7,715 km apart, audio centres
+agreeing to 0 Hz, time code decoded to the wall clock.
+
+A discovery sweep flagged 13.380 MHz as a possible hit on E03a "Cherry Ripe",
+off the air since 2009 — and the audio check dismissed it: nothing above 6 dB
+at any of three receivers. The wide survey had found a neighbour inside the
+same 29 kHz bin. The survey proposes; the audio disposes; the survey is never
+allowed to conclude alone.
+
+And a first watch of the five marker channels, listening from the UK and
+Sweden, 1,275 km apart:
+
+| channel | verdict |
+|---|---|
+| 4625 kHz — UVB-76, "The Buzzer" | **on-air**, both ears, centres agreeing to 0 Hz |
+| 3756 kHz — "The Pip", night | **on-air**, both ears |
+| 5448 kHz — "The Pip", day | **on-air**, both ears |
+| 3828 kHz — "The Squeaky Wheel", night | inconclusive — the channel was empty while we listened |
+| 5473 kHz — "The Squeaky Wheel", day | **local** |
+
+That last verdict is the point of the whole exercise. One receiver heard a
+signal there; another under the same sky, at least as sensitive, heard nothing.
+On a shared path that makes it interference inside the first receiver rather
+than a transmitter — and a tool with one ear would have called it a station.
+
+These are volunteers' receivers. The tools identify themselves, hold one slot
+at a time per host, release it, and wait between visits.
+
 ## Why this exists
 
 Descript proved that editing speech by editing text is the right interface, then built it
