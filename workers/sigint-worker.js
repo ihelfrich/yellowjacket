@@ -20,6 +20,8 @@ import { decodeSame } from '../js/sigint/decode/same.js';
 import { decodeTimeCode } from '../js/sigint/decode/timecode.js';
 import { decodeSstv } from '../js/sigint/decode/sstv.js';
 import { decodePocsag } from '../js/sigint/decode/pager.js';
+import { decodeAle } from '../js/sigint/decode/ale.js';
+import { watchMarker } from '../js/sigint/marker.js';
 import { arrivalDifference, WWV_WWVH } from '../js/sigint/tdoa.js';
 
 /**
@@ -109,8 +111,20 @@ export const TASKS = {
       reason: (pg && pg.reason) || 'no paging traffic',
       note: pg && pg.ok ? `${pg.baud} baud${pg.inverted ? ', inverted' : ''} · ${pg.note}` : null,
     });
+    // ALE: who is calling whom, in the clear, on a military or government HF
+    // net. The note carries the false-alarm rate because a lone Golay hit is
+    // not a handshake.
+    const ale = decodeAle(x, rate, opts.ale || {});
+    out.push({
+      name: 'ALE (MIL-STD-188-141)', ok: !!(ale && ale.ok), text: ale && ale.text,
+      reason: (ale && ale.reason) || 'no link establishment',
+      note: ale && ale.ok ? ale.note : null,
+    });
     return out;
   },
+  // A channel that exists to be held, and the moments it stops. Its own task
+  // rather than part of DECODE: it reads minutes or hours, not a selection.
+  marker: (x, rate, opts) => watchMarker(x, rate, opts.marker || {}),
 };
 
 /** Run one job. Exported so the in-place fallback and the worker share it exactly. */

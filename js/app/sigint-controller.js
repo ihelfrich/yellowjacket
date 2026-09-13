@@ -123,7 +123,7 @@ export function taskOptions(task, opts, state) {
 /** Everything the panel prints, as plain data, so it can be tested without a DOM. */
 export function reportLines(state, { methods = true } = {}) {
   const out = [];
-  const { source, region, measured, classified, decodes, tdoa, detections } = state;
+  const { source, region, measured, classified, decodes, tdoa, marker, detections } = state;
   out.push('YELLOWJACKET · SIGNAL / SIGINT');
   if (source) out.push('source   : ' + source);
   if (region) {
@@ -196,6 +196,19 @@ export function reportLines(state, { methods = true } = {}) {
     if (d.image) out.push(`   (the picture is drawn above: ${d.image.width}x${d.image.height}, ${d.image.lines} lines read)`);
     out.push('');
   }
+  if (marker) {
+    out.push('marker watch:');
+    if (!marker.ok) out.push('   refused — ' + marker.reason);
+    else {
+      out.push('   ' + marker.text);
+      out.push(`   band ${marker.band.lowHz}-${marker.band.highHz} Hz, ${marker.band.overDb} dB over the rest of the channel`);
+      out.push(`   cycle ${marker.cycle.periodSec} s at ${(marker.cycle.duty * 100).toFixed(0)}% duty, repeating ${marker.cycle.regularity}`);
+      for (const e of marker.events.slice(0, 24)) out.push(`   ${e.startSec.toFixed(2)}s  ${e.kind.toUpperCase().padEnd(9)} ${e.what}`);
+      if (marker.events.length > 24) out.push(`   … and ${marker.events.length - 24} more`);
+      out.push(`   bars: a hole is over ${marker.thresholds.minHoleSec} s of silence, an intrusion over ${marker.thresholds.minIntrusionSec} s at ${marker.thresholds.intrusionOverDb} dB`);
+    }
+    out.push('');
+  }
   if (tdoa) {
     out.push('two stations:');
     if (!tdoa.ok) { out.push('   refused — ' + tdoa.reason); }
@@ -218,7 +231,7 @@ export function initSigintController(ctx) {
   const host = $('sigintHost');
   if (!host) return;
 
-  const state = { source: null, region: null, measured: null, classified: null, decodes: [], tdoa: null, detections: null, selectedId: null };
+  const state = { source: null, region: null, measured: null, classified: null, decodes: [], tdoa: null, marker: null, detections: null, selectedId: null };
   const spec = ctx.views && ctx.views.spec;
 
   const el = (tag, cls, text) => {
@@ -244,8 +257,10 @@ export function initSigintController(ctx) {
   btnDecode.title = 'Try the decoders the classification makes plausible';
   const btnTwo = el('button', 'yj-btn', 'TWO STATIONS');
   btnTwo.title = 'Arrival-time difference between two time stations sharing this channel';
+  const btnMarker = el('button', 'yj-btn', 'MARKER WATCH');
+  btnMarker.title = 'Find the moments a channel marker stops — the few seconds of a long recording that are not the buzzing';
   const btnCopy = el('button', 'yj-btn', 'COPY REPORT');
-  row.append(btnSurvey, btnMeasure, btnClassify, btnDecode, btnTwo, btnCopy);
+  row.append(btnSurvey, btnMeasure, btnClassify, btnDecode, btnTwo, btnMarker, btnCopy);
 
   const line = el('p', 'yj-sigint-line');
   line.setAttribute('role', 'status');
@@ -429,6 +444,11 @@ export function initSigintController(ctx) {
     } else if (task === 'decode') {
       state.decodes = result;
       showPicture(result);
+    } else if (task === 'marker') {
+      state.marker = result;
+      if (result.ok) {
+        status(`SIGINT · ${result.events.length ? `${result.holes} hole${result.holes === 1 ? '' : 's'}, ${result.intrusions} intrusion${result.intrusions === 1 ? '' : 's'}` : 'marker unbroken'} in ${result.spanSec} s`);
+      }
     } else if (task === 'tdoa') {
       state.tdoa = result;
       if (result.ok) status(`SIGINT · ${result.deltaMs.toFixed(1)} ms between the two stations`);
@@ -440,6 +460,9 @@ export function initSigintController(ctx) {
   btnClassify.addEventListener('click', () => run('CLASSIFY', 'classify'));
   btnDecode.addEventListener('click', () => run('DECODE', 'decode'));
   btnTwo.addEventListener('click', () => run('TWO STATIONS', 'tdoa', { station: WWV_WWVH }, 3600));
+  // The whole recording, not a selection: the point is to find a few seconds
+  // inside hours.
+  btnMarker.addEventListener('click', () => run('MARKER WATCH', 'marker', {}, 7200));
 
   btnCopy.addEventListener('click', async () => {
     try {

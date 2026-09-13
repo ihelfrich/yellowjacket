@@ -28,7 +28,7 @@ export const cases = [
   async function everyTaskThePanelNamesExists() {
     // The panel's buttons post these five strings. A typo in one would be a
     // button that throws only when pressed.
-    for (const task of ['measure', 'segment', 'classify', 'decode', 'tdoa']) {
+    for (const task of ['measure', 'segment', 'classify', 'decode', 'tdoa', 'marker']) {
       assert.equal(typeof TASKS[task], 'function', task + ' is not a task');
     }
     assert.throws(() => runTask('nonsense', keyed(0.6), RATE), /unknown job: nonsense/);
@@ -42,8 +42,8 @@ export const cases = [
     const m = await r.run('measure', x, RATE);
     assert.ok(m.centre && Math.abs(m.centre.value - 1000) < 2, `centre ${m.centre && m.centre.value}`);
     const d = await r.run('decode', x, RATE);
-    assert.ok(Array.isArray(d) && d.length >= 7, 'decode returns one entry per decoder');
-    assert.deepEqual(d.map((e) => e.name), ['MORSE', 'RTTY', 'SELCALL', 'SAME / EAS', 'TIME CODE (WWV/WWVH)', 'SSTV', 'POCSAG']);
+    assert.ok(Array.isArray(d) && d.length >= 8, 'decode returns one entry per decoder');
+    assert.deepEqual(d.map((e) => e.name), ['MORSE', 'RTTY', 'SELCALL', 'SAME / EAS', 'TIME CODE (WWV/WWVH)', 'SSTV', 'POCSAG', 'ALE (MIL-STD-188-141)']);
     for (const e of d) assert.ok(e.ok === true || typeof e.reason === 'string', e.name + ' neither decoded nor said why');
   },
 

@@ -113,6 +113,30 @@ that prints plausible sentences out of noise. Reading pager traffic addressed
 to someone else is unlawful in most places; this decodes a recording, and what
 anyone does with a receiver is their own jurisdiction's business.
 
+Two more go after the transmissions that are meant to be private. **ALE** reads
+MIL-STD-188-141 automatic link establishment — how military, government and
+embassy HF stations find each other without a human turning a dial. The
+handshake is in the clear: 8-FSK at 125 tones a second, a Golay code that
+corrects three bit errors per half-word, and three redundant copies
+majority-voted, which together read a call at nine decibels below the noise.
+What comes back is "TO ANDREW THIS IS CROWN1" with the number of bits the vote
+had to break and the code had to repair beside it. An honest limit travels with
+it: this is round-tripped against its own renderer, not against an off-air
+capture, so the bit order between the interleaver and the tone mapper is a
+hypothesis until a real recording has been through it.
+
+**MARKER WATCH** looks for the opposite of traffic. Some transmitters exist
+only to hold a frequency — UVB-76 has buzzed on 4625 kHz since the 1970s — and
+the interesting part of such a recording is the handful of seconds, sometimes
+years apart, when the buzzing stops and a voice reads a list of words. The
+watch does not know what a buzzer sounds like. It finds the band carrying the
+most persistent energy, measures whatever cycle that band actually has, and
+then reports every departure: a gap where the marker should have been, energy
+the marker's band does not explain, and the bars it used for both. On the
+shelf's 28-hour capture it measures a 3.42 second cycle at 41% duty. It refuses
+a channel with no marker, because without one every second is a departure and a
+list of a hundred thousand of them is not a finding.
+
 MEASUREMENT reads harmony as well as level. Fold the spectrum onto the twelve
 pitch classes by picking peaks and crediting each to the notes it could be a
 harmonic of, correlate against the Krumhansl-Kessler profiles, and out comes
