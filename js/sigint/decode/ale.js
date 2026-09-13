@@ -206,6 +206,34 @@ export function makeWord(preamble, text) {
 
 // ------------------------------------------------------------ demodulation
 
+/**
+ * Is there an 8-FSK tone set here at all?
+ *
+ * The decisive test, and the one this module did not have until a live capture
+ * of 4724 kHz — a real US Air Force channel — came back as "FROM 6DN / THIS
+ * WAS @JP" out of what was plainly noise. Every other gate passed: the Golay
+ * halves checked, the characters were in the alphabet, and two words sat back
+ * to back. What gave it away was that the eight ALE tones held 0.1 dB more
+ * energy than the frequencies BETWEEN them. A tone set that is really there
+ * stands clear of its own gaps; noise does not.
+ */
+export function toneSetContrastDb(x, sampleRate, { from = 0, to = x.length } = {}) {
+  const win = Math.max(16, Math.round(sampleRate / SYMBOL_RATE));
+  const mean = (hz) => {
+    let s = 0, n = 0;
+    for (let t = from; t + win <= to; t += win) { s += goertzel(x, sampleRate, hz, { start: t, length: win }); n++; }
+    return n ? s / n : 0;
+  };
+  let on = 0; for (const hz of TONES) on += mean(hz);
+  on /= TONES.length;
+  // The midpoints: same bandwidth, same noise, no tone if this is ALE.
+  const gaps = [];
+  for (let i = 0; i < TONE_COUNT - 1; i++) gaps.push(TONES[i] + TONE_STEP_HZ / 2);
+  let off = 0; for (const hz of gaps) off += mean(hz);
+  off /= gaps.length;
+  return off > 0 ? 10 * Math.log10(on / off) : 0;
+}
+
 /** Which of the eight tones each symbol is, with how sure the decision was. */
 export function readTones(x, sampleRate, { from = 0, to = x.length, phase = 0 } = {}) {
   const spSym = sampleRate / SYMBOL_RATE;
@@ -266,12 +294,29 @@ export function majority(bits147) {
  * Golay halves both check is a word, and consecutive words are assembled into
  * the calls they make up.
  */
-export function decodeAle(x, sampleRate, { maxWords = 64, minMarginDb = 1.5 } = {}) {
+export function decodeAle(x, sampleRate, {
+  maxWords = 64, minMarginDb = 1.5,
+  // Three bars added after a live capture of 4724 kHz decoded noise into
+  // callsigns. Every number here is from that capture or from the synthetic
+  // cases the suite pins.
+  minToneSetDb = 1.5,      // the tone set must stand above its own gaps; the false positive read 0.1
+  maxVoteBreakShare = 0.35, // the three copies must agree; the false positive broke 69 of 98 bits
+  maxFalseAlarm = 0.05,    // and the run must be rarer than this by chance; it scored 0.17
+} = {}) {
   if (!x || x.length < sampleRate * WORD_SEC) {
     return { ok: false, reason: `an ALE word is ${(WORD_SEC * 1000).toFixed(0)} ms of 8-FSK; the span is shorter` };
   }
   if (sampleRate < 2 * (TONE_BASE_HZ + (TONE_COUNT - 1) * TONE_STEP_HZ) * 1.05) {
     return { ok: false, reason: `sample rate ${sampleRate} cannot carry a ${TONES[TONE_COUNT - 1]} Hz tone` };
+  }
+  const contrastDb = toneSetContrastDb(x, sampleRate);
+  if (contrastDb < minToneSetDb) {
+    return {
+      ok: false,
+      reason: `no 8-FSK tone set: the eight ALE tones hold ${contrastDb.toFixed(1)} dB more energy than the frequencies between them, `
+        + `and ${minToneSetDb} dB is the bar. A tone set that is there stands clear of its own gaps`,
+      toneSetDb: +contrastDb.toFixed(2),
+    };
   }
   const grid = symbolPhase(x, sampleRate);
   const { idx, margin, samplesPerSymbol } = readTones(x, sampleRate, { phase: grid.phase });
@@ -345,8 +390,28 @@ export function decodeAle(x, sampleRate, { maxWords = 64, minMarginDb = 1.5 } = 
   const calls = assembleCalls(words);
   const repaired = words.reduce((a, w) => a + w.repaired, 0);
   const breaks = words.reduce((a, w) => a + w.voteBreaks, 0);
+  const breakShare = breaks / (words.length * 49);
+  if (breakShare > maxVoteBreakShare) {
+    return {
+      ok: false,
+      reason: `${words.length} words passed their Golay check, but the three redundant copies disagreed on `
+        + `${breaks} of ${words.length * 49} bits (${(100 * breakShare).toFixed(0)}%). Real redundancy agrees; `
+        + 'this is three readings of noise',
+      marginDb: +meanMargin.toFixed(2), toneSetDb: +contrastDb.toFixed(2), voteBreakShare: +breakShare.toFixed(3),
+    };
+  }
+  if (chanceOfChain > maxFalseAlarm) {
+    return {
+      ok: false,
+      reason: `a run of ${words.length} words was found, but chance alone puts ${chanceOfChain.toFixed(2)} such runs in a span this `
+        + `long, and ${maxFalseAlarm} is the bar`,
+      marginDb: +meanMargin.toFixed(2), toneSetDb: +contrastDb.toFixed(2), falseAlarmInSpan: +chanceOfChain.toFixed(3),
+    };
+  }
   return {
     ok: true,
+    toneSetDb: +contrastDb.toFixed(2),
+    voteBreakShare: +breakShare.toFixed(3),
     words, calls,
     text: calls.map((c) => c.text).join('\n'),
     marginDb: +meanMargin.toFixed(2),

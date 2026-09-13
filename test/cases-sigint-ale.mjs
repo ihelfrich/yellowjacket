@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   decodeAle, encodeAle, golay24Encode, golay24Decode, golay23Encode,
   encodeWord, decodeWord, makeWord, readWord, interleave, deinterleave,
-  majority, assembleCalls, inAlphabet, INTERLEAVE, ALE_38, TONES, PREAMBLES,
+  majority, assembleCalls, inAlphabet, toneSetContrastDb, INTERLEAVE, ALE_38, TONES, TONE_STEP_HZ, PREAMBLES,
   SYMBOL_RATE, TONES_PER_WORD, WORD_SEC,
 } from '../js/sigint/decode/ale.js';
 import { COLOURS } from './noise-colours.mjs';
@@ -108,6 +108,44 @@ export const cases = [
     }
   },
 
+  function theToneSetHasToStandAboveItsOwnGaps() {
+    // The test that was missing, and what it cost. A live capture of 4724 kHz,
+    // a real US Air Force channel, decoded to "FROM 6DN / THIS WAS @JP" out of
+    // noise. Every other gate passed — both Golay halves checked, the
+    // characters were in the alphabet, two words sat back to back — and the
+    // give-away was that the eight ALE tones held 0.1 dB more energy than the
+    // frequencies BETWEEN them. A tone set that is there stands clear of its
+    // own gaps.
+    const clean = encodeAle(CALL, SR);
+    assert.ok(toneSetContrastDb(clean, SR) > 6, 'a real tone set stands well clear');
+    const noise = COLOURS.white(SR * 5, { seed: 6 });
+    assert.ok(toneSetContrastDb(noise, SR) < 1, 'noise has nothing at the tones that it does not have between them');
+    // And the contrast falls with the noise, monotonically, which is what
+    // makes it a measurement rather than a switch: measured 7.8 dB clean,
+    // 5.1 at 0 dB SNR, 2.6 at -6 and 1.6 at -9, which is where the bar sits.
+    const contrasts = [];
+    for (const snrDb of [10, 0, -6]) {
+      const n = COLOURS.white(clean.length, { seed: 11, sigma: 1 });
+      let ps = 0, pn = 0;
+      for (let i = 0; i < clean.length; i++) { ps += clean[i] * clean[i]; pn += n[i] * n[i]; }
+      const k = Math.sqrt(ps / pn) / (10 ** (snrDb / 20));
+      contrasts.push(toneSetContrastDb(Float32Array.from(clean, (v, i) => v + k * n[i]), SR));
+    }
+    assert.ok(contrasts[0] > contrasts[1] && contrasts[1] > contrasts[2], 'contrast falls as the noise rises: ' + contrasts.map((c) => c.toFixed(1)).join(' > '));
+    assert.equal(TONE_STEP_HZ, 250);
+  },
+
+  function threeCopiesThatDisagreeAreNotRedundancy() {
+    // The second thing the live false positive showed: it passed its Golay
+    // checks while the three redundant copies disagreed on 69 of 98 bits.
+    // Real redundancy agrees; three readings of noise do not.
+    const clean = decodeAle(encodeAle(CALL, SR), SR);
+    assert.ok(clean.ok);
+    assert.equal(clean.voteBreakShare, 0, 'a clean signal breaks no votes');
+    assert.ok(clean.toneSetDb > 6);
+    assert.ok(clean.falseAlarmInSpan < 0.05, `false alarm ${clean.falseAlarmInSpan}`);
+  },
+
   function noiseIsNeverReadAsAHandshake() {
     // This is the case the module failed before the alphabet and the chain
     // rule existed: white noise came back as "THRU >t?" and "COMMAND ?>o70UWT".
@@ -117,7 +155,7 @@ export const cases = [
       for (const seed of [6, 44]) {
         const r = decodeAle(COLOURS[name](SR * 5, { seed }), SR);
         assert.equal(r.ok, false, `${name}/${seed} decoded as ${JSON.stringify(r.text)}`);
-        assert.match(r.reason, /Golay check|followed by another|8-FSK on the ALE tone set/);
+        assert.match(r.reason, /Golay check|followed by another|8-FSK on the ALE tone set|no 8-FSK tone set|disagreed on/);
       }
     }
     // 8-FSK on the wrong tone set is not ALE either.
