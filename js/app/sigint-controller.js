@@ -123,7 +123,7 @@ export function taskOptions(task, opts, state) {
 /** Everything the panel prints, as plain data, so it can be tested without a DOM. */
 export function reportLines(state, { methods = true } = {}) {
   const out = [];
-  const { source, region, measured, classified, decodes, tdoa, marker, detections } = state;
+  const { source, region, measured, classified, decodes, tdoa, marker, crypto, detections } = state;
   out.push('YELLOWJACKET · SIGNAL / SIGINT');
   if (source) out.push('source   : ' + source);
   if (region) {
@@ -209,6 +209,39 @@ export function reportLines(state, { methods = true } = {}) {
     }
     out.push('');
   }
+  if (crypto) {
+    out.push('cipher:');
+    const st = crypto.structure;
+    if (!st || !st.ok) out.push('   ' + ((st && st.reason) || 'nothing to analyse'));
+    else {
+      out.push(`   ${st.symbols} ${st.alphabet} · ${st.text}`);
+      out.push(`   index of coincidence ${st.ic.value} against ${st.ic.expected} expected (${st.ic.z} standard errors)`);
+      for (const f of st.findings) out.push(`   found  ${f.test}: ${f.what}`);
+      for (const f of st.findings) out.push(`          ${f.means}`);
+      if (!st.breakable) for (const line of wrap(st.verdict, 74)) out.push('   ' + line);
+    }
+    const cl = crypto.classical;
+    if (cl) {
+      if (cl.ok) {
+        out.push(`   ${cl.best.cipher} · key ${cl.best.key !== undefined ? cl.best.key : cl.best.order} · z ${cl.best.z}`);
+        for (const line of wrap(cl.best.plaintext, 72)) out.push('   ' + line);
+      } else {
+        out.push('   ' + (cl.reason || 'no classical cipher fits'));
+        out.push('   tried: ' + cl.ranked.map((r) => `${r.cipher} z ${r.z}`).join(', '));
+      }
+    }
+    const en = crypto.enigma;
+    if (en) {
+      out.push(en.ok ? '   enigma:' : '   enigma: ' + (en.reason || 'not an Enigma message'));
+      if (en.ok) {
+        out.push(`      rotors ${en.setting.rotors.join(' ')} · reflector ${en.setting.reflector} · rings ${en.setting.rings} · positions ${en.setting.positions}`);
+        out.push(`      plugboard ${en.setting.plugboard || '(none)'} · z ${en.z}`);
+        for (const line of wrap(en.plaintext, 72)) out.push('      ' + line);
+        if (en.caution) for (const line of wrap(en.caution, 70)) out.push('      ! ' + line);
+      }
+    }
+    out.push('');
+  }
   if (tdoa) {
     out.push('two stations:');
     if (!tdoa.ok) { out.push('   refused — ' + tdoa.reason); }
@@ -231,7 +264,7 @@ export function initSigintController(ctx) {
   const host = $('sigintHost');
   if (!host) return;
 
-  const state = { source: null, region: null, measured: null, classified: null, decodes: [], tdoa: null, marker: null, detections: null, selectedId: null };
+  const state = { source: null, region: null, measured: null, classified: null, decodes: [], tdoa: null, marker: null, crypto: null, detections: null, selectedId: null };
   const spec = ctx.views && ctx.views.spec;
 
   const el = (tag, cls, text) => {
@@ -259,8 +292,10 @@ export function initSigintController(ctx) {
   btnTwo.title = 'Arrival-time difference between two time stations sharing this channel';
   const btnMarker = el('button', 'yj-btn', 'MARKER WATCH');
   btnMarker.title = 'Find the moments a channel marker stops — the few seconds of a long recording that are not the buzzing';
+  const btnCipher = el('button', 'yj-btn', 'CIPHER');
+  btnCipher.title = 'Take what the decoders read and ask what it is: a pad, a code book, a classical cipher, or an Enigma message';
   const btnCopy = el('button', 'yj-btn', 'COPY REPORT');
-  row.append(btnSurvey, btnMeasure, btnClassify, btnDecode, btnTwo, btnMarker, btnCopy);
+  row.append(btnSurvey, btnMeasure, btnClassify, btnDecode, btnTwo, btnMarker, btnCipher, btnCopy);
 
   const line = el('p', 'yj-sigint-line');
   line.setAttribute('role', 'status');
@@ -444,6 +479,14 @@ export function initSigintController(ctx) {
     } else if (task === 'decode') {
       state.decodes = result;
       showPicture(result);
+    } else if (task === 'crypto') {
+      state.crypto = result;
+      const st = result.structure;
+      status(result.classical && result.classical.ok
+        ? `SIGINT · ${result.classical.best.cipher} solved at z ${result.classical.best.z}`
+        : (result.enigma && result.enigma.ok
+          ? `SIGINT · enigma solved, rotors ${result.enigma.setting.rotors.join(' ')}`
+          : `SIGINT · ${st && st.ok ? (st.breakable ? 'structure found: ' + st.findings.map((f) => f.test).join(', ') : 'consistent with a one-time pad') : 'nothing to analyse'}`));
     } else if (task === 'marker') {
       state.marker = result;
       if (result.ok) {
@@ -463,6 +506,19 @@ export function initSigintController(ctx) {
   // The whole recording, not a selection: the point is to find a few seconds
   // inside hours.
   btnMarker.addEventListener('click', () => run('MARKER WATCH', 'marker', {}, 7200));
+  // The cipher task reads TEXT, not audio, so it takes whatever the decoders
+  // produced. Nothing decoded means nothing to analyse, and it says so rather
+  // than running a search on an empty string.
+  btnCipher.addEventListener('click', () => {
+    const parts = [];
+    for (const d of state.decodes || []) if (d && d.ok && d.text) parts.push(String(d.text));
+    const text = parts.join(' ');
+    if (!text.replace(/[^A-Za-z0-9]/g, '')) {
+      statusFault('CIPHER · nothing has been decoded yet — press DECODE first');
+      return;
+    }
+    run('CIPHER', 'crypto', { text }, 1);
+  });
 
   btnCopy.addEventListener('click', async () => {
     try {

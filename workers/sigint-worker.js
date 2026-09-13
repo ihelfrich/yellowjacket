@@ -22,6 +22,9 @@ import { decodeSstv } from '../js/sigint/decode/sstv.js';
 import { decodePocsag } from '../js/sigint/decode/pager.js';
 import { decodeAle } from '../js/sigint/decode/ale.js';
 import { watchMarker } from '../js/sigint/marker.js';
+import { solveClassical } from '../js/crypto/classical.js';
+import { assess } from '../js/crypto/randomness.js';
+import { breakEnigma } from '../js/crypto/enigma.js';
 import { arrivalDifference, WWV_WWVH } from '../js/sigint/tdoa.js';
 
 /**
@@ -125,6 +128,27 @@ export const TASKS = {
   // A channel that exists to be held, and the moments it stops. Its own task
   // rather than part of DECODE: it reads minutes or hours, not a selection.
   marker: (x, rate, opts) => watchMarker(x, rate, opts.marker || {}),
+
+  /**
+   * What a decoded message IS. Not audio: the text the decoders produced.
+   *
+   * First the question that decides whether anything else is worth doing — is
+   * there structure a cryptanalyst can use, or is this consistent with a pad?
+   * Then the classical attacks. Then, only when those find nothing and the
+   * text is long enough to support it, Enigma, because that search is seconds
+   * rather than milliseconds and there is no point spending them on a message
+   * that a Vigenere solver already read.
+   */
+  crypto: (x, rate, opts) => {
+    const text = String((opts && opts.text) || '');
+    const structure = assess(text);
+    const classical = solveClassical(text, opts.classical || {});
+    let enigma = null;
+    const lettersOnly = text.toUpperCase().replace(/[^A-Z]/g, '');
+    const wantEnigma = opts.enigma !== false && !classical.ok && lettersOnly.length >= 120;
+    if (wantEnigma) enigma = breakEnigma(text, { set: ['I', 'II', 'III', 'IV', 'V'], maxPlugs: 4, nulls: 2, keep: 12, ...(opts.enigmaOptions || {}) });
+    return { structure, classical, enigma, letters: lettersOnly.length };
+  },
 };
 
 /** Run one job. Exported so the in-place fallback and the worker share it exactly. */

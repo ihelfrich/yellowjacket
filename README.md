@@ -137,6 +137,49 @@ shelf's 28-hour capture it measures a 3.42 second cycle at 41% duty. It refuses
 a channel with no marker, because without one every second is a departure and a
 list of a hundred thousand of them is not a finding.
 
+## Cryptanalysis
+
+CIPHER takes what the decoders read and asks what it is. The chain runs end to
+end: audio, Morse, ciphertext, key.
+
+It asks the most useful question first — is this breakable at all? A numbers
+station enciphered with a genuine one-time pad has no unique solution, and
+saying so with numbers is a better answer than running a solver for a week.
+The battery tests the index of coincidence against its own standard error, the
+letter frequencies by chi-squared, repeated code groups against the birthday
+bound, repeated substrings and the factors of the distances between them, and
+the serial correlation of successive symbols. When it finds nothing it says
+what it WOULD have caught at that length, because a clean result is not proof.
+
+When there is structure it attacks. Caesar, Vigenère, monoalphabetic
+substitution and columnar transposition all fall to hill climbing against a
+trigram model, and the Vigenère key length comes out of the index of
+coincidence before a single letter is guessed. Kasiski recovers the period
+exactly on a 700-letter message.
+
+And Enigma. Not with cribs and bombes but the modern way: sweep the rotor
+orders and start positions by index of coincidence, which rises for the right
+wheels even while every plug is still unknown, because a plugboard is a
+substitution and a substitution does not change how often two letters match;
+then hill climb the ring settings; then recover the plugboard one pair at a
+time, because each correct plug improves the score by itself. Measured: 200
+letters and no plugboard, or 360 letters and three plugs, come back exact. Five
+plugs on 360 letters recovers every plug and leaves a stretch of the message
+wrong, and the result says which letters and why.
+
+None of it reports a solution because a search returned its best answer. A hill
+climber always returns something, so every attack here also runs against
+ciphertext that cannot be solved, and reports how far above that null it landed
+— and separately whether the plaintext reads as English at all, because a z
+score compares keys within one cipher and is not comparable across two. Both
+bars are measured rather than chosen: a wrong key on uniform noise reaches z 4,
+every real solution here is past 8, and English scores −3.3 to −3.6 where its
+own shuffle scores −4.6 to −5.1.
+
+The trigram model is built from this repository's own prose by
+`scripts/build-ngrams.mjs` — 1.28 million letters of README, lab notes and
+source comments — because nothing here downloads a corpus at build time.
+
 MEASUREMENT reads harmony as well as level. Fold the spectrum onto the twelve
 pitch classes by picking peaks and crediting each to the notes it could be a
 harmonic of, correlate against the Krumhansl-Kessler profiles, and out comes
