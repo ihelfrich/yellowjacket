@@ -1,0 +1,17 @@
+{
+  "status": "0.732 Hz bin spacing · 1.365 s Hann window · 0.341 s step · 84 windows, none skipped. Display retains pixel peaks; cursors read individual bins. Bin spacing is not frequency uncertainty. Levels are coherent-tone amplitudes, not noise power density.",
+  "readout": "A: 9.8987 s, 100.342 Hz, -44.39 dBFS · B: 20.1387 s, 120.117 Hz, -60.81 dBFS · Δt 10.2400 s · Δf 19.775 Hz",
+  "errors": [],
+  "checks": [
+    "app file intake",
+    "worker analysis",
+    "absolute cursor measurement",
+    "CSV",
+    "log axis",
+    "contrast",
+    "stale invalidation",
+    "short passage refusal",
+    "cancellation",
+    "mobile width"
+  ]
+}

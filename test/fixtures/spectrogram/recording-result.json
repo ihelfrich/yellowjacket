@@ -1,0 +1,38 @@
+{
+  "source": "https://archive.org/details/aporee_63516_73093",
+  "creator": "Peter Cusack",
+  "location": "Prenzlauerberg Volkspark, Berlin, Germany",
+  "latitude": 52.537607761925,
+  "longitude": 13.461569392697,
+  "sourceTime": "2024-03-22 08:17:00 Europe/Berlin",
+  "limits": [
+    "Source-published coordinates, not independently surveyed ground truth.",
+    "Source title says 8pm but structured date says 08:17; no precise-time flight matching attempted.",
+    "First 30 seconds, mono downmix of MP3.",
+    "No aircraft identification or location inference."
+  ],
+  "sha256": "f65f7301c3c3d648aa334378904d6162d8d45a0b9b28213d4325f5abfb8bf387",
+  "sampleRate": 48000,
+  "fftSize": 65536,
+  "cols": 84,
+  "probes": [
+    {
+      "time": 9.898666666666665,
+      "hz": 100.341796875,
+      "db": -44.38775634765625,
+      "c": 27,
+      "b": 109,
+      "directDftDb": -44.38775471149616,
+      "absoluteErrorDb": 0.0000016361600927439213
+    },
+    {
+      "time": 20.138666666666666,
+      "hz": 120.1171875,
+      "db": -60.8145866394043,
+      "c": 57,
+      "b": 136,
+      "directDftDb": -60.81458803224628,
+      "absoluteErrorDb": 0.0000013928419804187797
+    }
+  ]
+}

@@ -16,3 +16,9 @@ test_*.aif
 # Live scan output: recordings and state from tools/scan.mjs and tools/watch.mjs
 scans/
 *.f32
+
+# Local validation media/results
+test/fixtures/spectrogram/*.mp3
+test/fixtures/spectrogram/*.wav
+test/fixtures/spectrogram/*.png
+test/fixtures/spectrogram/measurements.csv

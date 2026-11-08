@@ -699,3 +699,22 @@ distributed, as required by BSL 1.1.
 The bundled Archivo and IBM Plex Mono fonts remain under their own SIL Open
 Font License. Whisper models load from their upstream sources under their own
 licenses. Built by [Ian Helfrich](https://ihelfrich.github.io).
+
+Under **SIGNAL → Precision spectrogram**, analyze a selected passage with
+2,048–131,072 sample Hann windows, a narrow frequency band, linear or logarithmic
+frequency axes, and adjustable display floor/ceiling. The inspector recomputes
+every overlapping window from the current SIGNAL mono mix; it never stretches
+the overview's skipped frames into measurements. Click to place A/B cursors or
+enter their coordinates, then export their time, frequency, level and analysis
+settings as CSV. Cursors snap to measured bins and window centres. Longer windows
+improve frequency discrimination at the expense of temporal detail; bin spacing
+is not an uncertainty estimate. Levels are coherent-tone amplitudes, not spectral
+power density. Repairs affect this signal, and stereo cancellation can affect the
+mono mix. Use the original recording for comparison.
+
+Analysis is local and cancellable, with explicit memory/work limits. Oversized
+selections are refused instead of silently skipping windows. Inspector settings
+and cursors are session-only; export measurements before replacing audio or
+closing the page. This is an inspection tool, not an aircraft classifier or
+geolocation estimator. Validation and a documented-location example are in
+`docs/lab/2026-11-07-precision-spectrogram.md`.

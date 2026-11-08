@@ -5,6 +5,7 @@
 // render/spectrogram-gpu.js and this canvas keeps only the overlays.
 
 import { GpuSpectrogram, viewToColumns } from './render/spectrogram-gpu.js';
+import { PrecisionInspector } from './precision-inspector.js';
 
 const DRAG_PX = 4;                 // click vs drag threshold, CSS px
 const F_MIN = 20;                  // bottom of the log axis, Hz
@@ -150,11 +151,14 @@ export class SpectrogramView extends EventTarget {
     this._ro = new ResizeObserver(() => this.render());
     this._ro.observe(canvas.parentElement || canvas);
     this._watchDpr();
+    const precisionHost = document.getElementById('precisionInspector');
+    if (precisionHost) this.precision = new PrecisionInspector(precisionHost, this);
   }
 
   // ---------- public API ----------
 
   async compute(mono, sampleRate) {
+    this.precision?.setSource(mono, sampleRate);
     this._gen++;
     const gen = this._gen;
     if (this._worker) {

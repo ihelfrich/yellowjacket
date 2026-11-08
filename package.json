@@ -1,6 +1,7 @@
 {
   "type": "module",
   "scripts": {
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs && node test/precision-regressions.mjs",
+    "test:precision": "node test/precision-regressions.mjs"
   }
 }

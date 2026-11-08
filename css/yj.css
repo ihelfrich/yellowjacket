@@ -1068,3 +1068,11 @@ input[type="range"]:disabled::-moz-range-thumb { background: var(--yj-amber-dim)
   padding: 6px 8px;
   border-top: 1px solid var(--yj-line);
 }
+
+.yj-precision { margin-top: 12px; padding: 12px; border-top: 1px solid var(--yj-line, #555); }
+.yj-precision summary { cursor: pointer; font-weight: 600; }
+.yj-precision p { font-size: 12px; line-height: 1.5; margin: 10px 0; }
+.yj-precision-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 12px 0; }
+.yj-precision-controls label { display: grid; gap: 4px; font-size: 11px; }
+.yj-precision-controls input, .yj-precision-controls select { width: 120px; padding: 7px; color: inherit; background: var(--yj-well, #202525); border: 1px solid #777; border-radius: 3px; }
+.yj-precision-canvas { display: block; width: 100%; height: 360px; cursor: crosshair; }

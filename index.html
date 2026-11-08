@@ -17,6 +17,9 @@
 <link rel="modulepreload" href="js/render/peaks.js">
 <link rel="modulepreload" href="js/waveform.js">
 <link rel="modulepreload" href="js/render/spectrogram-gpu.js">
+<link rel="modulepreload" href="js/fft.js">
+<link rel="modulepreload" href="js/analysis/precision-spectrum.js">
+<link rel="modulepreload" href="js/precision-inspector.js">
 <link rel="modulepreload" href="js/spectrogram.js">
 <link rel="modulepreload" href="js/transcribe.js">
 <link rel="modulepreload" href="js/transcript-ui.js">
@@ -35,7 +38,6 @@
 <link rel="modulepreload" href="js/machine/cliprefs.js">
 <link rel="modulepreload" href="js/machine/slice-ui.js">
 <link rel="modulepreload" href="js/export.js">
-<link rel="modulepreload" href="js/fft.js">
 <link rel="modulepreload" href="js/dsp/stretch.js">
 <link rel="modulepreload" href="js/dsp/space.js">
 <link rel="modulepreload" href="js/loom/schedule.js">
@@ -291,6 +293,7 @@
             <canvas id="specMain" class="yj-canvas yj-canvas-spec"></canvas>
           </div>
           <div class="yj-canvas-note" id="specNote">Spectrogram computes when audio loads.</div>
+          <details id="precisionInspector" class="yj-precision"></details>
         </div>
       </div>
       <aside class="yj-rail" data-sigrail="scope">
